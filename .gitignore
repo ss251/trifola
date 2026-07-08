@@ -1,0 +1,23 @@
+# Swift / SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj/
+DerivedData/
+
+# Build output
+dist/
+*.app/
+
+# macOS
+.DS_Store
+
+# Local, private fixtures — real ~/.claude data must NEVER be committed.
+# Only synthetic fixtures (Tests/Fixtures/) are tracked.
+/fixtures-local/
+*.local.jsonl
+
+# Editor / tooling
+.vscode/
+.idea/
+.lavish/
