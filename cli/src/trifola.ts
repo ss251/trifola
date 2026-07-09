@@ -5,6 +5,13 @@
 // rates ported from the trifola macOS app's TrifolaKit (see cli/src/pricing.ts,
 // ledger.ts, skills.ts, transcripts.ts for the exact per-file parity notes).
 
+// Exit quietly when stdout closes early (`trifola | head`) instead of crashing
+// with an unhandled EPIPE 'error' event — standard CLI etiquette.
+process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE") process.exit(0);
+  throw err;
+});
+
 import { resolveClaudeDir, skillsDirOf, projectsDirOf } from "./config.js";
 import { scanUserSkills } from "./skills.js";
 import { scanProjects } from "./transcripts.js";
@@ -22,6 +29,17 @@ function run(argv: string[]): void {
   const skills = scanUserSkills(skillsDirOf(claudeDir));
   const corpus = scanProjects(projectsDirOf(claudeDir));
   const finding = buildFinding(skills, corpus);
+
+  if (argv.includes("--list-dead")) {
+    // Local prune-list mode: real skill ids, one per line. Deliberately NOT part
+    // of the share card or --json — names are personal; the card stays anonymized.
+    process.stdout.write(
+      `# ${finding.deadCount} of ${finding.catalogCount} skills never explicit-fired across ` +
+        `${finding.sessionCount} sessions (local prune list — don't share raw)\n`,
+    );
+    for (const name of finding.deadNames) process.stdout.write(name + "\n");
+    return;
+  }
 
   if (asJson) {
     process.stdout.write(JSON.stringify(renderJSON(finding), null, 2) + "\n");

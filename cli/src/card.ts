@@ -118,6 +118,8 @@ Usage:
 
 Options:
   --json       Print machine-readable JSON instead of the text card.
+  --list-dead  Print the never-fired skill ids, one per line (local prune
+               list — real names, deliberately excluded from the share card).
   --help, -h   Show this help and exit.
 
 Environment:

@@ -36,6 +36,9 @@ export interface Finding {
   cacheHitRatePct: number;
   /** Total deduped billed-usage entries across the corpus — the "R reads" denominator behind cacheHitRatePct. */
   reads: number;
+  /** Sorted ids of the never-fired skills. LOCAL-ONLY detail: surfaced solely
+   * behind `--list-dead` — never in the anonymized share card or default JSON. */
+  deadNames: string[];
 }
 
 /** Rough token estimate for a description that rides every system prompt
@@ -81,5 +84,6 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
     firstTouchUsd,
     cacheHitRatePct,
     reads: corpus.totalDedupedEntries,
+    deadNames: dead.map((sk) => sk.id).sort(),
   };
 }
