@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      # The gate is enforcement, not prose: no personal identifier or private
+      # path may ever enter the public tree — a PR that trips it fails here.
+      - name: Secret-scan gate
+        run: bash Scripts/secret-scan.sh
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Test
+        run: swift test
