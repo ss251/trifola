@@ -83,7 +83,7 @@ literally: idle CPU is ~0%.
 > `brew install --cask trifola`.
 
 ```bash
-git clone https://github.com/<owner>/trifola.git
+git clone https://github.com/ss251/trifola.git
 cd trifola
 swift build -c release
 bash Scripts/make-app.sh      # → dist/trifola.app
