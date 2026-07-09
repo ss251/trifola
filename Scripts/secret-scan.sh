@@ -27,6 +27,18 @@ PATTERNS=(
   'MissionControl'
   'ClaudeMissionControl'
   'com\.thescoho'
+  # v1 scope — the user's personal/private tooling must be genericized out of the
+  # public tree. The probe registry ships GENERIC defaults only (claude, skills,
+  # mcp-servers, hooks, plugins). These names must not appear anywhere in Sources.
+  'pxpipe'
+  'gbrain'
+  'openclaw'
+  '\blavish\b'
+  '\bcmux\b'
+  'browser-use'
+  'browserUse'
+  'CloudBrowser'
+  'PxpipeScreen'
 )
 
 # Absolute home paths are banned EXCEPT the synthetic /Users/dev/... demo set.
@@ -40,7 +52,7 @@ EXCLUDES=(--binary-files=without-match -I
 fail=0
 
 for pat in "${PATTERNS[@]}"; do
-  hits=$(grep -rnE "${EXCLUDES[@]}" -- "$pat" "$ROOT" 2>/dev/null | grep -vE '(^|/)(LICENSE|CREDITS)([:/]|$)')
+  hits=$(grep -rniE "${EXCLUDES[@]}" -- "$pat" "$ROOT" 2>/dev/null | grep -vE '(^|/)(LICENSE|CREDITS)([:/]|$)')
   if [ -n "$hits" ]; then
     echo "❌ banned pattern: $pat"
     echo "$hits"

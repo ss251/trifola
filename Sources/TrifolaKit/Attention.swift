@@ -1,0 +1,381 @@
+import Foundation
+import Combine
+
+// MARK: - Attention state machine
+// The flagship signal: with N live agents, "which one is BLOCKED on me right now?"
+// A pure, testable state machine over a session transcript's tail. Nothing here
+// touches AppKit/SwiftUI or the filesystem beyond one bounded tail read, so the
+// whole classifier is exercised in unit tests against hand-built transcripts.
+//
+// Grounded in the on-disk transcript shape (verified 2026-07-06): each .jsonl line
+// is one event. An `assistant` message's `.message.content[]` blocks are
+// {thinking,text,tool_use}; a `tool_use` block carries `.id` (toolu_…). Its result
+// arrives later inside a `user` message as a `tool_result` block whose
+// `.tool_use_id` == that id. A `tool_use` at the very tail with no later matching
+// `tool_result` is a dangling tool call — almost always a permission prompt /
+// AskUserQuestion / human gate.
+
+public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
+    case blocked   // 🔴 dangling tool_use >30s — permission prompt / human gate / silent stall
+    case waiting   // 🟡 turn ended (assistant text, stop_reason end_turn) — ball in your court
+    case running   // 🟢 work streaming — recent tool activity
+    case idle      // ⚪ gone quiet (>15m)
+
+    /// Sort key: the more it needs you, the smaller the rank (sorts first).
+    public var sortRank: Int {
+        switch self {
+        case .blocked: return 0
+        case .waiting: return 1
+        case .running: return 2
+        case .idle:    return 3
+        }
+    }
+
+    /// Short, all-caps state word for the chip (community vocabulary — @0xMorlex
+    /// named these four verbatim).
+    public var label: String {
+        switch self {
+        case .blocked: return "BLOCKED"
+        case .waiting: return "WAITING"
+        case .running: return "RUNNING"
+        case .idle:    return "IDLE"
+        }
+    }
+
+    /// True for the two states that actually ask for the human — the only things
+    /// the strip surfaces prominently (no-nag doctrine: RUNNING/IDLE are counts).
+    public var needsAttention: Bool { self == .blocked || self == .waiting }
+
+    // Spec thresholds. Kept simple and named so tests and UI share one source.
+    /// A dangling tool_use younger than this is a tool still executing (RUNNING);
+    /// older than this it is almost certainly a human gate (BLOCKED).
+    /// Caveat: a genuinely long-running Bash can look blocked past 30s — the spec
+    /// accepts that trade for a signal a human cannot get by staring at a terminal.
+    public static let blockedThreshold: TimeInterval = 30
+    /// No activity for longer than this ⇒ the session has gone quiet (IDLE),
+    /// reusing the existing `isActive` 15-minute window.
+    public static let idleThreshold: TimeInterval = 15 * 60
+
+    /// The pure classifier. Time-dependent (`now`) so a session transitions
+    /// RUNNING→BLOCKED at 30s and WAITING→IDLE at 15m without re-reading the file.
+    public static func classify(_ s: AttentionSignals, now: Date) -> AttentionState {
+        guard let last = s.lastEventAt else { return .idle }
+        let age = now.timeIntervalSince(last)
+        // 🔴 dangling tool_use past the threshold, nothing newer. Checked BEFORE
+        // idle: a session stuck on a permission prompt for 20 minutes is still
+        // BLOCKED-on-you, not quietly idle — it needs you more, not less.
+        if s.hasDanglingToolUse, age > blockedThreshold { return .blocked }
+        // ⚪ otherwise, no activity for >15m ⇒ the session has gone quiet.
+        if age > idleThreshold { return .idle }
+        // 🟡 turn ended cleanly on assistant text — the ball is in the user's court.
+        if s.lastKind == .assistantText, s.lastStopReason == "end_turn" { return .waiting }
+        // 🟢 everything else inside the live window: a fresh dangling tool_use
+        // (<30s, tool still executing), a just-arrived tool_result, a user prompt
+        // the assistant is answering — all "work in flight".
+        return .running
+    }
+}
+
+// MARK: - Attention signals
+// The time-INDEPENDENT facts extracted from a transcript tail. These change only
+// when the file changes; `AttentionState.classify` layers `now` on top of them.
+
+public struct AttentionSignals: Sendable, Equatable, Hashable {
+    /// Kind of the last meaningful (non-meta) event in the tail.
+    public enum LastKind: String, Sendable, Equatable, Hashable, Codable {
+        case assistantText, toolUse, toolResult, userPrompt, thinking, system, none
+    }
+
+    /// Timestamp of the most recent meaningful event (drives age / staleness).
+    public var lastEventAt: Date?
+    /// Kind of that last event.
+    public var lastKind: LastKind
+    /// `stop_reason` on the most recent assistant message carrying content
+    /// (`end_turn`, `tool_use`, …), or nil.
+    public var lastStopReason: String?
+    /// True iff the tail ends on a `tool_use` whose `tool_use_id` never received a
+    /// matching `tool_result` — the dangling-tool-call signal.
+    public var hasDanglingToolUse: Bool
+    /// When that dangling tool_use was issued (== lastEventAt when dangling).
+    public var danglingToolUseAt: Date?
+    /// Most recent tool_use OR tool_result timestamp — "work streaming" evidence.
+    public var lastToolActivityAt: Date?
+    /// Name of the freshest `tool_use` in the tail (`Edit`, `Write`, `Bash`, …) —
+    /// the Fleet Board's "now-line" tool. For a BLOCKED session this is the tool
+    /// it is stuck on (the dangling call); for a RUNNING one it is the tool in
+    /// flight. nil when the tail carries no tool_use.
+    public var lastToolName: String?
+    /// The human-scannable detail for `lastToolName` — the file path for
+    /// Edit/Write/Read (home-relativized), the command for Bash, etc. — reusing
+    /// the transcript parser's `toolDetail` so the board's now-line and the live
+    /// feed read identically. Empty/nil when the tool carried no detail.
+    public var lastToolDetail: String?
+
+    public init(lastEventAt: Date? = nil, lastKind: LastKind = .none,
+                lastStopReason: String? = nil, hasDanglingToolUse: Bool = false,
+                danglingToolUseAt: Date? = nil, lastToolActivityAt: Date? = nil,
+                lastToolName: String? = nil, lastToolDetail: String? = nil) {
+        self.lastEventAt = lastEventAt
+        self.lastKind = lastKind
+        self.lastStopReason = lastStopReason
+        self.hasDanglingToolUse = hasDanglingToolUse
+        self.danglingToolUseAt = danglingToolUseAt
+        self.lastToolActivityAt = lastToolActivityAt
+        self.lastToolName = lastToolName
+        self.lastToolDetail = lastToolDetail
+    }
+
+    /// Walk transcript tail lines in order, matching tool_use ids to their
+    /// tool_result ids, and record the tail's shape. Tail-safe: an unmatched
+    /// `tool_result` (its tool_use fell before the window) is simply ignored, so
+    /// reading only the tail never invents a dangling call.
+    public static func extract(fromTailLines lines: [Data]) -> AttentionSignals {
+        var open: Set<String> = []          // tool_use ids still awaiting a result
+        var lastKind: LastKind = .none
+        var lastStop: String? = nil
+        var lastEventAt: Date? = nil
+        var lastToolActivityAt: Date? = nil
+        var lastToolName: String? = nil     // freshest tool_use in the tail → now-line
+        var lastToolDetail: String? = nil
+
+        for line in lines {
+            guard let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+                  let type = obj["type"] as? String else { continue }
+            if (obj["isMeta"] as? Bool) == true { continue }
+            let ts = parseDate(obj["timestamp"] as? String)
+
+            switch type {
+            case "assistant":
+                guard let msg = obj["message"] as? [String: Any],
+                      let blocks = msg["content"] as? [[String: Any]] else { break }
+                var sawContent = false
+                for b in blocks {
+                    switch b["type"] as? String {
+                    case "tool_use":
+                        if let id = b["id"] as? String { open.insert(id) }
+                        lastKind = .toolUse
+                        lastEventAt = ts
+                        lastToolActivityAt = ts
+                        // Capture the now-line: freshest tool_use wins (overwrite),
+                        // reusing the live feed's exact detail extraction.
+                        if let name = b["name"] as? String {
+                            lastToolName = name
+                            let d = TranscriptParser.toolDetail(name: name,
+                                                                input: (b["input"] as? [String: Any]) ?? [:])
+                            lastToolDetail = d.isEmpty ? nil : d
+                        }
+                        sawContent = true
+                    case "text":
+                        let t = (b["text"] as? String) ?? ""
+                        if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            lastKind = .assistantText
+                            lastEventAt = ts
+                            sawContent = true
+                        }
+                    case "thinking":
+                        lastKind = .thinking
+                        lastEventAt = ts
+                        sawContent = true
+                    default:
+                        break
+                    }
+                }
+                if sawContent { lastStop = msg["stop_reason"] as? String }
+
+            case "user":
+                guard let msg = obj["message"] as? [String: Any] else { break }
+                if let blocks = msg["content"] as? [[String: Any]] {
+                    var sawResult = false, sawText = false
+                    for b in blocks {
+                        switch b["type"] as? String {
+                        case "tool_result":
+                            if let id = b["tool_use_id"] as? String { open.remove(id) }
+                            sawResult = true
+                        case "text":
+                            let t = (b["text"] as? String) ?? ""
+                            if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { sawText = true }
+                        default:
+                            break
+                        }
+                    }
+                    if sawResult {
+                        lastKind = .toolResult
+                        lastEventAt = ts
+                        lastToolActivityAt = ts
+                    }
+                    if sawText {                 // a typed prompt outranks the auto tool_result wrapper
+                        lastKind = .userPrompt
+                        lastEventAt = ts
+                        lastStop = nil
+                    }
+                } else if let s = msg["content"] as? String, !s.isEmpty {
+                    lastKind = .userPrompt
+                    lastEventAt = ts
+                    lastStop = nil
+                }
+
+            case "system":
+                lastKind = .system
+                lastEventAt = ts
+
+            default:
+                break                            // summary / queue-op / snapshot / progress
+            }
+        }
+
+        // Dangling iff the tail ENDS on an unresolved tool_use. Tying it to the
+        // last kind (not merely a non-empty open set) avoids a stale tool_use from
+        // earlier in the tail — since resolved by later work — reading as blocked.
+        let dangling = !open.isEmpty && lastKind == .toolUse
+        return AttentionSignals(
+            lastEventAt: lastEventAt,
+            lastKind: lastKind,
+            lastStopReason: lastStop,
+            hasDanglingToolUse: dangling,
+            danglingToolUseAt: dangling ? lastEventAt : nil,
+            lastToolActivityAt: lastToolActivityAt,
+            lastToolName: lastToolName,
+            lastToolDetail: lastToolDetail
+        )
+    }
+
+    /// Read the last `tailBytes` of a transcript and extract signals. The first
+    /// (probably partial) line is dropped when we began mid-file, exactly like the
+    /// FileTailer. Returns nil only when the file can't be opened.
+    public static func extractFromTail(path: String, tailBytes: Int = 256_000) -> AttentionSignals? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        let size = (try? fh.seekToEnd()) ?? 0
+        let start = size > UInt64(tailBytes) ? size - UInt64(tailBytes) : 0
+        try? fh.seek(toOffset: start)
+        guard let data = try? fh.readToEnd() else { return nil }
+        var lines = data.split(separator: UInt8(0x0A)).map { Data($0) }
+        if start > 0, !lines.isEmpty { lines.removeFirst() }   // drop the partial head line
+        return extract(fromTailLines: lines)
+    }
+}
+
+// MARK: - One classified live session
+
+public struct AttentionItem: Identifiable, Sendable, Hashable {
+    public var id: String { session.id }
+    public let session: SessionSummary
+    public let state: AttentionState
+    /// Seconds since the session's last activity (for the chip's "2m" age).
+    public let age: TimeInterval
+
+    public init(session: SessionSummary, state: AttentionState, age: TimeInterval) {
+        self.session = session
+        self.state = state
+        self.age = age
+    }
+
+    public var needsAttention: Bool { state.needsAttention }
+}
+
+// MARK: - The attention board (the sorted, counted heart)
+
+public struct AttentionBoard: Sendable, Equatable {
+    /// All in-window sessions, sorted BLOCKED → WAITING → RUNNING → IDLE, then by
+    /// recency (freshest first).
+    public let items: [AttentionItem]
+    public let counts: [AttentionState: Int]
+
+    public init(items: [AttentionItem], counts: [AttentionState: Int]) {
+        self.items = items
+        self.counts = counts
+    }
+
+    public func count(_ s: AttentionState) -> Int { counts[s] ?? 0 }
+    public var blockedCount: Int { count(.blocked) }
+    public var waitingCount: Int { count(.waiting) }
+    public var runningCount: Int { count(.running) }
+    public var idleCount: Int { count(.idle) }
+
+    /// The chips the strip actually surfaces: BLOCKED then WAITING (already sorted).
+    public var needsAttention: [AttentionItem] { items.filter(\.needsAttention) }
+
+    /// The single worst state present — drives the dock badge / menu-bar glyph.
+    /// nil when the board is empty.
+    public var worst: AttentionState? { items.first?.state }
+
+    /// The window beyond `isActive` (15m) that keeps a cooling session visible as
+    /// IDLE for a while before it drops off the board entirely.
+    public static let defaultWindow: TimeInterval = 60 * 60
+
+    /// Build the board. Subagent transcripts are excluded — nobody gates a
+    /// subagent (its parent orchestration does), so they can never be BLOCKED-on-you.
+    /// `signals` is a per-session-id map from the tail extractor; a session with no
+    /// entry yet falls back to a bare last-activity signal (→ RUNNING/IDLE by age).
+    public static func build(sessions: [SessionSummary],
+                             signals: [String: AttentionSignals],
+                             now: Date,
+                             window: TimeInterval = defaultWindow) -> AttentionBoard {
+        var items: [AttentionItem] = []
+        for s in sessions {
+            // Window check FIRST: it is two Date compares, while `isSubagent`
+            // is a substring scan of the file path — running the scan on all
+            // 5.3k sessions (instead of the ~dozen in-window) measured ~17ms
+            // per build on the main thread.
+            guard let last = s.lastActivity else { continue }
+            let age = now.timeIntervalSince(last)
+            guard age >= 0, age <= window else { continue }
+            guard !s.isSubagent else { continue }
+            var sig = signals[s.id] ?? AttentionSignals(lastEventAt: last)
+            if sig.lastEventAt == nil { sig.lastEventAt = last }   // never lose the recency anchor
+            let state = AttentionState.classify(sig, now: now)
+            items.append(AttentionItem(session: s, state: state, age: age))
+        }
+        items.sort {
+            $0.state.sortRank != $1.state.sortRank
+                ? $0.state.sortRank < $1.state.sortRank
+                : $0.age < $1.age
+        }
+        var counts: [AttentionState: Int] = [:]
+        for it in items { counts[it.state, default: 0] += 1 }
+        return AttentionBoard(items: items, counts: counts)
+    }
+}
+
+// MARK: - Attention store (signals for the live pool)
+// Holds the per-session tail signals. Refreshed by reading each candidate
+// transcript's tail OFF the main actor — only the live/recent pool, a handful of
+// files, so it stays cheap even beside a multi-GB corpus. The time-dependent
+// classification (`AttentionBoard.build`) happens fresh at render time against a
+// heartbeat `now`, so states advance (RUNNING→BLOCKED, WAITING→IDLE) without any
+// new file I/O.
+
+@MainActor
+public final class AttentionStore: ObservableObject {
+    @Published public private(set) var signals: [String: AttentionSignals] = [:]
+    /// Monotonic stamp, bumped on every real `signals` assignment — pairs with
+    /// `SessionStore.revision` so the attention-board memo invalidates with two
+    /// Int compares. Not @Published: it rides the assignment's own publish.
+    public private(set) var revision = 0
+
+    public init() {}
+
+    /// Recompute signals for the given candidate sessions. `candidates` should
+    /// already be the recent pool (AppServices filters by the board window); this
+    /// only reads their tails.
+    public func refresh(candidates: [SessionSummary], tailBytes: Int = 256_000) async {
+        let jobs: [(String, String)] = candidates
+            .filter { !$0.isSubagent && !$0.filePath.isEmpty }
+            .map { ($0.id, $0.filePath) }
+        let result = await Task.detached(priority: .userInitiated) {
+            var out: [String: AttentionSignals] = [:]
+            for (id, path) in jobs {
+                if let sig = AttentionSignals.extractFromTail(path: path, tailBytes: tailBytes) {
+                    out[id] = sig
+                }
+            }
+            return out
+        }.value
+        // Compare-before-assign (W6 wave 4): unchanged tails must not publish —
+        // every publish re-evaluates the strip, the Floor, and the palette.
+        if signals != result {
+            signals = result
+            revision += 1
+        }
+    }
+}

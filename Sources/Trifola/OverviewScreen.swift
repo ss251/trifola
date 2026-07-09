@@ -1,0 +1,401 @@
+import SwiftUI
+import TrifolaKit
+
+/// The hero dashboard: fleet vitals, tier spend split, live sessions,
+/// context-weight offenders and the routing audit — one glance, whole story.
+struct OverviewScreen: View {
+    @EnvironmentObject var services: AppServices
+
+    private var store: SessionStore { services.sessions }
+
+    private var subtitle: String {
+        // Distinct-project COUNT only — `projectSpend` also prices every
+        // session (a full cost rollup per body pass) just to be counted here.
+        let projects = Set(store.sessions.map(\.project)).count
+        let base = "\(store.sessions.count) sessions across \(projects) projects"
+        let fleet = services.isCrossMachine && store.machineCount > 1
+            ? "\(store.machineCount) machines · " : ""
+        return "\(fleet)\(base) · refreshed \(fmtAgo(store.lastRefresh))"
+    }
+
+    var body: some View {
+        ScreenScaffold(
+            title: "Overview",
+            subtitle: subtitle
+        ) {
+            Button {
+                services.refreshAll()
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .keyboardShortcut("r", modifiers: .command)
+        } content: {
+            AttentionStrip()
+            if services.isCrossMachine {
+                FleetMachinesSection()
+                Divider()
+            }
+            statRow
+            // "Show the math" (W3): the hero's whole-corpus receipt — per-model
+            // legs → Σ = the tile's number, same code path (built on expand).
+            ReceiptDisclosure(storageKey: "provenance.overview-hero") {
+                CostProvenance.corpusReceipt(sessions: store.sessions)
+            }
+            Divider()
+            let governor = store.burnGovernor(now: services.now)
+            BurnGovernorSection(governor: governor, receipt: {
+                CostProvenance.dayReceipt(
+                    sessions: store.sessions,
+                    dayKey: CostProvenance.dayKey(for: services.now),
+                    footnotes: [CostProvenance.projectionFootnote(governor)])
+            })
+            Divider()
+            // PLAN QUOTA (W7): the REAL rate-limit windows next to the estimate
+            // above — "what we think you burned" vs "what Anthropic says you
+            // have left". Makes the 'resets 10am' wall predictable in advance.
+            QuotaSection(snapshot: services.quota.snapshot,
+                         status: services.quota.status,
+                         source: services.quota.source,
+                         now: services.now)
+            Divider()
+            // REROUTE RECEIPTS (spree #2): fleet trend row + orchestrator-hog
+            // alert. Both are evidence-gated — clean fleets render nothing.
+            let rerouteReport = Reroutes.build(sessions: store.sessions)
+            if !rerouteReport.days.isEmpty {
+                RerouteTrendRow(report: rerouteReport, now: services.now)
+                Divider()
+            }
+            if let hog = OrchestratorHog.alert(
+                sessions: store.sessions,
+                day: CostProvenance.dayKey(for: services.now)) {
+                OrchestratorHogRow(alert: hog)
+                Divider()
+            }
+            HStack(alignment: .top, spacing: Theme.gutter) {
+                VStack(alignment: .leading, spacing: 16) {
+                    TierSpendSection(stats: store.tierStats, total: store.totalCost)
+                    Divider()
+                    ActivitySection(sessions: store.sessions, now: services.now)
+                }
+                .frame(maxWidth: .infinity)
+                Divider()
+                VStack(alignment: .leading, spacing: 16) {
+                    LiveNowSection()
+                    Divider()
+                    ContextOffendersSection()
+                }
+                .frame(maxWidth: .infinity)
+            }
+            Divider()
+            RoutingSection(audit: services.audit)
+        }
+    }
+
+    private var statRow: some View {
+        StatRow {
+            StatTile(label: "Est. usage value",
+                     value: fmtUSD(store.totalCost),
+                     sub: "API-rate equivalent — not real spend")
+            Divider()
+            StatTile(label: "Active now",
+                     value: "\(store.activeSessions.count)",
+                     sub: store.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m",
+                     live: !store.activeSessions.isEmpty)
+            Divider()
+            StatTile(label: "Cache savings",
+                     value: fmtUSD(store.totalCacheSavings),
+                     sub: "vs. uncached input at API rates")
+        }
+    }
+}
+
+// MARK: - Tier spend
+
+private struct TierSpendSection: View {
+    let stats: [TierStat]
+    let total: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionLabel("Spend by model tier")
+                Spacer()
+                Text(fmtUSD(total))
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.muted)
+            }
+            TierSplitBar(stats: stats)
+            VStack(spacing: Theme.rhythm) {
+                ForEach(stats) { st in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Circle().fill(st.tier.color).frame(width: 6, height: 6)
+                        Text(st.tier.label)
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.ink)
+                        Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tok")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.faint)
+                        Spacer()
+                        Text(fmtUSD(st.cost))
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.ink)
+                        Text(total > 0 ? fmtPct(st.cost / total) : "—")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.muted)
+                            .frame(width: 42, alignment: .trailing)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 24h activity histogram
+
+private struct ActivitySection: View {
+    let sessions: [SessionSummary]
+    let now: Date
+
+    private var buckets: [Double] {
+        var b = [Double](repeating: 0, count: 24)
+        for s in sessions {
+            guard let t = s.lastActivity else { continue }
+            let hours = now.timeIntervalSince(t) / 3600
+            guard hours >= 0, hours < 24 else { continue }
+            b[23 - Int(hours)] += 1
+        }
+        let peak = max(b.max() ?? 1, 1)
+        return b.map { $0 / peak }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionLabel("Session activity")
+                Spacer()
+                Text("last 24h, by last touch")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
+            }
+            BarStrip(values: buckets, color: Theme.muted, height: 40)
+            HStack {
+                Text("-24h").font(.caption2).foregroundStyle(Theme.faint)
+                Spacer()
+                Text("now").font(.caption2).foregroundStyle(Theme.faint)
+            }
+        }
+    }
+}
+
+// MARK: - Live now
+
+private struct LiveNowSection: View {
+    @EnvironmentObject var services: AppServices
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.rhythm) {
+            HStack(spacing: 8) {
+                SectionLabel("Live now")
+                if !services.sessions.activeSessions.isEmpty { StatusDot(size: 6) }
+                Spacer()
+                TapButton("Open board", action: { services.section = .live })
+                    .font(.footnote)
+                    .foregroundStyle(Theme.accent)
+            }
+            // Deterministic tiebreaker + the one reorder motion (W6 wave 4).
+            let live = Array(services.sessions.activeSessions
+                .sorted { ($0.lastActivity ?? .distantPast, $1.id) > ($1.lastActivity ?? .distantPast, $0.id) }
+                .prefix(5))
+            if live.isEmpty {
+                Text("No sessions active in the last 15 minutes.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.muted)
+                    .padding(.vertical, Theme.rhythm)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(live) { s in
+                        HoverRow {
+                            services.inspect(s)
+                        } content: {
+                            HStack(spacing: 8) {
+                                StatusDot(color: Theme.green, size: 6)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    HStack(spacing: 6) {
+                                        Text(s.displayTitle)
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundStyle(Theme.ink)
+                                            .lineLimit(1)
+                                        if s.isRemote {
+                                            MachineChip(machineID: s.machineID, compact: true)
+                                        }
+                                    }
+                                    Text("\(s.tier.label) · \(fmtAgo(s.lastActivity))")
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.muted)
+                                }
+                                Spacer()
+                                Text(fmtUSD(s.cost))
+                                    .font(.subheadline)
+                                    .foregroundStyle(Theme.muted)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 5)
+                        }
+                    }
+                }
+                .animation(.snappy(duration: 0.25), value: live.map(\.id))
+            }
+        }
+    }
+}
+
+// MARK: - Context weight offenders
+
+private struct ContextOffendersSection: View {
+    @EnvironmentObject var services: AppServices
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.rhythm) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionLabel("Heaviest context")
+                Spacer()
+                Text("tokens re-sent per message")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
+            }
+            // contextHeavy already excludes subagent transcripts and sorts by
+            // weight; fall back to the heaviest real sessions when nothing
+            // crosses the 200k "heavy" threshold so the card never sits empty.
+            let pool = services.sessions.contextHeavy.isEmpty
+                ? services.sessions.sessions
+                    .filter { !$0.isSubagent }
+                    .sorted { $0.contextWeight > $1.contextWeight }
+                : services.sessions.contextHeavy
+            let heavy = Array(pool.prefix(5))
+            if heavy.isEmpty {
+                Text("Nothing parsed yet.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.muted)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(heavy) { s in
+                        HoverRow {
+                            services.inspect(s)
+                        } content: {
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(s.displayTitle)
+                                        .font(.subheadline)
+                                        .foregroundStyle(Theme.ink)
+                                        .lineLimit(1)
+                                    // Warm-cache estimate weighted by the session's observed
+                                    // hit rate — NOT the flat fresh-input worst case, which
+                                    // overstated warm sessions by up to 10×.
+                                    Text("≈\(fmtUSD(s.costPerMessage))/msg · \(fmtPct(s.usage.cacheHitRate)) cached")
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.muted)
+                                }
+                                Spacer()
+                                ContextBar(weight: s.contextWeight)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 5)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Cross-Machine Fleet (fleet-wide totals + calm offline indicator)
+
+/// The differentiator, one glance: fleet-wide totals across every machine ("2
+/// machines · N sessions · $X today"), a per-machine roll-up row, and — calm, never
+/// a nag — an offline line for any configured remote that isn't contributing.
+struct FleetMachinesSection: View {
+    @EnvironmentObject var services: AppServices
+
+    private var rollups: [MachineRollup] { services.sessions.machineRollups }
+
+    private var totalSessions: Int { rollups.reduce(0) { $0 + $1.sessionCount } }
+    private var totalCost: Double { rollups.reduce(0) { $0 + $1.cost } }
+    private var machineCount: Int { services.sessions.machineCount }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                SectionLabel("Fleet")
+                Text("\(machineCount) machine\(machineCount == 1 ? "" : "s") · \(totalSessions) sessions · \(fmtUSD(totalCost)) today")
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                Text("one pane over every machine, read-only over Tailscale")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
+            }
+            // Per-machine roll-up — each contributing machine's slice of the fleet.
+            VStack(spacing: Theme.rhythm) {
+                ForEach(rollups) { r in
+                    HStack(spacing: 8) {
+                        MachineChip(machineID: r.machine.id)
+                        Text(r.machine.name)
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.ink)
+                        if r.activeCount > 0 {
+                            StatusDot(color: Theme.green, size: 6)
+                            Text("\(r.activeCount) active")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                        }
+                        Spacer()
+                        Text("\(r.sessionCount) sessions · \(fmtTokens(r.tokens)) tok")
+                            .font(.caption)
+                            .foregroundStyle(Theme.faint)
+                        Text(fmtUSD(r.cost))
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.ink)
+                            .frame(minWidth: 56, alignment: .trailing)
+                    }
+                }
+            }
+            // Calm offline indicators for configured-but-absent remotes.
+            let offline = services.machines.offlineIndicators
+            if !offline.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(offline) { RemoteStatusLine(status: $0) }
+                }
+                .padding(.top, 2)
+            }
+        }
+    }
+}
+
+// MARK: - Routing audit
+
+private struct RoutingSection: View {
+    @ObservedObject var audit: RoutingAudit
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionLabel("Routing audit")
+                Spacer()
+                Text("default model: \(audit.defaultModel)")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
+            if audit.flags.isEmpty {
+                Text("No findings.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.muted)
+            } else {
+                VStack(alignment: .leading, spacing: Theme.sectionGap) {
+                    ForEach(audit.flags) { FlagRow(flag: $0) }
+                }
+            }
+        }
+    }
+}
