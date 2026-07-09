@@ -95,7 +95,7 @@ struct ToolCensusTests {
     @Test func countsSkillAgentAndEditToolCalls() {
         let blocks = [
             #"{"type":"tool_use","name":"Skill","input":{"skill":"code-review"}}"#,
-            #"{"type":"tool_use","name":"Skill","input":{"skill":"agent-reach"}}"#,
+            #"{"type":"tool_use","name":"Skill","input":{"skill":"api-client"}}"#,
             #"{"type":"tool_use","name":"Skill","input":{"skill":"code-review"}}"#,
             #"{"type":"tool_use","name":"Agent","input":{"description":"build it"}}"#,
             #"{"type":"tool_use","name":"Edit","input":{"file_path":"/x.swift"}}"#,
@@ -106,7 +106,7 @@ struct ToolCensusTests {
         acc.ingest(Data((asstToolUse(blocks) + "\n").utf8))
         let s = acc.summary(filePath: "/x.jsonl")
         #expect(s.skillInvocations["code-review"] == 2)
-        #expect(s.skillInvocations["agent-reach"] == 1)
+        #expect(s.skillInvocations["api-client"] == 1)
         #expect(s.agentCalls == 1)
         #expect(s.fileEdits == 2)
     }
@@ -140,30 +140,30 @@ struct SkillLedgerTests {
 
     @Test func deadCountIsCatalogMinusFiredMatchingByIdOrName() {
         // Catalog of 5. Fired: "code-review" (NOT in catalog → external),
-        // "agent-reach" (matches folder id), "diagram" (matches frontmatter name).
+        // "api-client" (matches folder id), "diagram" (matches frontmatter name).
         let catalog = [
-            skill("agent-reach"),
+            skill("api-client"),
             skill("dia", name: "diagram"),
             skill("unused-one"),
             skill("unused-two"),
             skill("unused-three"),
         ]
         let sessions = [
-            session(["code-review": 20, "agent-reach": 6]),
-            session(["agent-reach": 5, "diagram": 2]),
+            session(["code-review": 20, "api-client": 6]),
+            session(["api-client": 5, "diagram": 2]),
         ]
         let led = AuditReport.skillLedger(sessions: sessions, catalog: catalog)
 
         #expect(led.catalogCount == 5)
-        #expect(led.distinctFired == 3)                 // code-review, agent-reach, diagram
-        #expect(led.firedInCatalog == 2)                // agent-reach + diagram map to catalog
+        #expect(led.distinctFired == 3)                 // code-review, api-client, diagram
+        #expect(led.firedInCatalog == 2)                // api-client + diagram map to catalog
         #expect(led.deadCount == 3)                     // 5 catalog − 2 fired-in-catalog
         #expect(led.dead.map(\.name).sorted() == ["unused-one", "unused-three", "unused-two"])
-        // top fired = code-review ×20 (aggregated across sessions: 20), then agent-reach ×11.
+        // top fired = code-review ×20 (aggregated across sessions: 20), then api-client ×11.
         #expect(led.fired.first?.name == "code-review")
         #expect(led.fired.first?.invocations == 20)
         #expect(led.fired.first?.inCatalog == false)    // fired but no matching folder → "ext"
-        let ar = led.fired.first { $0.name == "agent-reach" }
+        let ar = led.fired.first { $0.name == "api-client" }
         #expect(ar?.invocations == 11)                  // 6 + 5 across two sessions
         #expect(ar?.sessionsTouched == 2)
     }
@@ -300,9 +300,9 @@ struct MismatchTests {
 struct AuditReportBuildTests {
     @Test func buildWiresAllFindings() {
         let catalog = [
-            Skill(id: "agent-reach", name: "agent-reach", description: "web research",
+            Skill(id: "api-client", name: "api-client", description: "web research",
                   version: nil, triggers: [], allowedTools: [], hasManifest: true,
-                  wordCount: 50, fileCount: 1, modified: .distantPast, path: "/s/agent-reach"),
+                  wordCount: 50, fileCount: 1, modified: .distantPast, path: "/s/api-client"),
             Skill(id: "never-used", name: "never-used", description: "dead weight here",
                   version: nil, triggers: [], allowedTools: [], hasManifest: true,
                   wordCount: 50, fileCount: 1, modified: .distantPast, path: "/s/never-used"),
@@ -312,7 +312,7 @@ struct AuditReportBuildTests {
                                     usage: SessionUsage(inputTokens: 2_000_000), contextWeight: 2_000_000,
                                     filePath: "/x/P1.jsonl",
                                     usageByTier: [.opus: SessionUsage(inputTokens: 2_000_000)],
-                                    skillInvocations: ["agent-reach": 3])
+                                    skillInvocations: ["api-client": 3])
         let r = AuditReport.build(sessions: [parent], skills: catalog)
 
         #expect(r.totalLeakDollars > 0)                      // finding 1 (the leak)

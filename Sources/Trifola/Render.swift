@@ -62,7 +62,7 @@ enum AttentionRender {
             ("my-app", .opus, .running, 4),
             ("side-project", .sonnet, .running, 18),
             ("notes-app", .haiku, .idle, 1240),
-            ("termgrid", .sonnet, .idle, 2100),
+            ("toolbar-app", .sonnet, .idle, 2100),
         ])
         let clear = board([
             ("my-app", .opus, .running, 6),
@@ -147,26 +147,26 @@ enum AuditRender {
             deadCount: 95, deadPromptTaxTokens: 41_800, sessionCount: 2691,
             fired: [
                 fired("code-review", 20, 3600, 9, cat: false),
-                fired("agent-reach", 11, 7200, 6),
+                fired("api-client", 11, 7200, 6),
                 fired("update-config", 4, 90000, 3, cat: false),
                 fired("schedule", 4, 40000, 2, cat: false),
                 fired("frontend-design", 4, 120000, 3),
-                fired("solidity-auditor", 3, 200000, 2),
-                fired("ethskills", 3, 210000, 2),
+                fired("sql-tuner", 3, 200000, 2),
+                fired("regex-builder", 3, 210000, 2),
                 fired("design-review", 3, 250000, 2),
             ],
             dead: [
-                dead("faceless-explainer", 980), dead("embedded-captions", 910),
-                dead("music-to-video", 760), dead("hyperframes-animation", 720),
-                dead("react-native-architecture", 640), dead("website-to-video", 610),
-                dead("mobile-app-ios", 560), dead("liquid-glass-migration", 540),
+                dead("log-parser", 980), dead("env-linter", 910),
+                dead("asset-bundler", 760), dead("datakit-export", 720),
+                dead("react-native-architecture", 640), dead("html-minifier", 610),
+                dead("mobile-app-ios", 560), dead("schema-migration", 540),
                 dead("design-consultation", 520), dead("office-hours", 500),
                 dead("plan-ceo-review", 470), dead("automated-e2e", 450),
             ])
 
         // Model-mismatch review candidates.
         let mismatches: [MismatchCandidate] = [
-            .init(id: "m1", project: "termgrid", shortID: "44c1e0a7", filePath: "",
+            .init(id: "m1", project: "toolbar-app", shortID: "44c1e0a7", filePath: "",
                   tier: .opus, cost: 12.40, estOverspend: 9.80, messageCount: 22, fileEdits: 1, agentCalls: 0),
             .init(id: "m2", project: "side-project", shortID: "9b30fa22", filePath: "",
                   tier: .opus, cost: 9.10, estOverspend: 6.60, messageCount: 14, fileEdits: 0, agentCalls: 0),
@@ -347,8 +347,8 @@ enum LedgerRender {
     /// A synthetic catalog mapping the seeded dead-skill names to plausible skill
     /// folder paths, so L-002's Reveal-in-Finder targets render.
     static func seededCatalog() -> [Skill] {
-        let names = ["faceless-explainer", "embedded-captions", "music-to-video",
-                     "hyperframes-animation", "react-native-architecture", "website-to-video",
+        let names = ["log-parser", "env-linter", "asset-bundler",
+                     "datakit-export", "react-native-architecture", "html-minifier",
                      "mobile-app-ios", "design-consultation"]
         return names.map { n in
             Skill(id: n, name: n, description: "Seeded dead skill.", version: nil, triggers: [],
@@ -695,7 +695,7 @@ enum CrossMachineRender {
             localOpus: sig(tool: "Edit", detail: "Sources/Trifola/AppServices.swift", kind: .toolResult, ageSecs: 40, now: now),
             localSub: sig(tool: "Bash", detail: "swift test", kind: .toolUse, ageSecs: 14, now: now),
             "b5f4e5e5": sig(tool: "Bash", detail: "approval · bun run day1", kind: .toolUse, dangling: true, ageSecs: 240, now: now),
-            "c91d22f0": sig(tool: "Bash", detail: "agent-reach opencli", kind: .toolResult, ageSecs: 8, now: now),
+            "c91d22f0": sig(tool: "Bash", detail: "api-client opencli", kind: .toolResult, ageSecs: 8, now: now),
             "9942ce11": sig(tool: "WebFetch", detail: "docs.example.com/7702", kind: .toolResult, ageSecs: 25, now: now),
             "e2290b7c": sig(kind: .assistantText, stop: "end_turn", ageSecs: 70, now: now),
         ]
@@ -823,7 +823,7 @@ enum LaunchRender {
                             prompt: "You judge product taste.", model: .sonnet),
                ],
                effort: .high, permissionMode: .plan, background: false,
-               skillRefs: ["crypto-sweep", "agent-reach"], leadSkill: "crypto-sweep")
+               skillRefs: ["crypto-sweep", "api-client"], leadSkill: "crypto-sweep")
     }
 
     static func savedRecipes() -> [Recipe] {
@@ -846,7 +846,7 @@ enum LaunchRender {
                    cwd: "/Users/dev/Developer/security-audit",
                    agents: [RecipeAgent(name: "auditor", description: "Security auditor", prompt: "Audit contracts.", model: .opus)],
                    effort: .xhigh, permissionMode: .standard,
-                   skillRefs: ["x-ray", "solidity-auditor", "fizz"], leadSkill: "x-ray"),
+                   skillRefs: ["x-ray", "sql-tuner", "fizz"], leadSkill: "x-ray"),
         ]
     }
 
@@ -937,14 +937,14 @@ enum SkillsRender {
         let plugin = { (m: String, p: String) in SkillSource.plugin(marketplace: m, plugin: p, version: "1.0.0") }
         return [
             // User — gstack family (collision on "take a screenshot"), a prefix
-            // family (hyperframes-*), and standalones.
+            // family (datakit-*), and standalones.
             sk("browse", "Fast headless browser for QA testing. (gstack)", triggers: ["take a screenshot", "browse this page"]),
             sk("qa", "Systematically QA test a web app. (gstack)", triggers: ["take a screenshot", "run qa"]),
             sk("codex", "OpenAI Codex CLI wrapper. (gstack)"),
-            sk("hyperframes-animation", "Animation knowledge for HyperFrames."),
-            sk("hyperframes-core", "The HyperFrames composition contract."),
-            sk("hyperframes-media", "Audio + media assets for HyperFrames."),
-            sk("agent-reach", "MUST USE when researching anything on the internet.", triggers: ["deep dive", "research this topic"]),
+            sk("datakit-export", "Animation knowledge for DataKit."),
+            sk("datakit-core", "The DataKit composition contract."),
+            sk("datakit-query", "Audio + media assets for DataKit."),
+            sk("api-client", "MUST USE when researching anything on the internet.", triggers: ["deep dive", "research this topic"]),
             sk("crypto-sweep", "Sweep every live crypto earning opportunity."),
             sk("graphify", "Any input to a knowledge graph."),
             // Plugin lane (was invisible to the flat scanner).
@@ -968,10 +968,10 @@ enum SkillsRender {
                                    inCatalog: true, descriptionTokens: 120))
         }
         var m: [String: SkillLedgerEntry] = [:]
-        for (k, v) in [fired("agent-reach", 11, 7200, 6), fired("crypto-sweep", 3, 90000, 2),
+        for (k, v) in [fired("api-client", 11, 7200, 6), fired("crypto-sweep", 3, 90000, 2),
                        fired("browse", 4, 40000, 2), fired("codex:rescue", 2, 120000, 1)] { m[k] = v }
-        for (k, v) in [dead("qa"), dead("codex"), dead("hyperframes-animation"), dead("hyperframes-core"),
-                       dead("hyperframes-media"), dead("graphify")] { m[k] = v }
+        for (k, v) in [dead("qa"), dead("codex"), dead("datakit-export"), dead("datakit-core"),
+                       dead("datakit-query"), dead("graphify")] { m[k] = v }
         return m
     }
 
@@ -990,12 +990,12 @@ enum SkillsRender {
             HStack(alignment: .top, spacing: 24) {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(hierarchy.lanes) { lane in
-                        SkillLaneView(lane: lane, selectedPath: "/seed/user/agent-reach",
+                        SkillLaneView(lane: lane, selectedPath: "/seed/user/api-client",
                                       entryFor: { entry($0) })
                     }
                 }
                 .frame(width: 460, alignment: .leading)
-                if let sel = skills.first(where: { $0.id == "agent-reach" }) {
+                if let sel = skills.first(where: { $0.id == "api-client" }) {
                     // Non-scrolling projection of SkillDetail (ImageRenderer can't
                     // size the live ScrollView; the live screen uses the real one).
                     SkillDetailPreview(skill: sel, entry: entry(sel)).frame(width: 440)
@@ -1115,7 +1115,7 @@ enum PaletteRender {
                 + Text(" · High · 2 agents").font(.caption2),
             icon: PaletteKind.recipe.icon,
             candidate: PaletteCandidate(id: rID, primary: "crypto-sweep run",
-                                        secondary: ["data-pipeline", "crypto-sweep", "agent-reach"],
+                                        secondary: ["data-pipeline", "crypto-sweep", "api-client"],
                                         recency: now.addingTimeInterval(-86400),
                                         group: PaletteKind.recipe.rawValue),
             run: {}))

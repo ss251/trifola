@@ -39,6 +39,13 @@ PATTERNS=(
   'browserUse'
   'CloudBrowser'
   'PxpipeScreen'
+  # personal demo/seed markers (author's tools, crypto/video skills, projects) —
+  # the render seed data must use generic software names only.
+  'agent-reach'
+  '\btermgrid\b'
+  'hyperframes'
+  '\bsolidity\b'
+  '\bethskills\b'
 )
 
 # Absolute home paths are banned EXCEPT the synthetic /Users/dev/... demo set.

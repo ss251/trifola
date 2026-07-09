@@ -45,7 +45,7 @@ private func addSkill(_ dir: URL, _ folder: String, manifest: String?) throws ->
     @Test func foldedDescription() {
         let (fm, _) = SkillFrontmatter.split("""
         ---
-        name: agent-reach
+        name: api-client
         description: >
           MUST USE when user wants to research anything on the
           internet — e.g. "do a deep dive on X".
@@ -214,13 +214,13 @@ private func addSkill(_ dir: URL, _ folder: String, manifest: String?) throws ->
     @Test func filterMatchesNameDescriptionAndTriggers() {
         let skills = [
             mk("codeflow", desc: "context compression"),
-            mk("agent-reach", desc: "internet research", triggers: ["deep dive"]),
+            mk("api-client", desc: "internet research", triggers: ["deep dive"]),
             mk("qa"),
         ]
         #expect(SkillsStore.filter(skills, query: "").count == 3)
         #expect(SkillsStore.filter(skills, query: "CODEFLOW").map(\.id) == ["codeflow"])
         #expect(SkillsStore.filter(skills, query: "compression").map(\.id) == ["codeflow"])
-        #expect(SkillsStore.filter(skills, query: "deep dive").map(\.id) == ["agent-reach"])
+        #expect(SkillsStore.filter(skills, query: "deep dive").map(\.id) == ["api-client"])
         #expect(SkillsStore.filter(skills, query: "zzz").isEmpty)
     }
 }

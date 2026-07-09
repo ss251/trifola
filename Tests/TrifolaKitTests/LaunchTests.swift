@@ -18,7 +18,7 @@ import Testing
             effort: .high,
             permissionMode: .standard,
             background: false,
-            skillRefs: ["crypto-sweep", "agent-reach"],
+            skillRefs: ["crypto-sweep", "api-client"],
             leadSkill: "crypto-sweep")
     }
 
@@ -105,16 +105,16 @@ import Testing
 
     @Test func systemPromptLeadsWithLeadSkill() {
         let text = RecipeComposer.systemPromptText(sampleRecipe())
-        #expect(text.contains("crypto-sweep, agent-reach"))
+        #expect(text.contains("crypto-sweep, api-client"))
         #expect(text.contains("Lead with /crypto-sweep"))
         #expect(text.contains("resolve at runtime via /skill-name"))
     }
 
     @Test func orderedSkillRefsHoistsLeadAndDedupes() {
         let recipe = Recipe(name: "r", cwd: "/x",
-                            skillRefs: ["agent-reach", "x-ray", "agent-reach"],
+                            skillRefs: ["api-client", "x-ray", "api-client"],
                             leadSkill: "x-ray")
-        #expect(RecipeComposer.orderedSkillRefs(recipe) == ["x-ray", "agent-reach"])
+        #expect(RecipeComposer.orderedSkillRefs(recipe) == ["x-ray", "api-client"])
     }
 
     @Test func shellQuoteEscapesSingleQuotes() {
@@ -147,7 +147,7 @@ import Testing
             agents: [RecipeAgent(name: "auditor", description: "Security auditor",
                                  prompt: "Audit contracts.", model: .opus)],
             effort: .high, permissionMode: .plan, background: false,
-            skillRefs: ["x-ray", "solidity-auditor"], leadSkill: "x-ray",
+            skillRefs: ["x-ray", "sql-tuner"], leadSkill: "x-ray",
             mcpConfigPath: "/proj/.mcp.json", settingsPath: nil)
         try repo.save(recipe)
 
@@ -161,7 +161,7 @@ import Testing
         #expect(loaded.agents == recipe.agents)
         #expect(loaded.effort == .high)
         #expect(loaded.permissionMode == .plan)
-        #expect(loaded.skillRefs == ["x-ray", "solidity-auditor"])
+        #expect(loaded.skillRefs == ["x-ray", "sql-tuner"])
         #expect(loaded.leadSkill == "x-ray")
         #expect(loaded.mcpConfigPath == "/proj/.mcp.json")
         #expect(loaded.settingsPath == nil)
@@ -172,11 +172,11 @@ import Testing
     @Test func materializePromptWritesFileAndPathIsUsed() throws {
         let repo = try tempRepo()
         defer { try? FileManager.default.removeItem(at: repo.directory) }
-        let recipe = Recipe(id: "r2", name: "n", cwd: "/x", skillRefs: ["agent-reach"])
+        let recipe = Recipe(id: "r2", name: "n", cwd: "/x", skillRefs: ["api-client"])
         let path = try #require(try repo.materializePrompt(recipe))
         #expect(FileManager.default.fileExists(atPath: path))
         let contents = try String(contentsOfFile: path, encoding: .utf8)
-        #expect(contents.contains("agent-reach"))
+        #expect(contents.contains("api-client"))
         // A recipe with no skill refs materializes nothing.
         #expect(try repo.materializePrompt(Recipe(id: "r3", name: "n", cwd: "/x")) == nil)
     }
@@ -184,7 +184,7 @@ import Testing
     @Test func deleteRemovesRecipeAndPrompt() throws {
         let repo = try tempRepo()
         defer { try? FileManager.default.removeItem(at: repo.directory) }
-        let recipe = Recipe(id: "r4", name: "n", cwd: "/x", skillRefs: ["agent-reach"])
+        let recipe = Recipe(id: "r4", name: "n", cwd: "/x", skillRefs: ["api-client"])
         try repo.save(recipe)
         _ = try repo.materializePrompt(recipe)
         repo.delete("r4")

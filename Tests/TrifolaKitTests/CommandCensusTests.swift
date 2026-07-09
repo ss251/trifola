@@ -102,7 +102,7 @@ struct SkillLedgerCommandMergeTests {
 
     @Test func builtInSlashCommandSurfacesOutOfCatalogWithoutTouchingDeadList() {
         // Catalog has NO "model" skill — `/model` is a CLI built-in.
-        let catalog = [skill("agent-reach"), skill("unused")]
+        let catalog = [skill("api-client"), skill("unused")]
         let sessions = [session(commandFires: ["model": 3])]
         let led = AuditReport.skillLedger(sessions: sessions, catalog: catalog)
         let entry = led.fired.first { $0.name == "model" }
@@ -112,11 +112,11 @@ struct SkillLedgerCommandMergeTests {
     }
 
     @Test func skillToolAndSlashCommandLanesSumIntoOneFiredEntry() {
-        let catalog = [skill("agent-reach")]
-        let sessions = [session(skillFires: ["agent-reach": 1], commandFires: ["agent-reach": 2])]
+        let catalog = [skill("api-client")]
+        let sessions = [session(skillFires: ["api-client": 1], commandFires: ["api-client": 2])]
         let led = AuditReport.skillLedger(sessions: sessions, catalog: catalog)
         #expect(led.distinctFired == 1)
-        let entry = led.fired.first { $0.name == "agent-reach" }
+        let entry = led.fired.first { $0.name == "api-client" }
         #expect(entry?.invocations == 3)   // 1 (Skill tool) + 2 (slash) merged
         #expect(led.deadCount == 0)
     }

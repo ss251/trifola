@@ -17,7 +17,7 @@ private func mkSkill(_ id: String, desc: String = "", triggers: [String] = [],
 
     @Test func lanesSplitBySource() {
         let skills = [
-            mkSkill("agent-reach", source: .user),
+            mkSkill("api-client", source: .user),
             mkSkill("access", source: .plugin(marketplace: "official", plugin: "imessage", version: "0.1.0")),
             mkSkill("deploy", source: .project(dir: "/proj/.claude/skills")),
         ]
@@ -45,14 +45,14 @@ private func mkSkill(_ id: String, desc: String = "", triggers: [String] = [],
 
     @Test func sharedPrefixFamiliesGroupWhenTwoOrMore() {
         let skills = [
-            mkSkill("hyperframes-animation"),
-            mkSkill("hyperframes-core"),
-            mkSkill("hyperframes-media"),
+            mkSkill("datakit-export"),
+            mkSkill("datakit-core"),
+            mkSkill("datakit-query"),
             mkSkill("graphify"),          // singleton → Standalone
         ]
         let h = SkillHierarchy.build(skills)
         let user = try! #require(h.lanes.first { $0.lane == .user })
-        let hf = try! #require(user.namespaces.first { $0.key == "hyperframes" })
+        let hf = try! #require(user.namespaces.first { $0.key == "datakit" })
         #expect(hf.count == 3)
         let standalone = try! #require(user.namespaces.first { $0.key == "" })
         #expect(standalone.skills.map(\.id) == ["graphify"])
@@ -75,7 +75,7 @@ private func mkSkill(_ id: String, desc: String = "", triggers: [String] = [],
     @Test func pluginSkillQualifiedID() {
         let s = mkSkill("setup", source: .plugin(marketplace: "openai-codex", plugin: "codex", version: "1.0.4"))
         #expect(s.qualifiedID == "codex:setup")
-        #expect(mkSkill("agent-reach").qualifiedID == "agent-reach")
+        #expect(mkSkill("api-client").qualifiedID == "api-client")
     }
 }
 
@@ -172,7 +172,7 @@ private func mkSkill(_ id: String, desc: String = "", triggers: [String] = [],
             try? FileManager.default.removeItem(at: user)
             try? FileManager.default.removeItem(at: cache)
         }
-        try writeManifest(user, "agent-reach", "---\nname: agent-reach\ndescription: research\n---\nb")
+        try writeManifest(user, "api-client", "---\nname: api-client\ndescription: research\n---\nb")
         try writeManifest(cache.appendingPathComponent("m/p/1.0.0/skills"), "s",
                           "---\nname: s\ndescription: d\n---\nb")
 

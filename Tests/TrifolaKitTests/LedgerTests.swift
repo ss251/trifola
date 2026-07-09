@@ -20,16 +20,16 @@ private extension AuditReport {
         let ledger = SkillLedger(
             catalogCount: 110, distinctFired: 22, firedInCatalog: 15, deadCount: 95,
             deadPromptTaxTokens: 41_800, sessionCount: 2691, fired: [],
-            dead: [SkillLedgerEntry(name: "faceless-explainer", invocations: 0, sessionsTouched: 0,
+            dead: [SkillLedgerEntry(name: "log-parser", invocations: 0, sessionsTouched: 0,
                                     lastFired: nil, inCatalog: true, descriptionTokens: 980),
-                   SkillLedgerEntry(name: "embedded-captions", invocations: 0, sessionsTouched: 0,
+                   SkillLedgerEntry(name: "env-linter", invocations: 0, sessionsTouched: 0,
                                     lastFired: nil, inCatalog: true, descriptionTokens: 910)])
         let cacheMiss = [CacheMissFinding(id: "cm1", project: "webapp", shortID: "b1f0c2a9",
                                           filePath: "/p/webapp.jsonl", tier: .opus, leakDollars: 41.30,
                                           firstTouchDollars: 13.20,
                                           cacheHitRate: 0.34, billedInput: 3_050_000, cacheReadTokens: 1_600_000,
                                           contextWeight: 262_000, isSubagent: false)]
-        let mismatches = [MismatchCandidate(id: "m1", project: "termgrid", shortID: "44c1e0a7",
+        let mismatches = [MismatchCandidate(id: "m1", project: "toolbar-app", shortID: "44c1e0a7",
                                             filePath: "/p/term.jsonl", tier: .opus, cost: 12.40,
                                             estOverspend: 9.80, messageCount: 22, fileEdits: 1, agentCalls: 0)]
         return AuditReport(cacheMiss: cacheMiss, totalLeakDollars: 214.60,
@@ -106,18 +106,18 @@ struct LedgerCandidateTests {
     @Test func deadSkillEditNamesTheSkillsAndTheTax() {
         let lessons = LessonMiner.mint(report: .withFindings(), catalog: [], settings: ClaudeSettings())
         let fix = lessons.first { $0.kind == .deadSkillArchive }!.candidate
-        #expect(fix.copyText.contains("faceless-explainer"))
+        #expect(fix.copyText.contains("log-parser"))
         #expect(fix.copyText.contains("you move")) // "the app names them, you move them"
     }
 
     @Test func deadSkillRevealTargetsResolveFromTheCatalog() {
-        let catalog = [Skill(id: "faceless-explainer", name: "faceless-explainer", description: "d",
+        let catalog = [Skill(id: "log-parser", name: "log-parser", description: "d",
                              version: nil, triggers: [], allowedTools: [], hasManifest: true,
                              wordCount: 1, fileCount: 1, modified: Date(),
-                             path: "/skills/faceless-explainer/SKILL.md", source: .user)]
+                             path: "/skills/log-parser/SKILL.md", source: .user)]
         let lessons = LessonMiner.mint(report: .withFindings(), catalog: catalog, settings: ClaudeSettings())
         let fix = lessons.first { $0.kind == .deadSkillArchive }!.candidate
-        #expect(fix.revealTargets.contains { $0.path == "/skills/faceless-explainer/SKILL.md" })
+        #expect(fix.revealTargets.contains { $0.path == "/skills/log-parser/SKILL.md" })
     }
 }
 

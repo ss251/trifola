@@ -23,7 +23,7 @@ public struct TriggerCollision: Identifiable, Sendable, Hashable {
 }
 
 /// A namespace group within a lane: gstack family, a plugin's skills, or a
-/// shared-prefix family (hyperframes-*, plan-*, …). `key == ""` is the catch-all.
+/// shared-prefix family (datakit-*, plan-*, …). `key == ""` is the catch-all.
 public struct SkillNamespace: Identifiable, Sendable, Hashable {
     public var id: String { "\(laneRaw)/\(key)" }
     public let laneRaw: Int
