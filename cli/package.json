@@ -1,0 +1,41 @@
+{
+  "name": "trifola",
+  "version": "0.1.0",
+  "description": "Finding generator for your Claude Code corpus — dead skills, prompt tax, and re-sent context, priced at API-equivalent rates. Reads ~/.claude locally; uploads nothing.",
+  "type": "module",
+  "bin": {
+    "trifola": "dist/trifola.js"
+  },
+  "main": "dist/trifola.js",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p . && chmod +x dist/trifola.js",
+    "test": "tsc -p . && node --test dist/__tests__/*.test.js",
+    "start": "node dist/trifola.js"
+  },
+  "license": "MIT",
+  "author": "ss251",
+  "homepage": "https://github.com/ss251/trifola/tree/main/cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ss251/trifola.git",
+    "directory": "cli"
+  },
+  "keywords": [
+    "claude-code",
+    "cli",
+    "audit",
+    "cost",
+    "skills",
+    "prompt-tax"
+  ],
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "@types/node": "^22.0.0"
+  }
+}

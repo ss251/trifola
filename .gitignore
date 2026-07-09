@@ -20,3 +20,6 @@ dist/
 # Editor / tooling
 .vscode/
 .idea/
+
+# Node / npm (cli/) — dist/ above already covers cli/dist/ (unanchored match).
+node_modules/
