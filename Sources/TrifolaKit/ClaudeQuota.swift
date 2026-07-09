@@ -33,7 +33,11 @@ public struct ClaudeOAuthCredentials: Sendable {
 
     /// Expired means "the CLI must re-auth"; absent expiry is treated as live
     /// (the endpoint will 401 if it is not — that path has its own message).
-    public var isExpired: Bool { (expiresAt ?? .distantFuture) <= Date() }
+    public var isExpired: Bool { isExpired(at: Date()) }
+
+    public func isExpired(at date: Date) -> Bool {
+        (expiresAt ?? .distantFuture) <= date
+    }
 }
 
 extension ClaudeOAuthCredentials: CustomStringConvertible, CustomDebugStringConvertible {
@@ -44,33 +48,143 @@ extension ClaudeOAuthCredentials: CustomStringConvertible, CustomDebugStringConv
     public var debugDescription: String { description }
 }
 
-public enum ClaudeCredentialSource: String, Sendable { case file, keychain }
+public enum ClaudeCredentialSource: String, Sendable, Hashable { case file, keychain }
+
+/// A source read is explicit so access denial cannot collapse into "missing".
+/// The payload is deliberately the non-printable credential type, never raw data.
+public enum ClaudeCredentialReadResult: Sendable {
+    case credential(ClaudeOAuthCredentials)
+    case missing
+    case denied
+}
+
+public enum ClaudeCredentialFailure: Sendable, Equatable {
+    case allExpired
+    case keychainDenied
+    case noCredentials
+
+    fileprivate var quotaError: ClaudeQuotaError {
+        switch self {
+        case .allExpired:
+            return .expired
+        case .keychainDenied:
+            return .noCredentials("keychain access denied; no other usable credentials")
+        case .noCredentials:
+            return .noCredentials("no credentials found (file + keychain)")
+        }
+    }
+}
+
+public struct ClaudeCredentialCandidate: Sendable {
+    public let credentials: ClaudeOAuthCredentials
+    public let source: ClaudeCredentialSource
+}
+
+public struct ClaudeCredentialCandidates: Sendable {
+    public let ordered: [ClaudeCredentialCandidate]
+    public let failureWhenExhausted: ClaudeCredentialFailure
+}
 
 public enum ClaudeCredentialReader {
 
-    /// Where Claude Code keeps the JSON on disk (same payload as the keychain item).
-    public static func credentialsFileURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        home.appendingPathComponent(".claude/.credentials.json")
+    public static func configDirectory(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        if let raw = environment["CLAUDE_CONFIG_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            let expanded = (raw as NSString).expandingTildeInPath
+            return URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL
+        }
+        return home.appendingPathComponent(".claude", isDirectory: true)
     }
 
-    /// file → keychain (`security` CLI). Returns nil when neither source yields
-    /// a parsable login. The `security` CLI is used instead of Security.framework
-    /// because an unsigned dev binary re-triggers keychain ACL prompts on every
-    /// rebuild via `SecItemCopyMatching`; the subprocess-probe pattern is already
-    /// established in this repo (Probes.swift).
-    public static func load(home: URL = FileManager.default.homeDirectoryForCurrentUser)
-        -> (creds: ClaudeOAuthCredentials, source: ClaudeCredentialSource)? {
-        if let data = try? Data(contentsOf: credentialsFileURL(home: home)),
-           let creds = parse(data) {
-            return (creds, .file)
+    /// Where Claude Code keeps the JSON on disk (same payload as the keychain item).
+    public static func credentialsFileURL(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        configDirectory(home: home, environment: environment).appendingPathComponent(".credentials.json")
+    }
+
+    /// Pure candidate construction. Both source outcomes are supplied independently;
+    /// expired credentials are removed before ordering. Source preference wins first,
+    /// then the newest expiry wins within a source.
+    public static func candidates(
+        now: Date,
+        preferredSources: [ClaudeCredentialSource] = [.file, .keychain],
+        file: ClaudeCredentialReadResult,
+        keychain: ClaudeCredentialReadResult
+    ) -> ClaudeCredentialCandidates {
+        let reads: [(ClaudeCredentialSource, ClaudeCredentialReadResult)] = [
+            (.file, file), (.keychain, keychain),
+        ]
+        var sawCredential = false
+        var live: [ClaudeCredentialCandidate] = []
+        for (source, result) in reads {
+            guard case .credential(let credentials) = result else { continue }
+            sawCredential = true
+            guard !credentials.isExpired(at: now) else { continue }
+            live.append(ClaudeCredentialCandidate(credentials: credentials, source: source))
         }
-        if let (status, out) = ProbePrimitives.runCommand(
+
+        let rank = Dictionary(uniqueKeysWithValues: preferredSources.enumerated().map { ($0.element, $0.offset) })
+        live.sort { lhs, rhs in
+            let leftRank = rank[lhs.source] ?? Int.max
+            let rightRank = rank[rhs.source] ?? Int.max
+            if leftRank != rightRank { return leftRank < rightRank }
+            return (lhs.credentials.expiresAt ?? .distantFuture)
+                > (rhs.credentials.expiresAt ?? .distantFuture)
+        }
+
+        let failure: ClaudeCredentialFailure
+        if case .denied = keychain {
+            failure = .keychainDenied
+        } else if sawCredential && live.isEmpty {
+            failure = .allExpired
+        } else {
+            failure = .noCredentials
+        }
+        return ClaudeCredentialCandidates(ordered: live, failureWhenExhausted: failure)
+    }
+
+    /// Read file AND Keychain independently, then pass both through the pure
+    /// candidate constructor. `security` exit 44 is Keychain item-not-found;
+    /// launch failures, timeouts, and every other failure remain access denied.
+    public static func loadCandidates(
+        configDirectory: URL? = nil,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        now: Date = Date(),
+        keychainTimeout: TimeInterval? = nil
+    ) -> ClaudeCredentialCandidates {
+        let root = configDirectory ?? self.configDirectory(home: home, environment: environment)
+        let fileURL = root.appendingPathComponent(".credentials.json")
+        let file: ClaudeCredentialReadResult
+        if let data = try? Data(contentsOf: fileURL), let credentials = parse(data) {
+            file = .credential(credentials)
+        } else {
+            file = .missing
+        }
+
+        let keychain: ClaudeCredentialReadResult
+        if let result = ProbePrimitives.runCommand(
             "/usr/bin/security",
-            ["find-generic-password", "-s", "Claude Code-credentials", "-w"]),
-           status == 0, let creds = parse(out) {
-            return (creds, .keychain)
+            ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            timeout: keychainTimeout
+        ) {
+            if result.status == 0, let credentials = parse(result.stdout) {
+                keychain = .credential(credentials)
+            } else if result.status == 44 {
+                keychain = .missing
+            } else {
+                keychain = .denied
+            }
+        } else {
+            keychain = .denied
         }
-        return nil
+
+        return candidates(now: now, file: file, keychain: keychain)
     }
 
     /// Pure: parse the credential JSON. Root key `claudeAiOauth` (a payload with
@@ -276,6 +390,45 @@ public enum ClaudeQuotaFetcher {
     }
 }
 
+// MARK: Candidate resolver (shared by GUI + MCP)
+
+public struct ResolvedQuota: Sendable {
+    public let snapshot: QuotaSnapshot
+    public let source: ClaudeCredentialSource
+}
+
+public enum ClaudeQuotaResolver {
+    public static func resolve(
+        candidates: ClaudeCredentialCandidates,
+        fetch: @escaping @Sendable (ClaudeCredentialCandidate) async
+            -> Result<QuotaSnapshot, ClaudeQuotaError> = {
+                await ClaudeQuotaFetcher.fetch(creds: $0.credentials)
+            }
+    ) async -> Result<ResolvedQuota, ClaudeQuotaError> {
+        guard !candidates.ordered.isEmpty else {
+            return .failure(candidates.failureWhenExhausted.quotaError)
+        }
+
+        var sawUnauthorized = false
+        for candidate in candidates.ordered {
+            switch await fetch(candidate) {
+            case .success(let snapshot):
+                return .success(ResolvedQuota(snapshot: snapshot, source: candidate.source))
+            case .failure(.unauthorized):
+                sawUnauthorized = true
+                continue
+            case .failure(let error):
+                return .failure(error)
+            }
+        }
+
+        if candidates.failureWhenExhausted == .keychainDenied {
+            return .failure(ClaudeCredentialFailure.keychainDenied.quotaError)
+        }
+        return .failure(sawUnauthorized ? .unauthorized : candidates.failureWhenExhausted.quotaError)
+    }
+}
+
 // MARK: Store
 
 /// Owns the snapshot + one honest status line. Throttled: refresh is a no-op
@@ -301,26 +454,20 @@ public final class QuotaStore: ObservableObject {
         inFlight = true
         defer { inFlight = false }
 
-        // Credential read = file I/O + a possible `security` subprocess — off main.
-        guard let (creds, src) = await Task.detached(priority: .utility, operation: {
-            ClaudeCredentialReader.load()
-        }).value else {
-            source = nil
-            status = "unavailable — no credentials found (file + keychain)"
-            return
-        }
-        source = src
-        guard !creds.isExpired else {
-            // Never attempt recovery ourselves (SECURITY §4).
-            status = "token expired — run `claude` (any prompt) to re-authenticate, then Refresh"
-            return
-        }
-
-        switch await ClaudeQuotaFetcher.fetch(creds: creds) {
-        case .success(let snap):
-            snapshot = snap
-            status = snap.isEmpty ? "endpoint returned no windows (schema drift?)" : "ok · \(src.rawValue)"
+        // File I/O + Keychain subprocess stay off-main. The same candidate
+        // resolver drives MCP, including expiry filtering and 401 fallback.
+        let candidates = await Task.detached(priority: .utility, operation: {
+            ClaudeCredentialReader.loadCandidates()
+        }).value
+        switch await ClaudeQuotaResolver.resolve(candidates: candidates) {
+        case .success(let resolved):
+            source = resolved.source
+            snapshot = resolved.snapshot
+            status = resolved.snapshot.isEmpty
+                ? "endpoint returned no windows (schema drift?)"
+                : "ok · \(resolved.source.rawValue)"
         case .failure(let err):
+            source = nil
             status = Self.describe(err)
             if case .rateLimited(let after) = err {
                 cooldownUntil = after ?? Date().addingTimeInterval(300)
@@ -333,7 +480,7 @@ public final class QuotaStore: ObservableObject {
     public nonisolated static func describe(_ error: ClaudeQuotaError) -> String {
         switch error {
         case .noCredentials(let reason): return "unavailable — \(reason)"
-        case .expired: return "token expired — run `claude` (any prompt) to re-authenticate, then Refresh"
+        case .expired: return "all credentials expired — run `claude` (any prompt) to re-authenticate, then Refresh"
         case .unauthorized: return "unauthorized — run `claude` (any prompt) to re-authenticate, then Refresh"
         case .rateLimited(let after):
             let f = DateFormatter()

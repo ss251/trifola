@@ -97,7 +97,7 @@ struct MCPProtocolTests {
         #expect(r?["protocolVersion"] as? String == "2025-06-18")
         #expect((r?["capabilities"] as? [String: Any])?["tools"] != nil)
         let info = r?["serverInfo"] as? [String: Any]
-        #expect(info?["name"] as? String == "my-app")
+        #expect(info?["name"] as? String == "trifola")
         #expect((r?["instructions"] as? String)?.isEmpty == false)
     }
 
