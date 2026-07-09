@@ -65,5 +65,12 @@ PLIST
 # PkgInfo is optional but conventional for a well-formed bundle.
 printf 'APPL????' > "${BUNDLE}/Contents/PkgInfo"
 
+# Ad-hoc code signature — FREE, no Apple Developer certificate required. Gives the
+# bundle a stable signature so a locally-built app runs cleanly (notably on Apple
+# Silicon). This is NOT notarization: a *downloaded* copy still needs a one-time
+# `xattr -dr com.apple.quarantine trifola.app`.
+echo "==> Ad-hoc signing (free; not notarization)…"
+codesign --force --sign - "${BUNDLE}" || echo "    (codesign unavailable — skipped; locally-built app still runs)"
+
 echo "==> Done. Built ${BUNDLE}"
 echo "    Open with:  open \"${ROOT}/${BUNDLE}\""

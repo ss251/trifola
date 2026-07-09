@@ -79,8 +79,16 @@ literally: idle CPU is ~0%.
 
 ## Install
 
-> Pre-launch. Today: build from source (below). At launch: a signed, notarized DMG and
-> `brew install --cask trifola`.
+**Fastest — see your own numbers, nothing to install:**
+
+```bash
+npx trifola
+```
+
+Reads your local `~/.claude`, prints your dead-skill count and wasted-resend audit, uploads
+nothing. Runs anywhere Node does — macOS, Linux, WSL.
+
+**The macOS app** (menu-bar attention board + live dashboard) — build from source:
 
 ```bash
 git clone https://github.com/ss251/trifola.git
@@ -91,6 +99,12 @@ open dist/trifola.app
 ```
 
 Requires macOS 15+ and a Swift 6 toolchain. Zero external dependencies.
+
+> **On signing:** trifola is an indie project without a paid Apple Developer certificate, so
+> pre-built downloads aren't notarized. **Building from source (above) runs with no warnings.**
+> If you download an unsigned `.app` from Releases, clear the quarantine flag once:
+> `xattr -dr com.apple.quarantine trifola.app`. A notarized DMG + Homebrew cask land if/when the
+> project can fund a certificate.
 
 ## Your agent can audit itself (MCP)
 
