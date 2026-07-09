@@ -173,8 +173,8 @@ struct FleetFloor: View {
             // Seats never re-sort (the ArrivalLedger owns order) — this animates
             // only ARRIVALS and DEPARTURES with the one app-standard motion
             // (W6 wave 4), so a bay appearing never snaps the room.
-            .animation(.snappy(duration: 0.25),
-                       value: board.bays.flatMap { [$0.id] + $0.allTokens.map(\.id) })
+            .reorderMotion(
+                value: board.bays.flatMap { [$0.id] + $0.allTokens.map(\.id) })
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

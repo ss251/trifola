@@ -273,7 +273,7 @@ private struct LiveNowSection: View {
                         }
                     }
                 }
-                .animation(.snappy(duration: 0.25), value: live.map(\.id))
+                .reorderMotion(value: live.map(\.id))
             }
         }
     }

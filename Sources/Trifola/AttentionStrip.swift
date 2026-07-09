@@ -68,7 +68,7 @@ struct AttentionStripView: View {
             RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
                 .strokeBorder(Theme.hairline, lineWidth: 1)
         }
-        .animation(.snappy(duration: 0.25), value: needs.map(\.id))
+        .reorderMotion(value: needs.map(\.id))
     }
 
     private func allClearText(_ b: AttentionBoard) -> String {

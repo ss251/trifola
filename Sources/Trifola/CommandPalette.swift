@@ -176,9 +176,7 @@ struct PalettePanel<Field: View>: View {
                         .frame(maxHeight: 430)
                         .onChange(of: selection) { _, s in
                             guard results.indices.contains(s) else { return }
-                            withAnimation(.easeOut(duration: 0.1)) {
-                                proxy.scrollTo(results[s].id, anchor: .center)
-                            }
+                            proxy.scrollTo(results[s].id, anchor: .center)
                         }
                 }
             } else {

@@ -321,6 +321,7 @@ struct TapButton<Label: View>: View {
     let action: () -> Void
     @ViewBuilder let label: () -> Label
     @Environment(\.isEnabled) private var isEnabled
+    @GestureState private var isPressed = false
 
     init(shortcut: KeyboardShortcut? = nil,
          action: @escaping () -> Void,
@@ -333,7 +334,15 @@ struct TapButton<Label: View>: View {
     var body: some View {
         label()
             .contentShape(Rectangle())
+            .scaleEffect(isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: isPressed)
             .onTapGesture { if isEnabled { action() } }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($isPressed) { _, pressed, _ in
+                        if isEnabled { pressed = true }
+                    }
+            )
             .focusable()
             .onKeyPress(.return) {
                 guard isEnabled else { return .ignored }
@@ -878,6 +887,6 @@ struct Toast: View {
         .padding(.vertical, 7)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .motionTransition(edge: .bottom)
     }
 }

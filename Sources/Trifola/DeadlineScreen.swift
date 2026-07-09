@@ -430,7 +430,7 @@ struct DeadlineContent: View {
                 }
                 // The one app-standard reorder motion (W6 wave 4): jeopardy
                 // re-ranks rarely — when it does, rows glide, never teleport.
-                .animation(.snappy(duration: 0.25), value: live.map(\.id))
+                .reorderMotion(value: live.map(\.id))
             }
             if !shipped.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {

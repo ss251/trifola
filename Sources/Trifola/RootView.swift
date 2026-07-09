@@ -42,10 +42,8 @@ private struct CommandPaletteHost: View {
         ZStack {
             if services.showPalette {
                 CommandPalette()
-                    .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.12), value: services.showPalette)
     }
 }
 

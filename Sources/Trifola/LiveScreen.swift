@@ -42,7 +42,7 @@ struct LiveScreen: View {
         }
         // The one app-standard reorder motion — membership changes glide; a
         // surviving tile never moves at all.
-        .animation(.snappy(duration: 0.25), value: live.map(\.id))
+        .reorderMotion(value: live.map(\.id))
         .onAppear { seatOrder = StableOrder.merge(current: seatOrder, incoming: pool.map(\.id)) }
         .onChange(of: pool.map(\.id)) { _, ids in
             let merged = StableOrder.merge(current: seatOrder, incoming: ids)

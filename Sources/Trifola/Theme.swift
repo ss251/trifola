@@ -49,6 +49,40 @@ enum Theme {
     // radius (8) stays for containers, cards, callouts, the strip.
 }
 
+// MARK: - Reduce Motion
+
+private struct ReorderMotion<Value: Equatable>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let value: Value
+
+    func body(content: Content) -> some View {
+        content.animation(reduceMotion ? nil : .snappy(duration: 0.25), value: value)
+    }
+}
+
+private struct MotionTransition: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let edge: Edge
+
+    func body(content: Content) -> some View {
+        content.transition(reduceMotion
+            ? .opacity
+            : .move(edge: edge).combined(with: .opacity))
+    }
+}
+
+extension View {
+    /// The app-standard membership/reorder animation, disabled for Reduce Motion.
+    func reorderMotion<Value: Equatable>(value: Value) -> some View {
+        modifier(ReorderMotion(value: value))
+    }
+
+    /// A spatial reveal in normal mode and a non-vestibular fade in Reduce Motion.
+    func motionTransition(edge: Edge) -> some View {
+        modifier(MotionTransition(edge: edge))
+    }
+}
+
 // MARK: - Model tier accents
 // One muted brand hue per tier, applied narrowly (a dot, a progress fill).
 // Mirrors CodexBar's provider colors — Claude's terracotta for Opus, and

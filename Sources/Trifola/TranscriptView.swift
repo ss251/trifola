@@ -119,7 +119,7 @@ struct TranscriptView: View {
                         Label("Jump to live", systemImage: "arrow.down.to.line")
                     }
                     .padding(.bottom, 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .motionTransition(edge: .bottom)
                 }
             }
             .animation(.easeOut(duration: 0.18), value: pinnedToLive)
