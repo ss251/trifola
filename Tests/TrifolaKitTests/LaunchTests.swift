@@ -18,8 +18,8 @@ import Testing
             effort: .high,
             permissionMode: .standard,
             background: false,
-            skillRefs: ["crypto-sweep", "api-client"],
-            leadSkill: "crypto-sweep")
+            skillRefs: ["release-notes", "api-client"],
+            leadSkill: "release-notes")
     }
 
     @Test func exactComposedCommandIncludesOpusPin() {
@@ -105,8 +105,8 @@ import Testing
 
     @Test func systemPromptLeadsWithLeadSkill() {
         let text = RecipeComposer.systemPromptText(sampleRecipe())
-        #expect(text.contains("crypto-sweep, api-client"))
-        #expect(text.contains("Lead with /crypto-sweep"))
+        #expect(text.contains("release-notes, api-client"))
+        #expect(text.contains("Lead with /release-notes"))
         #expect(text.contains("resolve at runtime via /skill-name"))
     }
 

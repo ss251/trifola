@@ -130,7 +130,7 @@ struct LaunchScreen: View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             SectionLabel("Recipe")
             LabeledField("Name") {
-                TextField("e.g. crypto-sweep run", text: $draft.name)
+                TextField("e.g. release-notes run", text: $draft.name)
                     .textFieldStyle(.plain).font(.subheadline).foregroundStyle(Theme.ink)
             }
             LabeledField("Working dir") {

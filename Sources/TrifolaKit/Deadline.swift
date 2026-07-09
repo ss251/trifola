@@ -4,7 +4,7 @@ import Foundation
 //
 // The one screen that knows a project is three days from its deadline, untouched
 // for five, and $40 in — because only ~/.claude holds all three facts at once. A
-// deadline is a fact the human wrote down (MEMORY.md / AGENT_STATE.md); last-touch,
+// deadline is a fact the human wrote down (MEMORY.md / NOTES.md); last-touch,
 // spend, session count, and live state are facts only this machine computes. The
 // board is their JOIN.
 //
@@ -116,7 +116,7 @@ public enum DeadlineParser {
     /// invented — each finding carries its verbatim `raw` string and 1-based line.
     ///
     /// - Parameters:
-    ///   - defaultProject: the owning repo for a per-project file (AGENT_STATE.md).
+    ///   - defaultProject: the owning repo for a per-project file (NOTES.md).
     ///   - projectHints: known project keys (session projects) matched on the line.
     public static func parse(text: String, file: String, defaultProject: String? = nil,
                              projectHints: [String] = [], now: Date,
@@ -276,7 +276,7 @@ public enum DeadlineParser {
     /// may not touch either end of the match. Kills the substring class of false
     /// positives ("scripts" ⊄ "transcripts" — the parse that put a phantom project
     /// at the top of the jeopardy sort) while `_`/`-`/`/` still count as boundaries
-    /// ("project_multihopper_bounty.md" keeps matching "multihopper").
+    /// ("project_parser-lib_bounty.md" keeps matching "parser-lib").
     static func containsToken(_ haystack: String, _ needle: String) -> Bool {
         guard !needle.isEmpty else { return false }
         var search = haystack.startIndex..<haystack.endIndex
@@ -344,7 +344,7 @@ public enum DeadlineParser {
     static func hasDeadlineContext(_ lower: String) -> Bool {
         let words = ["deadline", "submission", "submit", "finale", "due ", "due,", "due.",
                      "cutoff", "closes", "close ", " ends", "ending", " gate", "gates",
-                     "hackathon", "bounty", "devpost", "devfolio", "dorahacks", "superteam",
+                     "hackathon", "bounty", "devpost", "devfolio",
                      "target date", "targetdate", "submissions"]
         if words.contains(where: { lower.contains($0) }) { return true }
         return zonedClock.firstMatch(in: lower, range: NSRange(location: 0, length: (lower as NSString).length)) != nil
@@ -358,8 +358,7 @@ public enum DeadlineParser {
         if lower.contains("audit") || lower.contains("contest") { return .audit }
         if lower.contains("gate") { return .gate }
         if lower.contains("hackathon") || lower.contains("submission") || lower.contains("submit")
-            || lower.contains("finale") || lower.contains("devpost") || lower.contains("devfolio")
-            || lower.contains("dorahacks") || lower.contains("superteam") { return .hackathon }
+            || lower.contains("finale") || lower.contains("devpost") || lower.contains("devfolio") { return .hackathon }
         return .other
     }
 }

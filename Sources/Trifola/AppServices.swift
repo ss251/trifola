@@ -80,7 +80,7 @@ final class AppServices: ObservableObject {
     /// audit report + settings, deterministically. The capstone / moat.
     let ledger = LedgerStore()
     /// THE DEADLINE BOARD (docs/DEADLINE_BOARD.md): parses deadlines from
-    /// MEMORY.md/AGENT_STATE.md → confirm → .toml override (canonical, app-owned), and
+    /// MEMORY.md/NOTES.md → confirm → .toml override (canonical, app-owned), and
     /// drives the one-way Linear exporter. The Floor's sibling under Pillar 4.
     let deadlines = DeadlineStore()
     /// THE CROSS-MACHINE FLEET (the differentiator): loads the fleet config (seeded
@@ -361,7 +361,7 @@ final class AppServices: ObservableObject {
             }
             // LAUNCH pillar: load saved recipes from the app's own dir.
             launch.reload()
-            // DEADLINE BOARD: re-parse the deadline sources (MEMORY.md/AGENT_STATE.md) →
+            // DEADLINE BOARD: re-parse the deadline sources (MEMORY.md/NOTES.md) →
             // operative deadline → .toml override → persist to the app's OWN store. The
             // card JOIN (against live activity) is rebuilt at render time. The source
             // read + regex parse (~190ms measured) runs detached — never on main.

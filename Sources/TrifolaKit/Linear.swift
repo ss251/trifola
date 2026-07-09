@@ -212,7 +212,7 @@ public enum LinearFormat {
     /// The project description: one clear sentence — what this is (hackathon / bounty
     /// / gate), the deadline in plain words, the platform context if the notes carried
     /// one — plus the source citation.
-    /// "Hackathon due July 13, 2026 — Slack Agent Builder Challenge. Source: MEMORY.md line 47."
+    /// "Hackathon due July 13, 2026 — OSS Plugin Challenge. Source: MEMORY.md line 47."
     public static func projectDescription(_ card: DeadlineCard) -> String {
         var first = "\(kindNoun(card.kind)) due \(plainDate(card.deadline))"
         if let p = card.platform?.trimmingCharacters(in: .whitespaces), !p.isEmpty {

@@ -92,7 +92,7 @@ final class DeadlineStore: ObservableObject {
 
     // MARK: parse → confirm → override
 
-    /// Re-parse the deadline SOURCES (MEMORY.md + per-project AGENT_STATE.md/README),
+    /// Re-parse the deadline SOURCES (MEMORY.md + per-project NOTES.md/README),
     /// pick the operative deadline per project, fold in any user `.toml` override, and
     /// persist the resolved set to the app's OWN store — never the user's files.
     ///
@@ -128,7 +128,7 @@ final class DeadlineStore: ObservableObject {
         }
         for cwd in projectDirs(sessions) {
             let base = (cwd as NSString).lastPathComponent
-            for name in ["AGENT_STATE.md", "README.md"] {
+            for name in ["NOTES.md", "README.md"] {
                 let path = (cwd as NSString).appendingPathComponent(name)
                 if let text = try? String(contentsOfFile: path, encoding: .utf8) {
                     parsed += DeadlineParser.parse(text: text, file: path, defaultProject: base,
@@ -331,7 +331,7 @@ struct DeadlineScreen: View {
             if cards.isEmpty {
                 EmptyState(icon: "calendar",
                            title: "No deadlines yet",
-                           detail: "The board pre-populates from dates already written in your MEMORY.md and each project's AGENT_STATE.md — nothing to type. It reads your notes; it never writes them.")
+                           detail: "The board pre-populates from dates already written in your MEMORY.md and each project's NOTES.md — nothing to type. It reads your notes; it never writes them.")
             } else {
                 DeadlineContent(cards: cards, config: DeadlineConfig(),
                                 tiers: tiers,

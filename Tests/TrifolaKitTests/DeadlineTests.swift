@@ -3,7 +3,7 @@ import Testing
 @testable import TrifolaKit
 
 // The Deadline Board is a JOIN no other tool can compute, so test its three pure
-// halves hard: the deterministic PARSER (fixture MEMORY.md/AGENT_STATE.md text →
+// halves hard: the deterministic PARSER (fixture MEMORY.md/NOTES.md text →
 // extracted (project, date, sourceLine, raw)), the JEOPARDY metric (idle ÷ runway),
 // and the five-state CLASSIFIER — plus the operative-deadline picker (the "finale
 // attached to the submission" trap), the .toml override, the merge precedence, the
@@ -23,11 +23,11 @@ private let now0 = day(2026, 7, 6, 12, 0)   // fixed clock: Jul 6 2026, noon UTC
 // index lines carry a ~/Developer/<name>/ path that anchors the project.
 private let memoryFixture = """
 ## Active Projects
-- [Slack Agent Builder Challenge](project_slack_hackathon.md) — deadline Jul 13 2026; build = **Receipts**. `~/Developer/alpha-hackathon/`
-- [UXmaxx hackathon — Webapp](project_uxmaxx_hackathon.md) — Webapp BUILT+LIVE; submission Jul 19, finale Jul 30; state ~/Developer/webapp/AGENT_STATE.md
-- [OKX AI Genesis — Api-Gateway](project_okx_foreman.md) — orchestrator hiring agents; Submit before Jul 17. `~/Developer/api-gateway/`
-- [Crypto $100/day income system](project_crypto_100aday_system.md) — $3k/mo stack; gates Jul 12 / Aug 11 / Sep 10; ~/Developer/crypto/
-- [Aztec bug bounty](project_aztec_bounty.md) — audit done, on-chain monitor armed; ~/Developer/security-audit/
+- [OSS Plugin Challenge](project_alpha_hackathon.md) — deadline Jul 13 2026; build = **Widgets**. `~/Developer/alpha-hackathon/`
+- [OSS Sprint hackathon — Webapp](project_webapp_hackathon.md) — Webapp BUILT+LIVE; submission Jul 19, finale Jul 30; state ~/Developer/webapp/NOTES.md
+- [DevPost Challenge — Api-Gateway](project_api_gateway.md) — orchestrator hiring agents; Submit before Jul 17. `~/Developer/api-gateway/`
+- [Quarterly budget review](project_ops_review.md) — cost dashboard; gates Jul 12 / Aug 11 / Sep 10; ~/Developer/ops-review/
+- [Protocol audit bounty](project_security_audit.md) — audit done, coverage monitor armed; ~/Developer/security-audit/
 """
 
 // MARK: - Parser
@@ -97,16 +97,16 @@ struct DeadlineParserTests {
         #expect(DeadlineParser.operativeDeadlines(parsed, now: now0).isEmpty)
 
         // …while `_` / `-` / `/` still count as boundaries, so real references keep matching.
-        #expect(DeadlineParser.containsToken("see project_multihopper_bounty.md", "multihopper"))
-        #expect(DeadlineParser.containsToken("~/developer/webapp/agent_state.md", "webapp"))
+        #expect(DeadlineParser.containsToken("see project_parser-lib_bounty.md", "parser-lib"))
+        #expect(DeadlineParser.containsToken("~/developer/webapp/notes_file.md", "webapp"))
         #expect(DeadlineParser.containsToken("alpha-hackathon deadline", "alpha-hackathon"))
         #expect(!DeadlineParser.containsToken("transcripts deleted", "scripts"))
         #expect(!DeadlineParser.containsToken("scripted cleanup", "script"))
     }
 
-    @Test func perFileDefaultProjectForAgentState() {
+    @Test func perFileDefaultProjectForNotesFile() {
         let text = "## STATUS\nSubmit before Jul 17 23:59 UTC.\n"
-        let parsed = DeadlineParser.parse(text: text, file: "api-gateway/AGENT_STATE.md",
+        let parsed = DeadlineParser.parse(text: text, file: "api-gateway/NOTES.md",
                                           defaultProject: "api-gateway", now: now0, calendar: utc)
         #expect(parsed.first?.projectKey == "api-gateway")
     }
@@ -123,12 +123,12 @@ struct DeadlineParserTests {
         // "gates Jul 12 / Aug 11 / Sep 10" → the next gate (Jul 12).
         let parsed = DeadlineParser.parse(text: memoryFixture, file: "MEMORY.md", now: now0, calendar: utc)
         let operative = DeadlineParser.operativeDeadlines(parsed, now: now0)
-        #expect(operative["crypto"]?.date == day(2026, 7, 12))
-        #expect(operative["crypto"]?.kind == .gate)
+        #expect(operative["ops-review"]?.date == day(2026, 7, 12))
+        #expect(operative["ops-review"]?.kind == .gate)
     }
 
     @Test func bountyAndAuditKindsInferred() {
-        let bounty = "- MultiHopper bounty — 1,000 USDC bug hunt closes Aug 15 2026 ~/Developer/multihopper/"
+        let bounty = "- Parser Lib bounty — 1k bug bounty closes Aug 15 2026 ~/Developer/parser-lib/"
         #expect(DeadlineParser.parse(text: bounty, file: "m", now: now0, calendar: utc).first?.kind == .bounty)
         let audit = "- Sherlock audit contest ends Aug 20 2026 ~/Developer/some-audit/"
         #expect(DeadlineParser.parse(text: audit, file: "m", now: now0, calendar: utc).first?.kind == .audit)
@@ -142,13 +142,13 @@ struct DeadlineParserTests {
         - START: 2026-07-06 14:50 IST (epoch 1783329622)
         - updated Jul 6 2026 · re-auth worked 2026-07-03
         """
-        #expect(DeadlineParser.parse(text: noise, file: "AGENT_STATE.md", defaultProject: "x", now: now0, calendar: utc).isEmpty)
+        #expect(DeadlineParser.parse(text: noise, file: "NOTES.md", defaultProject: "x", now: now0, calendar: utc).isEmpty)
     }
 
     @Test func perProjectFileMapsToItsOwnProjectNotAReferencedToolDir() {
         // A webapp changelog referencing a tool dir must attribute to webapp, not the tool.
         let line = "- referenced ~/Developer/browser-harness/SKILL.md · submission Jul 19 2026"
-        let parsed = DeadlineParser.parse(text: line, file: "webapp/AGENT_STATE.md", defaultProject: "webapp",
+        let parsed = DeadlineParser.parse(text: line, file: "webapp/NOTES.md", defaultProject: "webapp",
                                           projectHints: ["browser-harness"], now: now0, calendar: utc)
         #expect(parsed.first?.projectKey == "webapp")
     }
@@ -164,7 +164,7 @@ struct DeadlineParserTests {
     @Test func realSlateMapsEveryKnownProject() {
         let parsed = DeadlineParser.parse(text: memoryFixture, file: "MEMORY.md", now: now0, calendar: utc)
         let operative = DeadlineParser.operativeDeadlines(parsed, now: now0)
-        #expect(Set(operative.keys).isSuperset(of: ["alpha-hackathon", "webapp", "api-gateway", "crypto"]))
+        #expect(Set(operative.keys).isSuperset(of: ["alpha-hackathon", "webapp", "api-gateway", "ops-review"]))
     }
 }
 

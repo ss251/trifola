@@ -732,7 +732,7 @@ if CommandLine.arguments.contains("--selfcheck") {
 
     // --- THE DEADLINE BOARD (docs/DEADLINE_BOARD.md) ---
     // Parse deadlines from the SAME sources the app reads (MEMORY.md + per-project
-    // AGENT_STATE.md/README), pick the operative deadline per project, fold in any user
+    // NOTES.md/README), pick the operative deadline per project, fold in any user
     // `.toml` override, JOIN with live per-project activity, and print the jeopardy-
     // sorted board + the leader. "Linear key present" reads the real Keychain (never a
     // file); the live sync itself is verified by the user with their own key.
@@ -747,7 +747,7 @@ if CommandLine.arguments.contains("--selfcheck") {
     var dlCwds = Set<String>()
     for s in sessions where !s.isSubagent && !s.cwd.isEmpty && dlCwds.insert(s.cwd).inserted {
         let base = (s.cwd as NSString).lastPathComponent
-        for name in ["AGENT_STATE.md", "README.md"] {
+        for name in ["NOTES.md", "README.md"] {
             let p = (s.cwd as NSString).appendingPathComponent(name)
             if let t = try? String(contentsOfFile: p, encoding: .utf8) {
                 dlParsed += DeadlineParser.parse(text: t, file: p, defaultProject: base, projectHints: dlHints, now: dlNow)
@@ -904,7 +904,7 @@ if CommandLine.arguments.contains("--selfcheck") {
         var cwds = Set<String>()
         for s in sessions where !s.isSubagent && !s.cwd.isEmpty && cwds.insert(s.cwd).inserted {
             let base = (s.cwd as NSString).lastPathComponent
-            for name in ["AGENT_STATE.md", "README.md"] {
+            for name in ["NOTES.md", "README.md"] {
                 let p = (s.cwd as NSString).appendingPathComponent(name)
                 if let t = try? String(contentsOfFile: p, encoding: .utf8) {
                     parsed += DeadlineParser.parse(text: t, file: p, defaultProject: base, projectHints: dlHints, now: dlNow)

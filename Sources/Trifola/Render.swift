@@ -46,8 +46,8 @@ enum AttentionRender {
             AttentionSignals(lastEventAt: Date(), lastToolName: tool, lastToolDetail: detail)
         }
         return [
-            "s0": sig("Bash", "approval · bun run day1"),
-            "s1": sig("Edit", "MagicCabinet/ChatView.swift"),
+            "s0": sig("Bash", "approval · bun run dev"),
+            "s1": sig("Edit", "acme-app/ChatView.swift"),
             "s2": sig("Bash", "bun test"),
         ]
     }
@@ -277,13 +277,13 @@ enum FleetRender {
                  ageSecs: 60, cost: 6.13, quote: "run the test suite", subagentOf: opusID, now: now),
             // A BLOCKED-STILL seat — the alarm is the absence of motion.
             sess(id: webappID, project: "webapp", cwd: webapp, tier: .opus,
-                 ageSecs: 250, cost: 3.67, edits: 1, quote: "fund wallet + bun run day1", now: now),
+                 ageSecs: 250, cost: 3.67, edits: 1, quote: "seed db + bun run dev", now: now),
             // A second bay — a distinct running project.
             sess(id: slackID, project: "alpha-hackathon", cwd: slack, tier: .opus,
                  ageSecs: 30, cost: 12, edits: 2, quote: "provision the sandbox", now: now),
             // An idle bay — cooled to embers.
             sess(id: devID, project: "Developer", cwd: dev, tier: .haiku,
-                 ageSecs: 44 * 60, cost: 1.20, quote: "knowledge-base sync", now: now),
+                 ageSecs: 44 * 60, cost: 1.20, quote: "docs index sync", now: now),
         ]
 
         let signals: [String: AttentionSignals] = [
@@ -291,9 +291,9 @@ enum FleetRender {
             opusID: sig(tool: "Edit", detail: "Sources/Trifola/FleetScreen.swift", kind: .toolResult, ageSecs: 46, now: now),
             subA: sig(kind: .assistantText, stop: "tool_use", ageSecs: 12, now: now),
             subB: sig(tool: "Bash", detail: "swift test", kind: .toolUse, ageSecs: 60, now: now),
-            webappID: sig(tool: "Bash", detail: "approval · bun run day1", kind: .toolUse, dangling: true, ageSecs: 250, now: now),
+            webappID: sig(tool: "Bash", detail: "approval · bun run dev", kind: .toolUse, dangling: true, ageSecs: 250, now: now),
             slackID: sig(tool: "Bash", detail: "provision sandbox", kind: .toolResult, ageSecs: 30, now: now),
-            devID: sig(tool: "Bash", detail: "knowledge-base sync", kind: .toolResult, ageSecs: 44 * 60, now: now),
+            devID: sig(tool: "Bash", detail: "docs index sync", kind: .toolResult, ageSecs: 44 * 60, now: now),
         ]
 
         // Pre-seed arrival order: swarm bay → webapp → slack → Developer, with the
@@ -669,7 +669,7 @@ enum CrossMachineRender {
                  subagentOf: localOpus, now: now),
             sess(id: "b5f4e5e5", project: "webapp", cwd: webapp, tier: .opus,
                  ageSecs: 240, cost: 3.67, machine: "local", edits: 1,
-                 quote: "fund wallet + bun run day1", now: now),
+                 quote: "seed db + bun run dev", now: now),
         ]
 
         // workstation — mirrored READ-ONLY over Tailscale. Same webapp repo lives on both
@@ -677,13 +677,13 @@ enum CrossMachineRender {
         let remote: [SessionSummary] = [
             sess(id: "c91d22f0", project: "data-pipeline", cwd: pipelineDC, tier: .user,
                  ageSecs: 8, cost: 22, machine: "workstation", edits: 3,
-                 quote: "/crypto-sweep nightly", now: now),
+                 quote: "/release-notes nightly", now: now),
             sess(id: "9942ce11", project: "webapp", cwd: webappDC, tier: .opus,
                  ageSecs: 25, cost: 14, machine: "workstation", edits: 2,
-                 quote: "ZeroDev 7702 + CCTP e2e", now: now),
+                 quote: "auth flow + payments e2e", now: now),
             sess(id: "e2290b7c", project: "security-audit", cwd: auditDC, tier: .sonnet,
                  ageSecs: 70, cost: 4.1, machine: "workstation", edits: 0,
-                 quote: "on-chain monitor triage", now: now),
+                 quote: "flaky-test triage", now: now),
         ]
 
         let sessions = FleetMerge.merge(
@@ -694,9 +694,9 @@ enum CrossMachineRender {
             "0ed7bc81": sig(tool: "Write", detail: "Sources/TrifolaKit/Machine.swift", kind: .toolUse, ageSecs: 3, now: now),
             localOpus: sig(tool: "Edit", detail: "Sources/Trifola/AppServices.swift", kind: .toolResult, ageSecs: 40, now: now),
             localSub: sig(tool: "Bash", detail: "swift test", kind: .toolUse, ageSecs: 14, now: now),
-            "b5f4e5e5": sig(tool: "Bash", detail: "approval · bun run day1", kind: .toolUse, dangling: true, ageSecs: 240, now: now),
-            "c91d22f0": sig(tool: "Bash", detail: "api-client opencli", kind: .toolResult, ageSecs: 8, now: now),
-            "9942ce11": sig(tool: "WebFetch", detail: "docs.example.com/7702", kind: .toolResult, ageSecs: 25, now: now),
+            "b5f4e5e5": sig(tool: "Bash", detail: "approval · bun run dev", kind: .toolUse, dangling: true, ageSecs: 240, now: now),
+            "c91d22f0": sig(tool: "Bash", detail: "api-client fetch", kind: .toolResult, ageSecs: 8, now: now),
+            "9942ce11": sig(tool: "WebFetch", detail: "docs.example.com/api", kind: .toolResult, ageSecs: 25, now: now),
             "e2290b7c": sig(kind: .assistantText, stop: "end_turn", ageSecs: 70, now: now),
         ]
 
@@ -811,7 +811,7 @@ enum LaunchRender {
 
     static func seededDraft() -> Recipe {
         Recipe(id: "seed-crypto",
-               name: "crypto-sweep run",
+               name: "release-notes run",
                cwd: "/Users/dev/Developer/data-pipeline",
                addDirs: ["/Users/dev/Developer/notes-app"],
                agents: [
@@ -823,7 +823,7 @@ enum LaunchRender {
                             prompt: "You judge product taste.", model: .sonnet),
                ],
                effort: .high, permissionMode: .plan, background: false,
-               skillRefs: ["crypto-sweep", "api-client"], leadSkill: "crypto-sweep")
+               skillRefs: ["release-notes", "api-client"], leadSkill: "release-notes")
     }
 
     static func savedRecipes() -> [Recipe] {
@@ -945,7 +945,7 @@ enum SkillsRender {
             sk("datakit-core", "The DataKit composition contract."),
             sk("datakit-query", "Audio + media assets for DataKit."),
             sk("api-client", "MUST USE when researching anything on the internet.", triggers: ["deep dive", "research this topic"]),
-            sk("crypto-sweep", "Sweep every live crypto earning opportunity."),
+            sk("release-notes", "Sweep every live crypto earning opportunity."),
             sk("graphify", "Any input to a knowledge graph."),
             // Plugin lane (was invisible to the flat scanner).
             sk("codex-cli-runtime", "Codex CLI runtime.", source: plugin("openai-codex", "codex"), name: "codex-cli-runtime"),
@@ -968,7 +968,7 @@ enum SkillsRender {
                                    inCatalog: true, descriptionTokens: 120))
         }
         var m: [String: SkillLedgerEntry] = [:]
-        for (k, v) in [fired("api-client", 11, 7200, 6), fired("crypto-sweep", 3, 90000, 2),
+        for (k, v) in [fired("api-client", 11, 7200, 6), fired("release-notes", 3, 90000, 2),
                        fired("browse", 4, 40000, 2), fired("codex:rescue", 2, 120000, 1)] { m[k] = v }
         for (k, v) in [dead("qa"), dead("codex"), dead("datakit-export"), dead("datakit-core"),
                        dead("datakit-query"), dead("graphify")] { m[k] = v }
@@ -1084,14 +1084,14 @@ enum PaletteRender {
         out.append(session("webapp", .opus, .blocked, "b5f4e5e5c001", 240, "local", now: now))
 
         // A skill (user lane).
-        let skID = "skill:0:crypto-sweep"
+        let skID = "skill:0:release-notes"
         out.append(PaletteEntry(
-            id: skID, kind: .skill, title: "crypto-sweep",
-            hint: Text("/crypto-sweep").font(.system(.caption2, design: .monospaced))
+            id: skID, kind: .skill, title: "release-notes",
+            hint: Text("/release-notes").font(.system(.caption2, design: .monospaced))
                 + Text(" · User").font(.caption2),
             icon: PaletteKind.skill.icon,
-            candidate: PaletteCandidate(id: skID, primary: "crypto-sweep",
-                                        secondary: ["crypto-sweep", "sweep every live crypto earning opportunity"],
+            candidate: PaletteCandidate(id: skID, primary: "release-notes",
+                                        secondary: ["release-notes", "sweep every live crypto earning opportunity"],
                                         group: PaletteKind.skill.rawValue),
             altLabel: "Launch", run: {}, runAlt: {}))
 
@@ -1110,12 +1110,12 @@ enum PaletteRender {
         // A saved recipe.
         let rID = "recipe:seed-crypto"
         out.append(PaletteEntry(
-            id: rID, kind: .recipe, title: "crypto-sweep run",
+            id: rID, kind: .recipe, title: "release-notes run",
             hint: Text("~/Developer/data-pipeline").font(.system(.caption2, design: .monospaced))
                 + Text(" · High · 2 agents").font(.caption2),
             icon: PaletteKind.recipe.icon,
-            candidate: PaletteCandidate(id: rID, primary: "crypto-sweep run",
-                                        secondary: ["data-pipeline", "crypto-sweep", "api-client"],
+            candidate: PaletteCandidate(id: rID, primary: "release-notes run",
+                                        secondary: ["data-pipeline", "release-notes", "api-client"],
                                         recency: now.addingTimeInterval(-86400),
                                         group: PaletteKind.recipe.rawValue),
             run: {}))
@@ -1396,26 +1396,26 @@ enum DeadlineRender {
             // STALLED — near deadline, gone quiet: the alarm (red, still, pinned top).
             card(key: "alpha-hackathon", deadline: at(2026, 7, 13), kind: .hackathon,
                  last: at(2026, 7, 8), cost: 41, sessions: 12, confirmed: false,
-                 platform: "Receipts · Slack Agent Builder Challenge",
+                 platform: "Widgets · OSS Plugin Challenge",
                  raw: "deadline Jul 13 2026", line: 47),
             // OVERDUE — the date passed, not shipped: a fact, not a nag.
-            card(key: "multihopper", deadline: at(2026, 7, 10), kind: .bounty,
+            card(key: "parser-lib", deadline: at(2026, 7, 10), kind: .bounty,
                  last: at(2026, 7, 6), cost: 8, sessions: 3, confirmed: true,
-                 platform: "Superteam · 1,000 USDC bug hunt", raw: "closes Jul 10 2026", line: 91),
+                 platform: "OSS Fund · 1k bug bounty", raw: "closes Jul 10 2026", line: 91),
             // AT-RISK — near, moderate jeopardy.
             card(key: "api-gateway", deadline: at(2026, 7, 17), kind: .hackathon,
                  last: at(2026, 7, 10), cost: 128, sessions: 31, confirmed: true,
-                 platform: "OKX AI Genesis · funded-wallet go-live remains",
-                 raw: "Submit before Jul 17", file: "ai-contest/AGENT_STATE.md", line: 9),
+                 platform: "DevPost Challenge · deploy step remains",
+                 raw: "Submit before Jul 17", file: "hackathon/NOTES.md", line: 9),
             // ON-TRACK — near but freshly touched (a live pulse beside the frozen red card).
             card(key: "webapp", deadline: at(2026, 7, 19), kind: .hackathon,
                  last: at(2026, 7, 12, 11, 55), cost: 67, sessions: 44, confirmed: true,
-                 platform: "UXmaxx · Pools + Circles LIVE", raw: "submission Jul 19",
-                 file: "webapp/AGENT_STATE.md", line: 3),
+                 platform: "OSS Sprint · core feature LIVE", raw: "submission Jul 19",
+                 file: "webapp/NOTES.md", line: 3),
             // SHIPPED — user-confirmed; ember-faded, sunk below the fold.
             card(key: "security-audit", deadline: at(2026, 7, 1), kind: .audit,
                  last: at(2026, 7, 1), cost: 22, sessions: 7, confirmed: true, shipped: true,
-                 platform: "audit done, on-chain monitor armed", raw: "shipped Jul 1", line: 120),
+                 platform: "audit done, coverage monitor armed", raw: "shipped Jul 1", line: 120),
         ]
         // Sort exactly as the board does.
         var recs = Dictionary(uniqueKeysWithValues: cards.map { c -> (String, DeadlineRecord) in
@@ -1436,7 +1436,7 @@ enum DeadlineRender {
         // The door light's tier ring: the tier of each project's session (seeded to
         // a believable mix so state-fill × tier-ring both read — UI_GRIND §2.1).
         let tiers: [String: ModelTier] = [
-            "alpha-hackathon": .opus, "multihopper": .sonnet, "api-gateway": .opus,
+            "alpha-hackathon": .opus, "parser-lib": .sonnet, "api-gateway": .opus,
             "webapp": .sonnet, "security-audit": .haiku,
         ]
         let content = VStack(alignment: .leading, spacing: 18) {
@@ -1465,11 +1465,11 @@ enum DeadlineRender {
                                                    url: "https://linear.app/acme/project/webapp-9f2c1a", outcome: .created),
                                      LinearSyncRow(projectKey: "api-gateway", name: "Api-Gateway",
                                                    url: "https://linear.app/acme/project/api-gateway-11b7e0", outcome: .updated),
-                                     LinearSyncRow(projectKey: "multihopper", name: "Multihopper",
-                                                   url: "https://linear.app/acme/project/multihopper-5d90c4", outcome: .updated),
+                                     LinearSyncRow(projectKey: "parser-lib", name: "Parser Lib",
+                                                   url: "https://linear.app/acme/project/parser-lib-5d90c4", outcome: .updated),
                                      LinearSyncRow(projectKey: "alpha-hackathon", name: "Alpha Hackathon", outcome: .skipped),
-                                     LinearSyncRow(projectKey: "reddit-agent", name: "Reddit Agent",
-                                                   url: "https://linear.app/acme/project/reddit-agent-77aa02", outcome: .canceled),
+                                     LinearSyncRow(projectKey: "forum-bot", name: "Forum Bot",
+                                                   url: "https://linear.app/acme/project/forum-bot-77aa02", outcome: .canceled),
                                  ])
         }
         writePNG(content, to: path, dark: dark, width: 1180)

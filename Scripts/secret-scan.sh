@@ -46,6 +46,21 @@ PATTERNS=(
   'hyperframes'
   '\bsolidity\b'
   '\bethskills\b'
+  # more seed markers — crypto / hackathon / client / personal conventions
+  'crypto-sweep'
+  'magiccabinet'
+  'on-chain'
+  'onchain'
+  'opencli'
+  'AGENT_STATE'
+  'zerodev'
+  '\bcctp\b'
+  'uxmaxx'
+  'multihopper'
+  'superteam'
+  '\bokx\b'
+  'funded-wallet'
+  'reddit-agent'
 )
 
 # Absolute home paths are banned EXCEPT the synthetic /Users/dev/... demo set.

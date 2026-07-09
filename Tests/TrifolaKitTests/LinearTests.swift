@@ -180,7 +180,7 @@ struct LinearFormatTests {
     @Test func projectNameIsTheRealNameNeverAMonoSlug() {
         #expect(LinearFormat.projectName(projectKey: "alpha-hackathon") == "Alpha Hackathon")
         #expect(LinearFormat.projectName(projectKey: "my-app") == "My App")
-        #expect(LinearFormat.projectName(projectKey: "multihopper") == "Multihopper")
+        #expect(LinearFormat.projectName(projectKey: "parser-lib") == "Parser Lib")
         #expect(LinearFormat.projectName(projectKey: "growth_engine") == "Growth Engine")
         // Existing capitals inside a word survive.
         #expect(LinearFormat.projectName(projectKey: "gpu-Prover") == "Gpu Prover")
@@ -198,11 +198,11 @@ struct LinearFormatTests {
     @Test func descriptionIsOneClearSentenceWithDateAndCitation() {
         let now = day(2026, 7, 10)
         let withPlatform = card("alpha-hackathon", deadline: day(2026, 7, 13), now: now,
-                                platform: "Slack Agent Builder Challenge")
+                                platform: "OSS Plugin Challenge")
         #expect(LinearFormat.projectDescription(withPlatform) ==
-                "Hackathon due July 13, 2026 — Slack Agent Builder Challenge. Source: MEMORY.md line 47.")
+                "Hackathon due July 13, 2026 — OSS Plugin Challenge. Source: MEMORY.md line 47.")
 
-        let bare = card("multihopper", deadline: day(2026, 7, 10), now: now, kind: .bounty, line: 91)
+        let bare = card("parser-lib", deadline: day(2026, 7, 10), now: now, kind: .bounty, line: 91)
         #expect(LinearFormat.projectDescription(bare) ==
                 "Bounty due July 10, 2026. Source: MEMORY.md line 91.")
     }
@@ -440,15 +440,15 @@ struct LinearExporterTests {
     @Test func nameDescriptionTargetDateAndStateFlowIntoTheMutation() async throws {
         let transport = MockTransport(respond: linearResponder)
         let exporter = LinearExporter(transport: transport, keychain: InMemoryKeychain("k"), teamID: "team_7")
-        let shipped = card("ai-contest", deadline: day(2026, 7, 13), now: now, shipped: true,
-                           platform: "OKX AI Genesis")
+        let shipped = card("dev-contest", deadline: day(2026, 7, 13), now: now, shipped: true,
+                           platform: "DevPost Challenge")
         _ = try await exporter.upsert([shipped], map: [:], now: now)
         let create = transport.recorded.withLock { $0 }.first { $0.query.contains("projectCreate(") }
         // name = the real name in words; description = kind + plain date + platform +
         // citation; targetDate = the deadline (UTC day); state = completed (shipped).
         #expect(create?.variables == .object(["input": .object([
-            "name": .string("Ai Contest"),
-            "description": .string("Hackathon due July 13, 2026 — OKX AI Genesis. Source: MEMORY.md line 47."),
+            "name": .string("Dev Contest"),
+            "description": .string("Hackathon due July 13, 2026 — DevPost Challenge. Source: MEMORY.md line 47."),
             "targetDate": .string("2026-07-13"),
             "teamIds": .array([.string("team_7")]),
             "state": .string("completed"),

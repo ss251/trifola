@@ -111,7 +111,7 @@ private struct AttentionChip: View {
         let detail = sig.lastToolDetail ?? ""
         let s = detail.isEmpty ? tool : "\(tool) \(detail)"
         // Tail-truncate: the head (tool + the gate's name) IS the ask — a
-        // mid-ellipsis chews it ("Bash app…· bun run day1").
+        // mid-ellipsis chews it ("Bash app…· bun run dev").
         return s.count > 24 ? String(s.prefix(23)) + "…" : s
     }
 
