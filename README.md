@@ -15,7 +15,7 @@ you — across every machine.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/audit-dark.png">
-  <img alt="trifola — attribute workflow spend to a cause: cache leak vs first-touch, dead skills, model-mismatch" src="docs/screenshots/audit-light.png" width="920">
+  <img alt="trifola — attribute workflow spend to a cause: re-sent context vs first-touch, dead skills, model-mismatch" src="docs/screenshots/audit-light.png" width="920">
 </picture>
 
 _A truffle pig for your agent fleet: it sniffs out the valuable — and the
@@ -49,9 +49,9 @@ literally: idle CPU is ~0%.
 
 - 🟢 **Attention board** — every session as BLOCKED / WAITING / RUNNING / IDLE, worst-first,
   in a menu-bar glance.
-- 🧾 **Cost-cause audit** — cache **leak** vs unavoidable first-touch (never summed into one
-  dishonest number), the "$20 hey" re-sent-context tax, Opus-on-lint, per-session receipts.
-- 🧭 **Routing forensics** — silent model fallbacks and subagent-inheritance leaks, with the
+- 🧾 **Cost-cause audit** — **re-sent context** vs unavoidable first-touch (never summed into one
+  dishonest number), the "$20 hey" wasted-resend tax, Opus-on-lint, per-session receipts.
+- 🧭 **Routing forensics** — silent model fallbacks and subagents that inherited the wrong model, with the
   exact fix you can paste into `CLAUDE.md`.
 - 🧹 **Config hygiene** — which of your skills never fire, priced as the per-session tax they
   levy on every run.
@@ -107,7 +107,7 @@ trifola doesn't replace the cost bars or the native agent view — it does the l
 | | **trifola** | Claude Code **Agent View** | **ccusage / CodexBar** |
 |---|:---:|:---:|:---:|
 | "Which agent needs me now" | ✅ menu-bar + **cross-machine** | ✅ native, in-CLI, **single machine** | ❌ |
-| Cost **cause** (leak vs first-touch, misroute) | ✅ | ❌ no cost in-view | 〜 totals only |
+| Cost **cause** (re-sent vs first-touch, misroute) | ✅ | ❌ no cost in-view | 〜 totals only |
 | Dead-skill / config hygiene | ✅ | ❌ | ❌ |
 | Cross-machine fleet | ✅ (Tailscale) | ❌ single machine | ❌ |
 | Agent-facing MCP (self-introspection) | ✅ | ❌ local `--json` | ❌ |

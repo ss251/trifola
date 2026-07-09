@@ -340,9 +340,14 @@ public enum LessonMiner {
             revealTargets: revealTargets,
             note: "The app names them — you move them. Explicit Skill-tool calls only; auto-loaded skills are undercounted, so review before archiving.")
 
-        // Recurring tax: the dead descriptions ride EVERY session's system prompt.
+        // Recurring tax: the dead descriptions ride EVERY session's system prompt —
+        // but as CACHED content, so the honest per-session rate is cache-READ
+        // (input × 0.10) of a representative mid-tier model, NOT raw input and NOT the
+        // top tier. Pricing it at raw Opus input × every session overstated it ~10× —
+        // exactly the "your math is wrong" failure a cost tool dies from. The dead-skill
+        // COUNT is the headline; this dollar figure stays deliberately conservative.
         let taxDollars = Double(ledger.deadPromptTaxTokens) / 1_000_000
-            * ModelTier.opus.rates.inp * Double(max(ledger.sessionCount, 1))
+            * (ModelTier.sonnet.rates.inp * 0.10) * Double(max(ledger.sessionCount, 1))
         return Lesson(
             kind: .deadSkillArchive,
             metricValue: Double(ledger.deadCount),
