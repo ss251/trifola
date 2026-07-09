@@ -27,6 +27,11 @@ struct AuditScreen: View {
                     guard !path.isEmpty else { return }
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                 },
+                skillPaths: services.skills.allSkills.reduce(into: [:]) { paths, skill in
+                    paths[skill.id] = skill.path
+                    paths[skill.name] = skill.path
+                    paths[skill.qualifiedID] = skill.path
+                },
                 // "Show the math" (W3): each finding's receipt — same slices,
                 // same rates, same formula as the number on the row.
                 leakReceipt: { finding in
@@ -53,6 +58,7 @@ struct AuditContent: View {
     let report: AuditReport
     let onInspect: (String) -> Void
     let onReveal: (String) -> Void
+    var skillPaths: [String: String] = [:]
     /// COST PROVENANCE (W3): per-finding receipt providers ("show the math" on
     /// the leak / overspend rows). nil (the default, and the render harness's
     /// choice) = no disclosure; a provider returning nil for an id not in the
@@ -70,7 +76,9 @@ struct AuditContent: View {
                              onSelect: onInspect,
                              receiptFor: leakReceipt)
             Divider()
-            SkillLedgerSection(ledger: report.skillLedger)
+            SkillLedgerSection(ledger: report.skillLedger,
+                               artifactPaths: skillPaths,
+                               onReveal: onReveal)
             Divider()
             MismatchSection(candidates: report.mismatches,
                             total: report.totalMismatchOverspend,
@@ -179,12 +187,23 @@ private struct CacheMissSection: View {
 
 private struct SkillLedgerSection: View {
     let ledger: SkillLedger
+    let artifactPaths: [String: String]
+    let onReveal: (String) -> Void
+
+    private var perSessionTax: Double {
+        Double(ledger.deadPromptTaxTokens) / 1_000_000
+            * (ModelTier.sonnet.rates.inp * 0.10)
+    }
+
+    private var totalTax: Double {
+        perSessionTax * Double(ledger.sessionCount)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             AuditSectionHeader(
                 title: "Skill ledger — dead weight + prompt tax",
-                caption: "\(ledger.deadCount) of \(ledger.catalogCount) catalog skills have never explicit-fired. Every skill's description rides every session's system prompt — the \(ledger.deadCount) dead ones cost ≈\(fmtTokens(ledger.deadPromptTaxTokens)) tokens across ~\(ledger.sessionCount) sessions. \(ledger.distinctFired) distinct skills ever fired (explicit Skill-tool calls + slash commands; auto-loaded skills still uncounted).")
+                caption: "\(ledger.deadCount) of \(ledger.catalogCount) catalog skills have never explicit-fired. Their descriptions ride every session's system prompt: \(String(format: "$%.4f/session", perSessionTax)) · \(String(format: "$%.2f", totalTax)) across \(fmtGrouped(ledger.sessionCount)) scanned sessions at Sonnet cache-read rates. \(ledger.distinctFired) distinct skills ever fired (explicit Skill-tool calls + slash commands; auto-loaded skills still uncounted).")
 
             HStack(alignment: .top, spacing: Theme.gutter) {
                 firedColumn.frame(maxWidth: .infinity, alignment: .leading)
@@ -201,7 +220,8 @@ private struct SkillLedgerSection: View {
                 LeanRow("No explicit skill invocations recorded (Skill tool or slash command).")
             } else {
                 ForEach(ledger.fired.prefix(8)) { e in
-                    HStack(spacing: 8) {
+                    HoverRow(action: { onReveal(artifactPath(for: e)) }) {
+                      HStack(spacing: 8) {
                         Text(e.name)
                             .font(.system(.subheadline, design: .monospaced))
                             .foregroundStyle(Theme.ink).lineLimit(1)
@@ -217,9 +237,12 @@ private struct SkillLedgerSection: View {
                             .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
                             .frame(width: Theme.microColWidth, alignment: .trailing)
                             .monospacedDigit()
+                      }
+                      .padding(.horizontal, 6)
+                      .padding(.vertical, 3)
+                      .contentShape(Rectangle())
+                      .overlay(alignment: .top) { Divider() }
                     }
-                    .padding(.vertical, 3)
-                    .overlay(alignment: .top) { Divider() }
                 }
             }
         }
@@ -237,7 +260,8 @@ private struct SkillLedgerSection: View {
             } else {
                 let top = max(ledger.dead.map(\.descriptionTokens).max() ?? 1, 1)
                 ForEach(ledger.dead.prefix(10)) { e in
-                    HStack(spacing: 8) {
+                    HoverRow(action: { onReveal(artifactPath(for: e)) }) {
+                      HStack(spacing: 8) {
                         Text(e.name)
                             .font(.system(.subheadline, design: .monospaced))
                             .foregroundStyle(Theme.muted).lineLimit(1)
@@ -248,9 +272,12 @@ private struct SkillLedgerSection: View {
                             .font(.caption2).foregroundStyle(Theme.faint)
                             .frame(width: 74, alignment: .trailing)
                             .monospacedDigit()
+                      }
+                      .padding(.horizontal, 6)
+                      .padding(.vertical, 3)
+                      .contentShape(Rectangle())
+                      .overlay(alignment: .top) { Divider() }
                     }
-                    .padding(.vertical, 3)
-                    .overlay(alignment: .top) { Divider() }
                 }
                 if ledger.dead.count > 10 {
                     Text("+\(ledger.dead.count - 10) more never-fired — archive candidates (the app never edits ~/.claude).")
@@ -259,6 +286,20 @@ private struct SkillLedgerSection: View {
                 }
             }
         }
+    }
+
+    private func artifactPath(for entry: SkillLedgerEntry) -> String {
+        if let path = artifactPaths[entry.name] { return path }
+        let base = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/skills", isDirectory: true)
+        let directorySkill = base.appendingPathComponent(entry.name, isDirectory: true)
+            .appendingPathComponent("SKILL.md")
+        if FileManager.default.fileExists(atPath: directorySkill.path) {
+            return directorySkill.path
+        }
+        let fileSkill = base.appendingPathComponent(entry.name).appendingPathExtension("md")
+        if FileManager.default.fileExists(atPath: fileSkill.path) { return fileSkill.path }
+        return base.path
     }
 }
 
@@ -290,7 +331,7 @@ private struct MismatchSection: View {
                             onSelect(c.id)
                         } leading: {
                             IdentityCell(project: c.project, id: c.shortID,
-                                         caption: "\(c.messageCount) msgs · \(c.fileEdits) edits · 0 agents",
+                                         caption: "\(c.messageCount) msgs · \(c.fileEdits) edit\(c.fileEdits == 1 ? "" : "s") · \(c.agentCalls) agent\(c.agentCalls == 1 ? "" : "s")",
                                          tier: c.tier)
                         } trailing: {
                             Text(fmtUSD(c.cost))

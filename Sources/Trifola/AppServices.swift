@@ -101,6 +101,10 @@ final class AppServices: ObservableObject {
     /// from the OAuth usage endpoint, read-only. Its own 5-min throttle keeps the
     /// FSEvents-driven refreshAll() calls cheap.
     let quota = QuotaStore()
+    /// First-run truth: whether the local Claude Code corpus exists and contains
+    /// at least one transcript. Checked at launch and after each coalesced refresh,
+    /// never in a hot SwiftUI body.
+    @Published private(set) var hasLocalClaudeCorpus = AppServices.detectLocalClaudeCorpus()
 
     // MENU-BAR PRESENCE lives on its own `MenuBarPresence` object (not here) so the
     // App scene's menu/MenuBarExtra don't observe this high-frequency store — see
@@ -114,10 +118,12 @@ final class AppServices: ObservableObject {
     /// command; RootView presents the overlay while it's true.
     @Published var showPalette = false
 
-    /// `CMC_SECTION=spend` (etc.) opens the app on a given screen — the snapshot
+    /// `TRIFOLA_SECTION=spend` (etc.) opens the app on a given screen — the snapshot
     /// loop uses it to capture every screen without UI scripting.
     @Published var section: AppSection =
-        ProcessInfo.processInfo.environment["CMC_SECTION"].flatMap(AppSection.init(rawValue:)) ?? .overview
+        (ProcessInfo.processInfo.environment["TRIFOLA_SECTION"]
+            ?? ProcessInfo.processInfo.environment["CMC_SECTION"])
+            .flatMap(AppSection.init(rawValue:)) ?? .overview
     @Published var selectedSessionID: String? = nil
     /// Heartbeat so relative timestamps ("3m ago", `isActive`) re-render.
     @Published var now = Date()
@@ -337,6 +343,10 @@ final class AppServices: ObservableObject {
     func refreshAll() {
         Task {
             await Perf.span("await:sessions.refreshNow") { await sessions.refreshNow() }
+            let corpusAvailable = Self.detectLocalClaudeCorpus()
+            if hasLocalClaudeCorpus != corpusAvailable {
+                hasLocalClaudeCorpus = corpusAvailable
+            }
             Perf.span("main:audit.refresh") { audit.refresh(sessions: sessions.sessions) }
             await Perf.span("await:attention.refresh") { await attention.refresh(candidates: attentionCandidates()) }
             await Perf.span("await:fleet.refresh") { await fleet.refresh(sessions: sessions.sessions, now: Date()) }
@@ -378,6 +388,20 @@ final class AppServices: ObservableObject {
             // 429 cooldown make this a no-op on most refresh cycles.
             await Perf.span("await:quota.refresh") { await quota.refresh() }
         }
+    }
+
+    private static func detectLocalClaudeCorpus() -> Bool {
+        let projects = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: projects.path),
+              let files = FileManager.default.enumerator(
+                at: projects,
+                includingPropertiesForKeys: nil,
+                options: [.skipsPackageDescendants]) else { return false }
+        for case let url as URL in files where url.pathExtension == "jsonl" {
+            return true
+        }
+        return false
     }
 
     private func handleChanges(sessions sessionsDirty: Bool, settings settingsDirty: Bool) {

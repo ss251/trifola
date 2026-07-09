@@ -29,7 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `.floating` lost to full-screen browsers and other floating panels
             // in practice, so present mode goes to `.statusBar` and keeps
             // re-asserting for a minute — the capture window snapshot.sh needs.
-            if ProcessInfo.processInfo.environment["CMC_PRESENT"] != nil {
+            let environment = ProcessInfo.processInfo.environment
+            if environment["TRIFOLA_PRESENT"] != nil || environment["CMC_PRESENT"] != nil {
                 window.level = .statusBar
                 if let screen = window.screen ?? NSScreen.main {
                     let vf = screen.visibleFrame
@@ -80,7 +81,7 @@ struct TrifolaApp: App {
     @StateObject private var menuPresence = MenuBarPresence()
 
     var body: some Scene {
-        WindowGroup("Claude Mission Control", id: "main") {
+        WindowGroup("Trifola", id: "main") {
             RootView()
                 .environmentObject(services)
         }
@@ -189,7 +190,7 @@ struct MenuBarContent: View {
             // WHO NEEDS ME — the strip's reason to exist.
             if mb.blocked.isEmpty && mb.waiting.isEmpty {
                 HStack(spacing: 7) {
-                    StatusDot(color: Theme.green, size: 7)
+                    SeatMark(fill: Theme.green, size: 7)
                     Text("Nothing needs you")
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
@@ -251,7 +252,7 @@ struct MenuBarContent: View {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
             }) {
-                Text("Open Mission Control")
+                Text("Open Trifola")
                     .frame(maxWidth: .infinity)
             }
         }
@@ -273,7 +274,7 @@ struct MenuBarContent: View {
             openWindow(id: "main")
         }) {
             HStack(spacing: 8) {
-                StatusDot(color: state.color, size: 7, active: state.needsAttention)
+                SeatMark(fill: state.color, size: 7, active: state.needsAttention)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.title)
                         .font(.subheadline.weight(state == .blocked ? .semibold : .regular))

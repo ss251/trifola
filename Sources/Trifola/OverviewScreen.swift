@@ -9,6 +9,9 @@ struct OverviewScreen: View {
     private var store: SessionStore { services.sessions }
 
     private var subtitle: String {
+        if isLocalCorpusMissing && store.sessions.isEmpty {
+            return "Local, read-only session intelligence · refreshed \(fmtAgo(store.lastRefresh))"
+        }
         // Distinct-project COUNT only — `projectSpend` also prices every
         // session (a full cost rollup per body pass) just to be counted here.
         let projects = Set(store.sessions.map(\.project)).count
@@ -16,6 +19,10 @@ struct OverviewScreen: View {
         let fleet = services.isCrossMachine && store.machineCount > 1
             ? "\(store.machineCount) machines · " : ""
         return "\(fleet)\(base) · refreshed \(fmtAgo(store.lastRefresh))"
+    }
+
+    private var isLocalCorpusMissing: Bool {
+        !services.hasLocalClaudeCorpus
     }
 
     var body: some View {
@@ -32,6 +39,19 @@ struct OverviewScreen: View {
             .controlSize(.small)
             .keyboardShortcut("r", modifiers: .command)
         } content: {
+            if isLocalCorpusMissing {
+                CalloutPanel(tone: Theme.accent) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Waiting on your first Claude Code session")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.ink)
+                        Text("Trifola reads ~/.claude/projects — it appears after your first claude run. Nothing to configure; nothing leaves this machine.")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
             AttentionStrip()
             if services.isCrossMachine {
                 FleetMachinesSection()
@@ -50,7 +70,7 @@ struct OverviewScreen: View {
                     sessions: store.sessions,
                     dayKey: CostProvenance.dayKey(for: services.now),
                     footnotes: [CostProvenance.projectionFootnote(governor)])
-            })
+            }, showsDisclaimer: false)
             Divider()
             // PLAN QUOTA (W7): the REAL rate-limit windows next to the estimate
             // above — "what we think you burned" vs "what Anthropic says you
@@ -58,7 +78,10 @@ struct OverviewScreen: View {
             QuotaSection(snapshot: services.quota.snapshot,
                          status: services.quota.status,
                          source: services.quota.source,
-                         now: services.now)
+                         now: services.now,
+                         onRetry: {
+                             Task { await services.quota.refresh(minInterval: 0) }
+                         })
             Divider()
             // REROUTE RECEIPTS (spree #2): fleet trend row + orchestrator-hog
             // alert. Both are evidence-gated — clean fleets render nothing.
@@ -95,16 +118,16 @@ struct OverviewScreen: View {
 
     private var statRow: some View {
         StatRow {
-            StatTile(label: "Est. usage value",
+            StatTile(label: "Usage at API rates",
                      value: fmtUSD(store.totalCost),
-                     sub: "API-rate equivalent — not real spend")
+                     sub: "at API rates")
             Divider()
             StatTile(label: "Active now",
                      value: "\(store.activeSessions.count)",
                      sub: store.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m",
                      live: !store.activeSessions.isEmpty)
             Divider()
-            StatTile(label: "Cache savings",
+            StatTile(label: "Cache savings — net of write premiums",
                      value: fmtUSD(store.totalCacheSavings),
                      sub: "vs. uncached input at API rates")
         }
@@ -134,7 +157,7 @@ private struct TierSpendSection: View {
                         Text(st.tier.label)
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink)
-                        Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tok")
+                        Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tok (excl. cache reads)")
                             .font(.footnote)
                             .foregroundStyle(Theme.faint)
                         Spacer()
@@ -198,7 +221,7 @@ private struct LiveNowSection: View {
         VStack(alignment: .leading, spacing: Theme.rhythm) {
             HStack(spacing: 8) {
                 SectionLabel("Live now")
-                if !services.sessions.activeSessions.isEmpty { StatusDot(size: 6) }
+                if !services.sessions.activeSessions.isEmpty { SeatMark(size: 6) }
                 Spacer()
                 TapButton("Open board", action: { services.section = .live })
                     .font(.footnote)
@@ -220,7 +243,7 @@ private struct LiveNowSection: View {
                             services.inspect(s)
                         } content: {
                             HStack(spacing: 8) {
-                                StatusDot(color: Theme.green, size: 6)
+                                SeatMark(fill: Theme.green, size: 6)
                                 VStack(alignment: .leading, spacing: 1) {
                                     HStack(spacing: 6) {
                                         Text(s.displayTitle)
@@ -236,9 +259,14 @@ private struct LiveNowSection: View {
                                         .foregroundStyle(Theme.muted)
                                 }
                                 Spacer()
-                                Text(fmtUSD(s.cost))
-                                    .font(.subheadline)
-                                    .foregroundStyle(Theme.muted)
+                                VStack(alignment: .trailing, spacing: 1) {
+                                    Text(fmtUSD(s.cost))
+                                        .font(.subheadline)
+                                        .foregroundStyle(Theme.muted)
+                                    Text("session-to-date")
+                                        .font(.caption2)
+                                        .foregroundStyle(Theme.faint)
+                                }
                             }
                             .padding(.horizontal, 6)
                             .padding(.vertical, 5)
@@ -345,7 +373,7 @@ struct FleetMachinesSection: View {
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink)
                         if r.activeCount > 0 {
-                            StatusDot(color: Theme.green, size: 6)
+                            SeatMark(fill: Theme.green, size: 6)
                             Text("\(r.activeCount) active")
                                 .font(.caption)
                                 .foregroundStyle(Theme.muted)

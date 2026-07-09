@@ -127,11 +127,7 @@ struct FleetScreen: View {
                         pulses: heartbeat.pulses,
                         onSelect: { services.inspect($0) }
                     )
-                    .padding(.horizontal, Theme.gutter)
-                    .padding(.bottom, 28)
-                    .padding(.top, 14)
-                    .frame(maxWidth: 1240, alignment: .leading)
-                    .frame(maxWidth: .infinity)
+                    .screenScaffoldFrame()
                 }
                 .scrollIndicators(.never)
             }
@@ -248,15 +244,15 @@ private struct FleetBayView: View {
             if bay.isIdle {
                 // Compressed dimmed line — the bay sinks via the ember fade, not by
                 // reordering. Its cost stays legible.
-                if let t = bay.tokens.first {
+                ForEach(bay.tokens) { t in
                     HStack(spacing: 10) {
-                        StatusDot(color: Theme.faint, size: 6, active: false)
+                        SeatMark(fill: Theme.faint, size: 6, active: false)
                         Text(t.session.tier.label).font(.caption).foregroundStyle(Theme.faint)
                         if let q = t.taskQuote {
                             Text("last: \(q)").font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
                         }
                         Spacer(minLength: 8)
-                        Text(fmtUSD(bay.costSubtotal)).font(.caption).foregroundStyle(Theme.muted)
+                        Text(fmtUSD(t.session.cost)).font(.caption).foregroundStyle(Theme.muted)
                     }
                     .padding(.leading, 2)
                     .opacity(0.85)
@@ -312,7 +308,7 @@ private struct BayHeader: View {
             if bay.isIdle {
                 Text("idle \(fmtAgeShort(bay.age))").font(.caption).foregroundStyle(Theme.faint)
             } else if bay.blockedCount > 0 {
-                StatusDot(color: Theme.red, size: 6)
+                SeatMark(fill: Theme.red, size: 6)
                 Text("\(bay.blockedCount) blocked").font(.caption.weight(.medium)).foregroundStyle(Theme.ink)
                 Text("· \(fmtUSD(bay.costSubtotal)) today").font(.caption).foregroundStyle(Theme.muted)
             } else {
@@ -372,6 +368,7 @@ private struct FleetTokenView: View {
                 Text("\(token.session.displayTitle) · \(fmtAgeShort(token.age))")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(Theme.faint)
+                    .lineLimit(1)
                     .frame(width: 116, alignment: .leading)
                 middle
                 Spacer(minLength: 8)
@@ -408,7 +405,7 @@ private struct FleetTokenView: View {
                     Text("“\(q)”").font(.caption2).foregroundStyle(Theme.faint).lineLimit(1)
                 }
             } else if let q = token.taskQuote {
-                Text("「\(q)」").font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
+                Text("“\(q)”").font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
             } else {
                 Text(token.state.label.lowercased()).font(.caption).foregroundStyle(Theme.faint)
             }

@@ -60,7 +60,7 @@ struct LiveScreen: View {
                             Text("Live Now")
                                 .font(.title2.weight(.semibold))
                                 .foregroundStyle(Theme.ink)
-                            StatusDot(color: Theme.green, size: 7)
+                            SeatMark(fill: Theme.green, size: 7)
                         }
                         Text("\(live.count) active session\(live.count == 1 ? "" : "s") · tailing transcripts in real time")
                             .font(.subheadline)
@@ -86,9 +86,7 @@ struct LiveScreen: View {
                         .foregroundStyle(Theme.muted)
                 }
             }
-            .padding(.horizontal, Theme.gutter)
-            .padding(.bottom, 28)
-            .padding(.top, 14)
+            .screenScaffoldFrame()
         }
         .scrollIndicators(.never)
     }
@@ -111,7 +109,7 @@ private struct LiveTile: View {
                             .lineLimit(1)
                         TierBadge(tier: session.tier)
                     }
-                    Text("\(session.project) · \(fmtAgo(session.lastActivity)) · \(fmtUSD(session.cost))")
+                    Text("\(session.project) · \(fmtAgo(session.lastActivity)) · \(fmtUSD(session.cost)) session-to-date")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                 }

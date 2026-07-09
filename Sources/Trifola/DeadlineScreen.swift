@@ -331,7 +331,7 @@ struct DeadlineScreen: View {
             if cards.isEmpty {
                 EmptyState(icon: "calendar",
                            title: "No deadlines yet",
-                           detail: "The board pre-populates from dates already written in your MEMORY.md and each project's NOTES.md — nothing to type. It reads your notes; it never writes them.")
+                           detail: "Trifola pre-fills from dates in your project notes (NOTES.md, MEMORY.md) and from Linear once connected — it reads your notes, never writes them.")
             } else {
                 DeadlineContent(cards: cards, config: DeadlineConfig(),
                                 tiers: tiers,
@@ -418,7 +418,7 @@ struct DeadlineContent: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Eyebrow("Evidence — deadline × activity, sorted by jeopardy (idle ÷ runway)")
-                Text("Est. usage value · not real spend")
+                Text("Usage at API rates")
                     .font(.caption2).foregroundStyle(Theme.faint)
                 columnsHeader
                 VStack(alignment: .leading, spacing: 2) {

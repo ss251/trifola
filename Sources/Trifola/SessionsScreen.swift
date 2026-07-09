@@ -71,7 +71,7 @@ struct SessionsScreen: View {
                 Text("Sessions")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(Theme.ink)
-                    .padding(.top, 14)
+                    .padding(.top, ScreenScaffoldMetrics.topInset)
 
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
@@ -275,7 +275,7 @@ private struct SessionInspector: View {
                     .textSelection(.enabled)
                 SessionActions(session: session)
             }
-            .padding(.top, 14)
+            .padding(.top, ScreenScaffoldMetrics.topInset)
 
             Divider()
 

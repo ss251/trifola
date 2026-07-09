@@ -25,6 +25,9 @@ struct RerouteReceiptView: View {
                     .monospacedDigit()
                     .foregroundStyle(Theme.muted)
             }
+            Text("runs that landed on a different model than you configured")
+                .font(.caption2)
+                .foregroundStyle(Theme.faint)
             ForEach(receipt.silentFlips.prefix(Self.maxRows)) { flip in
                 flipRow(flip)
             }
@@ -81,6 +84,9 @@ struct RerouteTrendRow: View {
         if report.totalSilent > 0 {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Eyebrow("Reroutes")
+                Text("runs that landed on a different model than you configured")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
                 Text(sparkline)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(Theme.muted)
@@ -124,7 +130,7 @@ struct OrchestratorHogRow: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(.caption2)
                 .foregroundStyle(Theme.amber)
-            Text(alert.line)
+            Text("One session billed \(fmtPct(alert.share)) of today's \(fmtUSD(alert.dayTotal)). Orchestrator hog: \(alert.project) (\(alert.shortID)) billed \(fmtUSD(alert.sessionCost)); delegate more to cheaper subagents.")
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)

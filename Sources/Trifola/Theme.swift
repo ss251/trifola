@@ -60,7 +60,7 @@ extension ModelTier {
         case .opus: return Color(red: 204 / 255, green: 124 / 255, blue: 94 / 255) // Claude terracotta
         case .sonnet: return Color(red: 70 / 255, green: 180 / 255, blue: 130 / 255) // muted green
         case .haiku: return Color(red: 73 / 255, green: 163 / 255, blue: 176 / 255) // muted blue
-        case .user: return Color(red: 0.76, green: 0.62, blue: 0.29)   // muted amber (user-defined tier)
+        case .user: return Color(red: 0.58, green: 0.52, blue: 0.79)   // muted amber (user-defined tier)
         case .other: return Color(nsColor: .secondaryLabelColor)
         }
     }

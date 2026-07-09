@@ -435,7 +435,7 @@ private struct FlowLayout: Layout {
             }
         }()
         return HStack(spacing: 6) {
-            StatusDot(color: store.probing ? Theme.amber : color, size: 6)
+            SeatMark(fill: store.probing ? Theme.amber : color, size: 6)
             Text(label)
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
@@ -579,7 +579,7 @@ struct ProbeCard: View {
     private var badge: some View {
         let text = result.map { $0.status.rawValue.capitalized } ?? (probing ? "Probing…" : "—")
         return HStack(spacing: 5) {
-            StatusDot(color: color, size: 6)
+            SeatMark(fill: color, size: 6)
             Text(text)
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
@@ -799,18 +799,18 @@ struct SkillLedgerBadge: View {
     var body: some View {
         HStack(spacing: 6) {
             if let e = entry, e.invocations > 0 {
-                StatusDot(color: Theme.green, size: 6)
+                SeatMark(fill: Theme.green, size: 6)
                 Text("fired ×\(e.invocations)").font(.caption.weight(.medium)).foregroundStyle(Theme.ink)
                 Text("· \(e.sessionsTouched) session\(e.sessionsTouched == 1 ? "" : "s") · last \(fmtAgo(e.lastFired))")
                     .font(.caption2).foregroundStyle(Theme.muted)
             } else if entry != nil {
-                StatusDot(color: Theme.amber.opacity(0.6), size: 6)
+                SeatMark(fill: Theme.amber.opacity(0.6), size: 6)
                 Text("dead — never explicit-fired").font(.caption).foregroundStyle(Theme.muted)
             } else if source.lane == .user {
-                StatusDot(color: Theme.faint, size: 6)
+                SeatMark(fill: Theme.faint, size: 6)
                 Text("no explicit invocations recorded").font(.caption).foregroundStyle(Theme.muted)
             } else {
-                StatusDot(color: Theme.faint, size: 6)
+                SeatMark(fill: Theme.faint, size: 6)
                 Text("not tracked in the ledger (plugin/project skill)").font(.caption).foregroundStyle(Theme.muted)
             }
         }

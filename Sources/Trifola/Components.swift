@@ -40,28 +40,6 @@ struct Eyebrow: View {
     }
 }
 
-// MARK: - Status dot
-// A plain filled circle — no glow, no shadow, no pulse ring. The color IS the
-// signal (CodexBar status-dot discipline). An optional 1pt ring carries a second
-// variable (the model tier) — the same encoding the Fleet seat token uses, so
-// every session dot in the app is the same object at every density (POLISH C10).
-
-struct StatusDot: View {
-    var color: Color = Theme.green
-    var size: CGFloat = 7
-    var active = true
-    var ring: Color? = nil
-
-    var body: some View {
-        Circle()
-            .fill(color.opacity(active ? 1 : 0.45))
-            .frame(width: size, height: size)
-            .overlay {
-                if let ring { Circle().strokeBorder(ring.opacity(0.9), lineWidth: 1) }
-            }
-    }
-}
-
 // MARK: - The door light — the app's identity mark (SwiftUI path)
 // The signature (POLISH II.A): a filled center + a concentric 1pt ring — the
 // session dot with its tier ring, the app's own telemetry atom promoted to its
@@ -71,34 +49,46 @@ struct StatusDot: View {
 // dock icon + template menu glyph share the AppKit path in `AppBrand.markImage`.
 
 struct SeatMark: View {
-    var fill: Color
-    var ring: Color
+    var fill: Color = Theme.green
+    var ring: Color? = nil
     var size: CGFloat = 7
+    var active = true
     /// When false the center is hollow (the menu-bar "quiet" rendering has none).
     var filled: Bool = true
-    var ringWidth: CGFloat = 1
+    var ringWidth: CGFloat? = nil
     /// Gapped = a haloed dot-in-ring (the wordmark/logo rendering). Non-gapped = a
     /// filled dot with a concentric rim (the live seat token — unchanged).
     var gapped: Bool = false
 
+    private var effectiveRingWidth: CGFloat {
+        ringWidth ?? (ring == nil ? 0 : 1)
+    }
+
     var body: some View {
-        if gapped {
-            ZStack {
-                Circle().strokeBorder(ring, lineWidth: ringWidth)
-                if filled {
-                    Circle().fill(fill)
-                        .frame(width: size * 0.42, height: size * 0.42)
+        Group {
+            if gapped {
+                ZStack {
+                    if let ring, effectiveRingWidth > 0 {
+                        Circle().strokeBorder(ring, lineWidth: effectiveRingWidth)
+                    }
+                    if filled {
+                        Circle().fill(fill)
+                            .frame(width: size * 0.42, height: size * 0.42)
+                    }
                 }
-            }
-            .frame(width: size, height: size)
-        } else {
-            Circle()
-                .fill(filled ? fill : .clear)
                 .frame(width: size, height: size)
-                .overlay {
-                    if ringWidth > 0 { Circle().strokeBorder(ring, lineWidth: ringWidth) }
-                }
+            } else {
+                Circle()
+                    .fill(filled ? fill : .clear)
+                    .frame(width: size, height: size)
+                    .overlay {
+                        if let ring, effectiveRingWidth > 0 {
+                            Circle().strokeBorder(ring, lineWidth: effectiveRingWidth)
+                        }
+                    }
+            }
         }
+        .opacity(active ? 1 : 0.45)
     }
 }
 
@@ -191,7 +181,7 @@ struct StatTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
-                if live { StatusDot(color: Theme.green, size: 6) }
+                if live { SeatMark(fill: Theme.green, size: 6) }
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
@@ -344,6 +334,12 @@ struct TapButton<Label: View>: View {
         label()
             .contentShape(Rectangle())
             .onTapGesture { if isEnabled { action() } }
+            .focusable()
+            .onKeyPress(.return) {
+                guard isEnabled else { return .ignored }
+                action()
+                return .handled
+            }
             .background {
                 if let shortcut {
                     Button("", action: action)
@@ -594,13 +590,12 @@ struct EvidenceColumns: View {
 
     var body: some View {
         HStack(spacing: Theme.sectionGap) {
-            Text(leading).frame(maxWidth: .infinity, alignment: .leading)
+            Eyebrow(leading).frame(maxWidth: .infinity, alignment: .leading)
             ForEach(Array(columns.enumerated()), id: \.offset) { _, c in
-                Text(c.title).frame(width: c.width, alignment: c.align)
+                Eyebrow(c.title).frame(width: c.width, alignment: c.align)
             }
             if hasNavGlyph { Color.clear.frame(width: 14) }
         }
-        .font(.caption).foregroundStyle(Theme.faint)
         .padding(.horizontal, 8)
     }
 }
@@ -802,6 +797,12 @@ struct FlagRow: View {
 // MARK: - Screen scaffold (shared page chrome)
 // 20pt gutters, headline-scale title, hairline under the header.
 
+enum ScreenScaffoldMetrics {
+    static let topInset: CGFloat = 14
+    static let bottomInset: CGFloat = 28
+    static let maxWidth: CGFloat = 1240
+}
+
 struct ScreenScaffold<Content: View, Trailing: View>: View {
     let title: String
     let subtitle: String
@@ -837,13 +838,19 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
                 Divider()
                 content()
             }
-            .padding(.horizontal, Theme.gutter)
-            .padding(.bottom, 28)
-            .padding(.top, 14)
-            .frame(maxWidth: 1240, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .screenScaffoldFrame()
         }
         .scrollIndicators(.never)
+    }
+}
+
+extension View {
+    func screenScaffoldFrame() -> some View {
+        padding(.horizontal, Theme.gutter)
+            .padding(.bottom, ScreenScaffoldMetrics.bottomInset)
+            .padding(.top, ScreenScaffoldMetrics.topInset)
+            .frame(maxWidth: ScreenScaffoldMetrics.maxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity)
     }
 }
 

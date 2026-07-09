@@ -14,7 +14,8 @@ import TrifolaKit
 /// ONLY when the toggle actually flips, so the menu is rebuilt only when it truly
 /// changes — the scene no longer observes the high-frequency `AppServices`.
 ///
-/// `CMC_MENUBAR=0/1` still pins the value for one launch (snapshot/CI) without touching
+/// `TRIFOLA_MENUBAR=0/1` still pins the value for one launch (snapshot/CI), with
+/// `CMC_MENUBAR` retained as a silent legacy alias, without touching
 /// the persisted preference; a user ⌘-drag out of the bar flips + persists it.
 @MainActor
 final class MenuBarPresence: ObservableObject {
@@ -43,11 +44,15 @@ final class MenuBarPresence: ObservableObject {
                 })
     }
 
-    /// True when CMC_MENUBAR pinned the value for this launch (don't persist flips).
-    static let envOverridden = ProcessInfo.processInfo.environment["CMC_MENUBAR"] != nil
+    private static let environmentValue =
+        ProcessInfo.processInfo.environment["TRIFOLA_MENUBAR"]
+        ?? ProcessInfo.processInfo.environment["CMC_MENUBAR"]
+
+    /// True when an environment key pinned the value for this launch (don't persist flips).
+    static let envOverridden = environmentValue != nil
 
     init() {
-        switch ProcessInfo.processInfo.environment["CMC_MENUBAR"] {
+        switch Self.environmentValue {
         case "0": enabled = false
         case "1": enabled = true
         default: enabled = MenuBarPreferencesStore().load().enabled
