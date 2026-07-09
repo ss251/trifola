@@ -14,8 +14,9 @@ indie by construction.
 
 This list is a contract. Scope creep is how tools in this space die.
 
-- **Not a cloud service.** No account, no telemetry, no upload. It reads local `~/.claude` and
-  renders. The moment it needs a login, it's a different product.
+- **Not a cloud service.** No Trifola account, no Trifola cloud, and no telemetry. Transcript
+  analysis stays local. Narrow network-capable features (quota, pricing refresh, manually
+  configured machines, and opt-in Linear sync) are disclosed in the README data-flow matrix.
 - **Not another token-total tracker.** Totals are a solved, crowded problem (ccusage, CodexBar).
   trifola attributes spend to a **cause**, or it isn't worth shipping.
 - **Not a general log viewer or an IDE.** It surfaces judgment, not raw transcripts.

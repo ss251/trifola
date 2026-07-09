@@ -31,8 +31,9 @@ dependencies. The design splits cleanly into three layers.
 - **Pricing.** A date-stamped per-model rate table with cache splits (5-minute at 1.25×, 1-hour
   at 2×, warm reads at ~0.1×), embedded at build time. Cache **leak** (avoidable) and unavoidable
   **first-touch** are tracked separately and never summed into one dishonest number.
-- **MCP server.** A read-only surface (`session_brief`, `context_tax`, `reroutes`, `cost_today`,
-  `quota_windows`) so a *running* Claude Code session can introspect its own state. Local only.
+- **MCP server.** A source-safe surface (`session_brief`, `context_tax`, `reroutes`, `cost_today`,
+  `quota_windows`) so a *running* Claude Code session can introspect its own state. It never
+  mutates `~/.claude` or external systems; the shared scanner maintains an app-local session index.
 
 ## The durability battle: the upstream format
 
