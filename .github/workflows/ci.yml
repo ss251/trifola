@@ -34,25 +34,27 @@ jobs:
         # free memory craters, `$last` names the exact ballooning test across
         # all 118 suites. No pgrep (swift-testing's process name did not match).
         run: |
+          # Force per-event flushing via a pty (macOS has no stdbuf): swift-testing
+          # block-buffers to a pipe, so the prior sampler's `tail -1` lagged and
+          # named provably-fast tests (buffering artifacts). Under `script`'s pty
+          # it line-flushes, so the crater sample names the EXACT stuck test.
           (
             while true; do
               ts=$(date +%H:%M:%S)
               freepg=$(vm_stat 2>/dev/null | awk -F: '/Pages free/{gsub(/[ .]/,"",$2);print $2}')
-              swap=$(sysctl -n vm.swapusage 2>/dev/null | tr -d '\n')
-              last=$(tail -1 test-output.log 2>/dev/null | tr -d '\r')
-              echo "[$ts] freePages=${freepg:-?} swap=[$swap] :: $last"
+              last=$(tail -1 test-output.log 2>/dev/null | tr -cd '[:print:]' | tail -c 130)
+              echo "[$ts] freePages=${freepg:-?} :: $last"
               sleep 2
             done
           ) > sampler.log 2>&1 &
           SAMPLER=$!
           set +e
-          swift test --no-parallel --disable-sandbox 2>&1 | tee test-output.log
-          EC=${PIPESTATUS[0]}
+          script -q test-output.log bash -c 'swift test --no-parallel --disable-sandbox; echo "RC=$?" > swift-test-exit.code'
           set -e
           kill "$SAMPLER" 2>/dev/null || true
-          echo "$EC" > swift-test-exit.code
-          echo "SWIFT_TEST_RAW_EXIT=$EC  (137=SIGKILL 134=SIGABRT 139=SIGSEGV 143=SIGTERM)"
-          exit "$EC"
+          EC=$(grep -oE '[0-9]+' swift-test-exit.code 2>/dev/null | head -1 || echo 1)
+          echo "SWIFT_TEST_RC=$EC"
+          [ "$EC" = "0" ]
 
       # Turns a non-reproducible runner-only death into a real diagnosis: the
       # raw exit signal, the resource curve over the whole run, kernel kill /
