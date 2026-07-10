@@ -26,9 +26,11 @@ jobs:
 
       - name: Test
         timeout-minutes: 10
-        # swift-testing runs parallel by default; the standard runner has a
-        # fraction of a dev machine's RAM, and the parallel fixture load was
-        # dying with no verdict (~2min, no crash, no summary). Serial trades a
-        # little wall-time for a bounded memory footprint and a legible log
-        # where the last-started test is unambiguously any future culprit.
-        run: swift test --no-parallel
+        # --disable-sandbox: SwiftPM's build sandbox exists to contain untrusted
+        # package plugins/build tools, not our own first-party test suite. Under
+        # it, the runner silently SIGKILLs the test process during L-001's
+        # ancestor filesystem walk (a message-less ~16ms death that never
+        # reproduced under a dev machine's looser profile). This is the exact
+        # command that passes locally; the secret-scan + build steps above are
+        # the real supply-chain gate.
+        run: swift test --disable-sandbox
