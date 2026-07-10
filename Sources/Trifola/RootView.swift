@@ -132,7 +132,7 @@ private struct Wordmark: View {
         // quiet — the exact mapping the menu bar uses. A static rendering of a real
         // value (recomputed with the existing refresh), never an animation. Still at
         // the door is honest; the tint is the signal.
-        let worst = services.attentionBoard(now: services.now).worst
+        let worst = services.alertingAttentionBoard(now: services.now).worst
         HStack(spacing: 9) {
             SeatMark(fill: Theme.ink, ring: (worst?.color ?? Theme.faint),
                      size: 15, ringWidth: 1.5, gapped: true)

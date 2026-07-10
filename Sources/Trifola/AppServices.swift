@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import SwiftUI
 import Combine
 import TrifolaKit
@@ -97,6 +98,10 @@ final class AppServices: ObservableObject {
     /// them without watching the window. Opt-in (default OFF), persisted to the app's
     /// own dir; degrades silently when unauthorized.
     let notifier = BlockedNotifierService()
+    /// Low-frequency Settings preferences (quiet hours + default snooze).
+    let preferences = AppPreferencesModel()
+    /// Persistent snooze/mute agency plus the visual blocked→running closure beat.
+    let agency = AgencyController()
     /// PLAN QUOTA (W7): the REAL rate-limit windows (5h · weekly · model-scoped)
     /// from the OAuth usage endpoint, read-only. Its own 5-min throttle keeps the
     /// FSEvents-driven refreshAll() calls cheap.
@@ -146,6 +151,7 @@ final class AppServices: ObservableObject {
             .merge(with: ledger.objectWillChange, machines.objectWillChange)
             .merge(with: notifier.objectWillChange, deadlines.objectWillChange)
             .merge(with: quota.objectWillChange)
+            .merge(with: preferences.objectWillChange, agency.objectWillChange)
             // THROTTLE the merged forward, ~7/sec max. Every child publish here
             // triggers a FULL-tree re-render (the whole window observes AppServices);
             // a child that publishes rapidly (a progressive scan, the Tailscale
@@ -167,6 +173,19 @@ final class AppServices: ObservableObject {
         notifier.onActivateSession = { [weak self] id in
             guard let self, let s = self.sessions.sessions.first(where: { $0.id == id }) else { return }
             self.inspect(s)
+        }
+        notifier.onSnoozeSession = { [weak self] id in
+            guard let self, let s = self.sessions.sessions.first(where: { $0.id == id }) else { return }
+            self.agency.snoozeOneHour(s, now: self.now)
+        }
+        notifier.preferencesProvider = { [weak self] in
+            self?.preferences.value ?? AppPreferences()
+        }
+        machines.onConfigChanged = { [weak self] in
+            guard let self else { return }
+            self.sessions.remoteSources = self.machines.remoteSources
+            self.machines.syncInBackground()
+            self.refreshAll()
         }
     }
 
@@ -288,8 +307,19 @@ final class AppServices: ObservableObject {
         return board
     }
 
+    /// Agency applied to the raw board. The result retains every row for honest
+    /// rendering and exposes a filtered board solely for interrupting surfaces.
+    func attentionSuppression(now: Date? = nil) -> AttentionSuppressionResult {
+        let n = now ?? self.now
+        return agency.result(for: attentionBoard(now: n), now: n)
+    }
+
+    func alertingAttentionBoard(now: Date? = nil) -> AttentionBoard {
+        attentionSuppression(now: now).alertingBoard
+    }
+
     /// Count of BLOCKED sessions — the dock badge + menu-bar number.
-    var blockedCount: Int { attentionBoard().blockedCount }
+    var blockedCount: Int { alertingAttentionBoard().blockedCount }
 
     // MARK: Deadline Board
 
@@ -312,7 +342,10 @@ final class AppServices: ObservableObject {
     /// which changes no file). Rising-edge dedup means the two callers never
     /// double-notify.
     func evaluateNotifications() {
-        notifier.evaluate(board: attentionBoard(now: now), signals: attention.signals)
+        let raw = attentionBoard(now: now)
+        agency.observe(board: raw, now: now)
+        notifier.evaluate(board: agency.result(for: raw, now: now).alertingBoard,
+                          signals: attention.signals)
     }
 
     // MARK: Dreaming Ledger
@@ -457,6 +490,17 @@ final class AppServices: ObservableObject {
     func inspect(_ session: SessionSummary) {
         selectedSessionID = session.id
         section = .sessions
+    }
+
+    /// The attention door light opens the real terminal when possible, then falls
+    /// back to today's transcript inspector without surfacing an error interruption.
+    func openTerminal(_ session: SessionSummary) {
+        TerminalLauncher.open(session: session) { [weak self] in
+            self?.inspect(session)
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first(where: { $0.canBecomeKey && !$0.className.contains("StatusBar") })?
+                .makeKeyAndOrderFront(nil)
+        }
     }
 
     /// Launch a saved recipe from the palette — the exact compose → copy path the

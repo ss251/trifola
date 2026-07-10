@@ -150,15 +150,7 @@ public enum MenuBarReducer {
                              hog: OrchestratorHogAlert? = nil,
                              quota: QuotaSnapshot? = nil,
                              now: Date) -> MenuBarModel {
-        // Fleet one-liner: non-zero counts in blocked · waiting · running · idle
-        // order, then always the $-today clause.
-        var parts: [String] = []
-        if board.blockedCount > 0 { parts.append("\(board.blockedCount) blocked") }
-        if board.waitingCount > 0 { parts.append("\(board.waitingCount) waiting") }
-        if board.runningCount > 0 { parts.append("\(board.runningCount) running") }
-        if board.idleCount > 0 { parts.append("\(board.idleCount) idle") }
-        let counts = parts.isEmpty ? "fleet is quiet" : parts.joined(separator: " · ")
-        let fleetLine = counts + String(format: " · $%.0f today", todayCost)
+        let fleetLine = FleetSummaryReducer.fleetLine(board: board, todayCost: todayCost)
 
         func row(_ item: AttentionItem) -> MenuBarModel.AttentionRow {
             MenuBarModel.AttentionRow(id: item.session.id,

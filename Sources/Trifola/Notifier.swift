@@ -46,6 +46,11 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
 
     /// Focus a session when its notification is clicked (wired to `AppServices.inspect`).
     var onActivateSession: ((String) -> Void)?
+    /// Snooze uses the same application-level agency store as every context menu.
+    var onSnoozeSession: ((String) -> Void)?
+    /// Settings stays outside this service so the standard Settings scene can own
+    /// persistence without adding another high-frequency observation path here.
+    var preferencesProvider: () -> AppPreferences = { AppPreferencesStore().load() }
 
     init(prefsStore: NotifyPreferencesStore = NotifyPreferencesStore()) {
         self.prefsStore = prefsStore
@@ -53,7 +58,9 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
         self.enabled = prefsStore.load().enabled
         super.init()
         if bundled {
-            UNUserNotificationCenter.current().delegate = self
+            let center = UNUserNotificationCenter.current()
+            center.delegate = self
+            BlockedNotificationCategory.register(on: UNCategoryCenterAdapter(center: center))
             if enabled { requestAuthorizationIfNeeded() }
         }
     }
@@ -64,10 +71,13 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
     func evaluate(board: AttentionBoard, signals: [String: AttentionSignals]) {
         let plan = BlockedNotifier.plan(board: board, signals: signals,
                                         previouslyBlocked: previouslyBlocked)
+        let decision = NotificationPolicy.reduce(plan: plan,
+                                                  preferences: preferencesProvider(),
+                                                  at: Date())
         // Always adopt the new tracked set — even when disabled — so the rising-edge
         // math stays honest across enable/disable and so no burst re-fires.
-        previouslyBlocked = plan.newState
-        guard enabled, bundled, let note = plan.notification else { return }
+        previouslyBlocked = decision.newState
+        guard enabled, bundled, let note = decision.notification else { return }
         post(note)
     }
 
@@ -92,6 +102,7 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
         // Group under one thread so a walk-away backlog collapses in Notification
         // Center instead of stacking N separate rows.
         content.threadIdentifier = "blocked"
+        content.categoryIdentifier = BlockedNotificationCategory.identifier
         let id = "blocked-\(note.primarySessionID)-\(Int(Date().timeIntervalSince1970))"
         let req = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req) { _ in }   // ignore errors — silent
@@ -103,15 +114,25 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let id = response.notification.request.content.userInfo["sessionID"] as? String
+        let route = BlockedNotificationCategory.route(
+            actionIdentifier: response.actionIdentifier,
+            defaultActionIdentifier: UNNotificationDefaultActionIdentifier)
         Task { @MainActor in
-            // Deep-link into a discoverable `claude` Remote Control scheme if one
-            // exists; otherwise just bring the app forward. We never fake phone reach.
-            if let id, let url = RemoteControlDeepLink.url(forSession: id) {
-                NSWorkspace.shared.open(url)
-            } else {
-                NSApp.activate(ignoringOtherApps: true)
+            switch route {
+            case .show:
+                // Deep-link into a discoverable `claude` Remote Control scheme if one
+                // exists; otherwise bring the app forward and reuse inspect.
+                if let id, let url = RemoteControlDeepLink.url(forSession: id) {
+                    NSWorkspace.shared.open(url)
+                } else {
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                if let id { self.onActivateSession?(id) }
+            case .snoozeOneHour:
+                if let id { self.onSnoozeSession?(id) }
+            case .dismiss:
+                break
             }
-            if let id { self.onActivateSession?(id) }
         }
         completionHandler()   // handled; the activation hop runs independently
     }
@@ -122,6 +143,29 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
                                             willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
+    }
+}
+
+/// The sole translation point from the tested, platform-neutral category contract
+/// to UserNotifications.
+private final class UNCategoryCenterAdapter: NotificationCategoryCenter {
+    private let center: UNUserNotificationCenter
+
+    init(center: UNUserNotificationCenter) { self.center = center }
+
+    func install(categories: Set<NotificationCategoryDescriptor>) {
+        let native = Set(categories.map { category in
+            let actions = category.actions.map { action in
+                UNNotificationAction(identifier: action.identifier,
+                                     title: action.title,
+                                     options: action.opensApp ? [.foreground] : [])
+            }
+            return UNNotificationCategory(identifier: category.identifier,
+                                          actions: actions,
+                                          intentIdentifiers: [],
+                                          options: [])
+        })
+        center.setNotificationCategories(native)
     }
 }
 

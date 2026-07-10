@@ -101,9 +101,17 @@ enum SyncRunner {
 /// a calm "offline" line — the fleet runs LOCAL-ONLY and never blocks.
 @MainActor
 final class MachineStore: ObservableObject {
+    struct ConnectionTestResult: Equatable {
+        enum State: Equatable { case testing, reachable, unreachable }
+        let state: State
+        let checkedAt: Date?
+        let error: String?
+    }
+
     @Published private(set) var config: MachinesConfig = .seeded
     @Published private(set) var statuses: [RemoteStatus] = []
     @Published private(set) var syncing = false
+    @Published private(set) var connectionTests: [String: ConnectionTestResult] = [:]
 
     private var lastSynced: [String: Date] = [:]
     private var lastError: [String: String] = [:]
@@ -112,10 +120,55 @@ final class MachineStore: ObservableObject {
     /// Called on the main actor after a sync pass finishes so `AppServices` can
     /// re-wire the SessionStore's remote sources and refresh the merged fleet.
     var onSynced: (() -> Void)?
+    var onConfigChanged: (() -> Void)?
 
     func load() {
         config = MachinePaths.loadConfig()
         refreshStatuses(sessionCounts: [:])
+    }
+
+    /// Settings owns configuration; the runtime consumes the same persisted config
+    /// on the next sync. Names are stable project keys, so duplicate/blank entries
+    /// are rejected rather than silently replacing a host.
+    @discardableResult
+    func addRemote(name: String, host: String, user: String) -> Bool {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let u = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty, !h.isEmpty, !u.isEmpty,
+              !config.remotes.contains(where: { $0.name == n }) else { return false }
+        config.remotes.append(RemoteConfig(name: n, host: h, user: u))
+        MachinePaths.saveConfig(config)
+        refreshStatuses(sessionCounts: [:])
+        onConfigChanged?()
+        return true
+    }
+
+    func removeRemote(_ remote: RemoteConfig) {
+        config.remotes.removeAll { $0.name == remote.name }
+        connectionTests[remote.name] = nil
+        MachinePaths.saveConfig(config)
+        refreshStatuses(sessionCounts: [:])
+        onConfigChanged?()
+    }
+
+    /// Reuses the fleet's bounded reachability probe. It never starts a sync or a
+    /// second networking path; Settings merely surfaces the existing result.
+    func testConnection(_ remote: RemoteConfig) {
+        connectionTests[remote.name] = .init(state: .testing, checkedAt: nil, error: nil)
+        let inheritedError = lastError[remote.name]
+        Task.detached(priority: .userInitiated) {
+            let result = MachineReachability.probe(host: remote.host, timeoutMs: 2000)
+            await MainActor.run {
+                let ok = result == .reachable
+                self.reachable[remote.name] = result
+                self.connectionTests[remote.name] = .init(
+                    state: ok ? .reachable : .unreachable,
+                    checkedAt: Date(),
+                    error: ok ? nil : (inheritedError ?? "host did not answer the fleet probe"))
+                self.refreshStatuses(sessionCounts: [:])
+            }
+        }
     }
 
     /// The live remote sources for the SessionStore merge — only remotes whose mirror

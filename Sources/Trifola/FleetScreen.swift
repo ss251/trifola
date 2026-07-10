@@ -125,6 +125,12 @@ struct FleetScreen: View {
                         attention: services.attentionBoard(now: services.now),
                         signals: services.attention.signals,
                         pulses: heartbeat.pulses,
+                        suppression: services.attentionSuppression(now: services.now),
+                        acknowledgement: services.agency.recoveryState.activeAcknowledgement(at: services.now),
+                        suppressionState: services.agency.suppressionState,
+                        defaultSnoozeMinutes: services.preferences.value.defaultSnoozeDurationMinutes,
+                        onAgencyAction: { services.agency.perform($0, now: services.now) },
+                        onOpenTerminal: { services.openTerminal($0) },
                         onSelect: { services.inspect($0) }
                     )
                     .screenScaffoldFrame()
@@ -154,6 +160,12 @@ struct FleetFloor: View {
     /// Tail signals — the strip chips carry the ask (`· Bash approval…`).
     var signals: [String: AttentionSignals] = [:]
     var pulses: [String: Int] = [:]
+    var suppression: AttentionSuppressionResult? = nil
+    var acknowledgement: UnblockedAcknowledgement? = nil
+    var suppressionState: AttentionSuppressionState? = nil
+    var defaultSnoozeMinutes = 60
+    var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
+    var onOpenTerminal: ((SessionSummary) -> Void)? = nil
     var onSelect: (SessionSummary) -> Void = { _ in }
 
     var body: some View {
@@ -161,13 +173,25 @@ struct FleetFloor: View {
             header
             // The strip rides on top: "who needs me NOW" survives even while the
             // room below holds still. Sorted (triage) over stable (presence).
-            AttentionStripView(board: attention, signals: signals) { onSelect($0) }
+            AttentionStripView(board: attention,
+                               signals: signals,
+                               suppression: suppression,
+                               acknowledgement: acknowledgement,
+                               defaultSnoozeMinutes: defaultSnoozeMinutes,
+                               onAgencyAction: onAgencyAction) {
+                (onOpenTerminal ?? onSelect)($0)
+            }
             Divider()
             VStack(alignment: .leading, spacing: 18) {
                 ForEach(board.bays) { bay in
                     FleetBayView(bay: bay,
                                  chipForced: duplicatedProjects.contains(bay.project),
-                                 pulses: pulses, onSelect: onSelect)
+                                 pulses: pulses,
+                                 suppressionState: suppressionState,
+                                 defaultSnoozeMinutes: defaultSnoozeMinutes,
+                                 onAgencyAction: onAgencyAction,
+                                 onOpenTerminal: onOpenTerminal,
+                                 onSelect: onSelect)
                 }
             }
             // Seats never re-sort (the ArrivalLedger owns order) — this animates
@@ -236,6 +260,10 @@ private struct FleetBayView: View {
     /// Forced when this project name exists on >1 machine (CRM-1).
     var chipForced = false
     var pulses: [String: Int]
+    var suppressionState: AttentionSuppressionState? = nil
+    var defaultSnoozeMinutes = 60
+    var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
+    var onOpenTerminal: ((SessionSummary) -> Void)? = nil
     var onSelect: (SessionSummary) -> Void
 
     var body: some View {
@@ -245,8 +273,12 @@ private struct FleetBayView: View {
                 // Compressed dimmed line — the bay sinks via the ember fade, not by
                 // reordering. Its cost stays legible.
                 ForEach(bay.tokens) { t in
+                    let now = Date()
+                    let snoozed = suppressionState?.isSnoozed(sessionID: t.id, at: now) == true
+                    let muted = suppressionState?.isMuted(projectKey: t.session.project) == true
                     HStack(spacing: 10) {
                         SeatMark(fill: Theme.faint, size: 6, active: false)
+                        if snoozed || muted { SuppressionMark() }
                         Text(t.session.tier.label).font(.caption).foregroundStyle(Theme.faint)
                         if let q = t.taskQuote {
                             Text("last: \(q)").font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
@@ -255,7 +287,43 @@ private struct FleetBayView: View {
                         Text(fmtUSD(t.session.cost)).font(.caption).foregroundStyle(Theme.muted)
                     }
                     .padding(.leading, 2)
-                    .opacity(0.85)
+                    .opacity(snoozed || muted ? 0.5 : 0.85)
+                    .contextMenu {
+                        Button("Focus transcript") { onSelect(t.session) }
+                        if let onOpenTerminal {
+                            Button("Open terminal") { onOpenTerminal(t.session) }
+                        }
+                        if let onAgencyAction {
+                            Divider()
+                            if snoozed {
+                                Button("Un-snooze") { onAgencyAction(.unsnooze(sessionID: t.id)) }
+                            } else {
+                                Button("Snooze 1h") {
+                                    onAgencyAction(.snooze(
+                                        sessionID: t.id,
+                                        until: now.addingTimeInterval(60 * 60)))
+                                }
+                                if defaultSnoozeMinutes != 60 {
+                                    Button("Snooze default (\(formatSnoozeDuration(defaultSnoozeMinutes)))") {
+                                        onAgencyAction(.snooze(
+                                            sessionID: t.id,
+                                            until: now.addingTimeInterval(
+                                                TimeInterval(defaultSnoozeMinutes * 60))))
+                                    }
+                                }
+                                Button("Snooze until tomorrow") {
+                                    onAgencyAction(.snooze(
+                                        sessionID: t.id,
+                                        until: AttentionSuppressionReducer.startOfTomorrow(after: now)))
+                                }
+                            }
+                            Button(muted ? "Unmute project" : "Mute project") {
+                                onAgencyAction(muted
+                                    ? .unmute(projectKey: t.session.project)
+                                    : .mute(projectKey: t.session.project))
+                            }
+                        }
+                    }
                 }
             } else {
                 if let c = bay.collision {
@@ -269,6 +337,10 @@ private struct FleetBayView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(bay.tokens) { token in
                         FleetTokenView(token: token, depth: 0, pulses: pulses,
+                                       suppressionState: suppressionState,
+                                       defaultSnoozeMinutes: defaultSnoozeMinutes,
+                                       onAgencyAction: onAgencyAction,
+                                       onOpenTerminal: onOpenTerminal,
                                        onSelect: onSelect)
                     }
                 }
@@ -337,6 +409,10 @@ private struct FleetTokenView: View {
     let depth: Int
     var isLast: Bool = true
     var pulses: [String: Int]
+    var suppressionState: AttentionSuppressionState? = nil
+    var defaultSnoozeMinutes = 60
+    var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
+    var onOpenTerminal: ((SessionSummary) -> Void)? = nil
     var onSelect: (SessionSummary) -> Void
 
     var body: some View {
@@ -345,13 +421,21 @@ private struct FleetTokenView: View {
             ForEach(Array(token.children.enumerated()), id: \.element.id) { i, child in
                 FleetTokenView(token: child, depth: depth + 1,
                                isLast: i == token.children.count - 1, pulses: pulses,
+                               suppressionState: suppressionState,
+                               defaultSnoozeMinutes: defaultSnoozeMinutes,
+                               onAgencyAction: onAgencyAction,
+                               onOpenTerminal: onOpenTerminal,
                                onSelect: onSelect)
             }
         }
     }
 
     private var row: some View {
-        HoverRow(action: { onSelect(token.session) }) {
+        let now = Date()
+        let snoozed = suppressionState?.isSnoozed(sessionID: token.id, at: now) == true
+        let muted = suppressionState?.isMuted(projectKey: token.session.project) == true
+        let suppressed = snoozed || muted
+        return HoverRow(action: { onSelect(token.session) }) {
             HStack(spacing: 9) {
                 if depth > 0 {
                     Text(isLast ? "└" : "├")
@@ -361,6 +445,7 @@ private struct FleetTokenView: View {
                 }
                 HeartbeatDot(state: token.state, ring: token.tier.color,
                              pulse: pulses[token.id] ?? 0, still: token.isStill)
+                if suppressed { SuppressionMark() }
                 Text(token.tier.label)
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
@@ -382,9 +467,45 @@ private struct FleetTokenView: View {
             .padding(.vertical, 5)
             .padding(.leading, CGFloat(depth) * 16)
         }
-        .opacity(emberOpacity)
+        .opacity(suppressed ? 0.5 : emberOpacity)
         .contextMenu {
             Button("Focus transcript") { onSelect(token.session) }
+            if let onOpenTerminal {
+                Button("Open terminal") { onOpenTerminal(token.session) }
+            }
+            if let onAgencyAction {
+                Divider()
+                if snoozed {
+                    Button("Un-snooze") { onAgencyAction(.unsnooze(sessionID: token.id)) }
+                } else {
+                    Button("Snooze 1h") {
+                        onAgencyAction(.snooze(sessionID: token.id,
+                                              until: now.addingTimeInterval(60 * 60)))
+                    }
+                    if defaultSnoozeMinutes != 60 {
+                        Button("Snooze default (\(formatSnoozeDuration(defaultSnoozeMinutes)))") {
+                            onAgencyAction(.snooze(
+                                sessionID: token.id,
+                                until: now.addingTimeInterval(
+                                    TimeInterval(defaultSnoozeMinutes * 60))))
+                        }
+                    }
+                    Button("Snooze until tomorrow") {
+                        onAgencyAction(.snooze(
+                            sessionID: token.id,
+                            until: AttentionSuppressionReducer.startOfTomorrow(after: now)))
+                    }
+                }
+                if muted {
+                    Button("Unmute project") {
+                        onAgencyAction(.unmute(projectKey: token.session.project))
+                    }
+                } else {
+                    Button("Mute project") {
+                        onAgencyAction(.mute(projectKey: token.session.project))
+                    }
+                }
+            }
         }
         .help(hoverEvidence)
     }

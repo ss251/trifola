@@ -39,6 +39,8 @@ struct OverviewScreen: View {
             .controlSize(.small)
             .keyboardShortcut("r", modifiers: .command)
         } content: {
+            let governor = store.burnGovernor(now: services.now)
+            verdictLine(governor: governor)
             if isLocalCorpusMissing {
                 CalloutPanel(tone: Theme.accent) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -64,7 +66,6 @@ struct OverviewScreen: View {
                 CostProvenance.corpusReceipt(sessions: store.sessions)
             }
             Divider()
-            let governor = store.burnGovernor(now: services.now)
             BurnGovernorSection(governor: governor, receipt: {
                 CostProvenance.dayReceipt(
                     sessions: store.sessions,
@@ -114,6 +115,26 @@ struct OverviewScreen: View {
             Divider()
             RoutingSection(audit: services.audit)
         }
+    }
+
+    private func verdictLine(governor: BurnGovernor) -> some View {
+        let board = services.alertingAttentionBoard(now: services.now)
+        let sentence = VerdictSentenceBuilder.sentence(
+            board: board,
+            todayCost: governor.today.cost,
+            sevenCompleteDayMean: governor.dailyRunRate)
+        let parts = sentence.components(separatedBy: " · ")
+        let first = parts.first ?? sentence
+        let rest = parts.dropFirst().joined(separator: " · ")
+        return HStack(spacing: 0) {
+            Text(first)
+                .foregroundStyle(board.needsAttention.isEmpty ? Theme.muted : Theme.ink)
+            if !rest.isEmpty {
+                Text(" · \(rest)").foregroundStyle(Theme.muted)
+            }
+        }
+        .font(.headline)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var statRow: some View {

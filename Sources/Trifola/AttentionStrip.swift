@@ -9,10 +9,16 @@ struct AttentionStrip: View {
     @EnvironmentObject var services: AppServices
 
     var body: some View {
-        AttentionStripView(board: services.attentionBoard(now: services.now),
-                           signals: services.attention.signals) { session in
-            services.inspect(session)
-        }
+        let now = services.now
+        let board = services.attentionBoard(now: now)
+        AttentionStripView(
+            board: board,
+            signals: services.attention.signals,
+            suppression: services.attentionSuppression(now: now),
+            acknowledgement: services.agency.recoveryState.activeAcknowledgement(at: now),
+            defaultSnoozeMinutes: services.preferences.value.defaultSnoozeDurationMinutes,
+            onAgencyAction: { services.agency.perform($0, now: now) },
+            onSelect: { services.openTerminal($0) })
     }
 }
 
@@ -25,21 +31,31 @@ struct AttentionStripView: View {
     /// a blocked chip says WHAT it is blocked on (`· Bash approval…`), so the
     /// strip answers "which one is blocked on me *and why*" in one glance.
     var signals: [String: AttentionSignals] = [:]
+    var suppression: AttentionSuppressionResult? = nil
+    var acknowledgement: UnblockedAcknowledgement? = nil
+    var defaultSnoozeMinutes = 60
+    var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
     let onSelect: (SessionSummary) -> Void
 
     var body: some View {
-        let needs = board.needsAttention
+        let alertingBoard = suppression?.alertingBoard ?? board
+        let rows = suppression?.rows
+            ?? board.items.map { AttentionSuppressionRow(item: $0, reason: nil) }
+        let needs = rows.filter { $0.item.needsAttention }
 
         return VStack(alignment: .leading, spacing: Theme.rhythm) {
             HStack(spacing: 8) {
-                Image(systemName: needs.isEmpty ? "checkmark.circle" : "bell.badge")
+                Image(systemName: alertingBoard.needsAttention.isEmpty
+                      ? (needs.isEmpty ? "checkmark.circle" : "bell.slash")
+                      : "bell.badge")
                     .font(.footnote.weight(.medium))
-                    .foregroundStyle(needs.isEmpty ? Theme.green : Theme.red)
+                    .foregroundStyle(alertingBoard.needsAttention.isEmpty ? Theme.green : Theme.red)
                 Text("Attention")
                     .font(.body.weight(.medium))
                     .foregroundStyle(Theme.ink)
                 Spacer()
-                AttentionLegend(board: board)
+                AttentionLegend(board: alertingBoard,
+                                suppressedCount: suppression?.suppressedCount ?? 0)
             }
 
             if needs.isEmpty {
@@ -53,12 +69,26 @@ struct AttentionStripView: View {
                 .padding(.vertical, 1)
             } else {
                 FlowLayout(spacing: 8, lineSpacing: 8) {
-                    ForEach(needs) { item in
-                        AttentionChip(item: item, signal: signals[item.id]) {
-                            onSelect(item.session)
+                    ForEach(needs) { row in
+                        AttentionChip(row: row,
+                                      suppressionState: suppression?.state,
+                                      signal: signals[row.id],
+                                      defaultSnoozeMinutes: defaultSnoozeMinutes,
+                                      onAgencyAction: onAgencyAction) {
+                            onSelect(row.item.session)
                         }
                     }
                 }
+            }
+
+            if let acknowledgement {
+                HStack(spacing: 8) {
+                    SeatMark(fill: Theme.green, size: 7)
+                    Text(acknowledgement.message)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.muted)
+                }
+                .motionTransition(edge: .top)
             }
         }
         .padding(.horizontal, 14)
@@ -68,7 +98,7 @@ struct AttentionStripView: View {
             RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
                 .strokeBorder(Theme.hairline, lineWidth: 1)
         }
-        .reorderMotion(value: needs.map(\.id))
+        .reorderMotion(value: needs.map(\.id) + [acknowledgement?.id ?? ""])
     }
 
     private func allClearText(_ b: AttentionBoard) -> String {
@@ -83,9 +113,12 @@ struct AttentionStripView: View {
 // MARK: - One attention chip
 
 private struct AttentionChip: View {
-    let item: AttentionItem
+    let row: AttentionSuppressionRow
+    var suppressionState: AttentionSuppressionState? = nil
     /// The tail signal backing this chip — carries the ask (tool + detail).
     var signal: AttentionSignals? = nil
+    var defaultSnoozeMinutes = 60
+    var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
     let onTap: () -> Void
     @State private var hovering = false
 
@@ -93,6 +126,7 @@ private struct AttentionChip: View {
     /// dangling/last tool + its detail, faint mono (disk truth), ~24 chars. Only
     /// when the signal exists; absence stays honest silence.
     private var ask: String? {
+        let item = row.item
         guard item.state.needsAttention,
               let sig = signal, let tool = sig.lastToolName else { return nil }
         let detail = sig.lastToolDetail ?? ""
@@ -103,6 +137,7 @@ private struct AttentionChip: View {
     }
 
     var body: some View {
+        let item = row.item
         TapButton(action: onTap) {
             HStack(spacing: 7) {
                 // The seat token: the state dot wears the tier as its 1pt ring
@@ -137,6 +172,7 @@ private struct AttentionChip: View {
                 if item.session.isRemote {
                     MachineChip(machineID: item.session.machineID, compact: true)
                 }
+                if row.isSuppressed { SuppressionMark() }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -148,8 +184,44 @@ private struct AttentionChip: View {
                 Capsule().strokeBorder(Theme.hairline, lineWidth: 1)
             }
         }
+        .opacity(row.isSuppressed ? 0.5 : 1)
+        .contextMenu {
+            if let onAgencyAction {
+                let now = Date()
+                if suppressionState?.isSnoozed(sessionID: item.id, at: now) == true {
+                    Button("Un-snooze") { onAgencyAction(.unsnooze(sessionID: item.id)) }
+                } else {
+                    Button("Snooze 1h") {
+                        onAgencyAction(.snooze(sessionID: item.id,
+                                              until: now.addingTimeInterval(60 * 60)))
+                    }
+                    if defaultSnoozeMinutes != 60 {
+                        Button("Snooze default (\(formatSnoozeDuration(defaultSnoozeMinutes)))") {
+                            onAgencyAction(.snooze(
+                                sessionID: item.id,
+                                until: now.addingTimeInterval(
+                                    TimeInterval(defaultSnoozeMinutes * 60))))
+                        }
+                    }
+                    Button("Snooze until tomorrow") {
+                        onAgencyAction(.snooze(
+                            sessionID: item.id,
+                            until: AttentionSuppressionReducer.startOfTomorrow(after: now)))
+                    }
+                }
+                if suppressionState?.isMuted(projectKey: item.session.project) == true {
+                    Button("Unmute project") {
+                        onAgencyAction(.unmute(projectKey: item.session.project))
+                    }
+                } else {
+                    Button("Mute project") {
+                        onAgencyAction(.mute(projectKey: item.session.project))
+                    }
+                }
+            }
+        }
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
-        .help("Jump to \(item.session.project) — \(item.session.id) — \(item.state.label.lowercased())")
+        .help("Opens your terminal — macOS asks permission the first time")
     }
 }
 
@@ -157,6 +229,7 @@ private struct AttentionChip: View {
 
 private struct AttentionLegend: View {
     let board: AttentionBoard
+    var suppressedCount = 0
 
     var body: some View {
         HStack(spacing: 12) {
@@ -173,6 +246,11 @@ private struct AttentionLegend: View {
                             .foregroundStyle(Theme.faint)
                     }
                 }
+            }
+            if suppressedCount > 0 {
+                Text("· \(suppressedCount) snoozed")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
             }
         }
     }

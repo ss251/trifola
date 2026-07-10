@@ -193,6 +193,9 @@ private struct SessionRow: View {
 
     private var primary: Color { isSelected ? Theme.selectionText : Theme.ink }
     private var secondary: Color { isSelected ? Theme.selectionText.opacity(0.8) : Theme.muted }
+    private var suppressed: Bool {
+        services.agency.reason(for: session, now: services.now) != nil
+    }
 
     var body: some View {
         HoverRow {
@@ -204,6 +207,7 @@ private struct SessionRow: View {
                 // own dot language). Stays lit through selection, like the palette.
                 SeatMark(fill: session.isActive ? Theme.green : Theme.faint,
                          ring: session.tier.color, size: 7)
+                if suppressed { SuppressionMark() }
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(session.displayTitle)
@@ -234,6 +238,8 @@ private struct SessionRow: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
         }
+        .opacity(suppressed ? 0.5 : 1)
+        .contextMenu { SessionAgencyMenu(session: session) }
         .background {
             if isSelected {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)

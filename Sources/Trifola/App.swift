@@ -117,6 +117,13 @@ struct TrifolaApp: App {
                 .environmentObject(services)
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            TrifolaSettingsView(menuPresence: menuPresence,
+                                notifier: services.notifier,
+                                preferences: services.preferences,
+                                machines: services.machines)
+        }
     }
 }
 
@@ -134,7 +141,7 @@ struct MenuBarLabel: View {
         // corpus); this view only paints. Title = BLOCKED count ("9+" capped),
         // or today's whole-$ when the orchestrator-hog alert fires with nothing
         // blocked — the "bleeding money" state visible without opening anything.
-        let board = services.attentionBoard(now: services.now)
+        let board = services.alertingAttentionBoard(now: services.now)
         let dayKey = CostProvenance.dayKey(for: services.now)
         let hog = OrchestratorHog.alert(sessions: services.sessions.sessions, day: dayKey)
         let today = services.sessions.sessions.reduce(0) { $0 + $1.cost(onDay: dayKey) }
@@ -173,17 +180,24 @@ struct MenuBarContent: View {
         let now = services.now
         let dayKey = CostProvenance.dayKey(for: now)
         let sessions = services.sessions.sessions
+        let rawBoard = services.attentionBoard(now: now)
+        let suppression = services.attentionSuppression(now: now)
         let mb = MenuBarReducer.model(
-            board: services.attentionBoard(now: now),
+            board: suppression.alertingBoard,
             cards: services.deadlineCards(now: now),
             todayCost: sessions.reduce(0) { $0 + $1.cost(onDay: dayKey) },
             hog: OrchestratorHog.alert(sessions: sessions, day: dayKey),
             quota: services.quota.snapshot,
             now: now)
+        let rawMB = MenuBarReducer.model(
+            board: rawBoard, cards: [], todayCost: 0, now: now)
+        let suppressedIDs = Set(suppression.suppressedRows.map(\.id))
+        let suppressedBlocked = rawMB.blocked.filter { suppressedIDs.contains($0.id) }
+        let suppressedWaiting = rawMB.waiting.filter { suppressedIDs.contains($0.id) }
 
         return VStack(alignment: .leading, spacing: 10) {
             // The whole day in one line: counts · $-today.
-            Text(mb.fleetLine)
+            Text(mb.fleetLine + suppression.legendSuffix)
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
 
@@ -203,6 +217,12 @@ struct MenuBarContent: View {
                 ForEach(mb.waiting) { row in
                     attentionRow(row, state: .waiting)
                 }
+            }
+            ForEach(suppressedBlocked) { row in
+                attentionRow(row, state: .blocked, suppressed: true)
+            }
+            ForEach(suppressedWaiting) { row in
+                attentionRow(row, state: .waiting, suppressed: true)
             }
 
             // AM I BLEEDING MONEY / TIME — evidence-gated; absent when calm.
@@ -265,16 +285,16 @@ struct MenuBarContent: View {
     /// name, then "state · stuck-time · model". Clicking hands off to the main
     /// window's live detail — the strip is a doorway, not a destination.
     private func attentionRow(_ row: MenuBarModel.AttentionRow,
-                              state: AttentionState) -> some View {
+                              state: AttentionState,
+                              suppressed: Bool = false) -> some View {
         TapButton(action: {
             if let s = services.sessions.sessions.first(where: { $0.id == row.id }) {
-                services.inspect(s)
+                services.openTerminal(s)
             }
-            NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: "main")
         }) {
             HStack(spacing: 8) {
                 SeatMark(fill: state.color, size: 7, active: state.needsAttention)
+                if suppressed { SuppressionMark() }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.title)
                         .font(.subheadline.weight(state == .blocked ? .semibold : .regular))
@@ -287,6 +307,13 @@ struct MenuBarContent: View {
                 Spacer()
             }
         }
+        .opacity(suppressed ? 0.5 : 1)
+        .contextMenu {
+            if let session = services.sessions.sessions.first(where: { $0.id == row.id }) {
+                SessionAgencyMenu(session: session)
+            }
+        }
+        .help("Opens your terminal — macOS asks permission the first time")
     }
 
     /// A money/time signal line (hog · jeopardy · hot quota) — icon + one
