@@ -39,7 +39,7 @@ public enum Perf {
     /// Inherits the caller's isolation so a main-actor closure passes cleanly.
     @discardableResult
     public static func span<T>(_ label: String, isolation: isolated (any Actor)? = #isolation,
-                               _ body: () async throws -> T) async rethrows -> T {
+                               _ body: () async throws -> sending T) async rethrows -> sending T {
         guard enabled else { return try await body() }
         let t0 = DispatchTime.now().uptimeNanoseconds
         let value = try await body()
