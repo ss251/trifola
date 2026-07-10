@@ -189,7 +189,12 @@ private func addSkill(_ dir: URL, _ folder: String, manifest: String?) throws ->
         #expect(SkillCatalog.scan(directory: "/nonexistent/\(UUID())").isEmpty)
     }
 
-    @Test func realSkillsDirectoryParsesCleanly() throws {
+    // Opportunistic real-corpus check: runs only where a real library exists
+    // (developer machines). CI runners have no ~/.claude — that absence is an
+    // environment fact, not a regression, so the test disables itself there.
+    @Test(.enabled(if: FileManager.default.fileExists(
+        atPath: NSString(string: "~/.claude/skills").expandingTildeInPath)))
+    func realSkillsDirectoryParsesCleanly() throws {
         // Guard against regressions on the machine's actual library: every
         // entry must produce a non-empty name and description.
         let skills = SkillCatalog.scan()
