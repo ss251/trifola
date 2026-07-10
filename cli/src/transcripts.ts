@@ -23,6 +23,7 @@ interface UsageEntry {
   model: string; // normalized
   day: string; // "yyyy-MM-dd" or "" (undated)
   usage: UsageTotals;
+  usesUnsupportedPricingMode: boolean;
 }
 
 interface FileState {
@@ -50,7 +51,7 @@ function bump(map: Map<string, number>, key: string, n = 1): void {
 }
 
 function intOr0(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : 0;
+  return typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.trunc(v)) : 0;
 }
 
 function parseTimestamp(s: unknown): Date | null {
@@ -160,7 +161,12 @@ function processLine(line: string, st: FileState): void {
     cacheCreationBlock && typeof cacheCreationBlock === "object"
       ? intOr0((cacheCreationBlock as JsonRecord)["ephemeral_1h_input_tokens"])
       : 0;
-  const cacheCreate1hTokens = Math.min(cacheCreateTokens, cache1hRaw);
+  const cacheCreate1hTokens = Math.min(cacheCreateTokens, Math.max(0, cache1hRaw));
+  const pricingModes = [u["speed"], u["service_tier"]]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  const usesUnsupportedPricingMode = pricingModes.some((value) => value !== "standard");
 
   const msgModel = normalizeModel(st.currentModel);
   const dayKey = (ts ? localDayKeyOf(ts) : null) ?? (st.lastDate ? localDayKeyOf(st.lastDate) : null) ?? "";
@@ -180,6 +186,7 @@ function processLine(line: string, st: FileState): void {
     model: msgModel,
     day: dayKey,
     usage: { inputTokens, outputTokens, cacheCreateTokens, cacheReadTokens, cacheCreate1hTokens },
+    usesUnsupportedPricingMode,
   });
 }
 
@@ -213,7 +220,9 @@ export interface CorpusStats {
   skillFireCounts: Map<string, number>;
   /** Total deduped (message.id:requestId) usage entries across the whole corpus — "R reads". */
   totalDedupedEntries: number;
-  /** Fleet-wide token totals (for the cache-hit-rate "H% of R reads" figure). */
+  /** Deduped entries explicitly marked with non-standard speed/service-tier pricing. */
+  unsupportedPricingModeEntries: number;
+  /** Fleet-wide token totals (for the cache-hit-rate token denominator). */
   totalUsage: UsageTotals;
   /** day -> normalized model id -> summed usage — what the pricing catalog prices exactly. */
   usageByDayModel: Map<string, Map<string, UsageTotals>>;
@@ -225,6 +234,7 @@ function newCorpusStats(): CorpusStats {
     fileCount: 0,
     skillFireCounts: new Map(),
     totalDedupedEntries: 0,
+    unsupportedPricingModeEntries: 0,
     totalUsage: emptyUsage(),
     usageByDayModel: new Map(),
   };
@@ -239,6 +249,7 @@ function mergeFileIntoCorpus(acc: CorpusStats, st: FileState, isSubagent: boolea
 
   for (const entry of st.usageByKey.values()) {
     acc.totalDedupedEntries += 1;
+    if (entry.usesUnsupportedPricingMode) acc.unsupportedPricingModeEntries += 1;
     addUsageInPlace(acc.totalUsage, entry.usage);
 
     let byModel = acc.usageByDayModel.get(entry.day);

@@ -1,5 +1,5 @@
 // The share card — the whole point of `npx trifola`. Honesty rules (hard):
-//  - Denominators ALWAYS: never a bare percentage, always "N of M" / "H% of R reads".
+//  - Denominators ALWAYS: never a bare percentage; cache hit uses input tokens.
 //  - Counts + dollars only: no skill names, no file paths, no project names —
 //    safe to screenshot.
 //  - Re-sent context and first-touch are NEVER summed; first-touch is always
@@ -8,7 +8,7 @@
 //  - The word "leak" never appears in printed/JSON output copy.
 
 import type { Finding } from "./ledger.js";
-import { fmtUSD, fmtPct, fmtCount } from "./format.js";
+import { fmtUSD, fmtTinyUSD, fmtPct, fmtCount, fmtTokens } from "./format.js";
 
 const RULE = "─".repeat(58);
 
@@ -32,19 +32,33 @@ export function renderCard(finding: Finding): string {
   );
   lines.push('  loaded as context aren\'t tracked, so this likely OVERSTATES "dead".)');
   lines.push("");
+  lines.push("EST. USAGE VALUE");
+  lines.push(`  ${fmtUSD(finding.usageValueUsd)} API-equivalent across the scanned corpus`);
+  lines.push("");
   lines.push("PROMPT TAX");
-  lines.push(`  ~${fmtUSD(finding.taxUsd)} API-equivalent`);
+  lines.push(
+    `  ~${fmtTinyUSD(finding.taxUsdPerSession)}/session · ${fmtTinyUSD(finding.taxUsd)} across ` +
+      `${fmtCount(finding.sessionCount)} scanned sessions`
+  );
   lines.push("  the dead skills' descriptions still ride every session's prompt —");
   lines.push("  priced at the cache-read rate (input × 0.10 of a mid-tier model),");
   lines.push("  not your raw input bill.");
   lines.push("");
   lines.push("RE-SENT CONTEXT");
-  lines.push(`  ~${fmtUSD(finding.wastedUsd)} wasted re-sending context as fresh input above the`);
-  lines.push("  warm-cache floor (API-equivalent, not your bill)");
+  lines.push(`  ~${fmtUSD(finding.freshInputPremiumUsd)} fresh-input premium above an all-cache-read floor`);
+  lines.push("  the avoidable share is unknowable from logs (API-equivalent, not your bill)");
   lines.push(
     `  first-touch (unavoidable cache build, shown separately, never summed): ${fmtUSD(finding.firstTouchUsd)}`
   );
-  lines.push(`  ${fmtPct(finding.cacheHitRatePct / 100)} of ${fmtCount(finding.reads)} reads served from cache`);
+  lines.push(
+    `  ${fmtPct(finding.cacheHitRatePct / 100)} of ${fmtTokens(finding.totalInputTokens)} input tokens served from cache`
+  );
+  if (finding.unsupportedPricingModeEntries > 0) {
+    lines.push(
+      `  ${fmtCount(finding.unsupportedPricingModeEntries)} entries used fast/batch pricing modes ` +
+        "trifola does not yet price — totals may be off for those entries"
+    );
+  }
   lines.push("");
   lines.push(RULE);
   lines.push(
@@ -57,13 +71,16 @@ export function renderCard(finding: Finding): string {
 
 export interface FindingJSON {
   deadSkills: { dead: number; catalog: number; sessions: number; note: string };
-  promptTax: { usd: number; label: "API-equivalent"; note: string };
-  resentContext: {
-    wastedUsd: number;
+  usageValue: { usd: number; label: "API-equivalent" };
+  promptTax: { perSessionUsd: number; totalUsd: number; sessions: number; label: "API-equivalent"; note: string };
+  freshInput: {
+    premiumUsd: number;
     firstTouchUsd: number;
     note: string;
     cacheHitRatePct: number;
-    reads: number;
+    totalInputTokens: number;
+    usageEntries: number;
+    unsupportedPricingModeEntries: number;
   };
   footer: { corpus: string; privacy: string };
   generatedAt: string;
@@ -85,18 +102,23 @@ export function renderJSON(finding: Finding): FindingJSON {
       note:
         "counts explicit Skill-tool + slash-command invocations only; skills auto-loaded as context aren't tracked, so this likely overstates \"dead\"",
     },
+    usageValue: { usd: round6(finding.usageValueUsd), label: "API-equivalent" },
     promptTax: {
-      usd: round6(finding.taxUsd),
+      perSessionUsd: round6(finding.taxUsdPerSession),
+      totalUsd: round6(finding.taxUsd),
+      sessions: finding.sessionCount,
       label: "API-equivalent",
-      note: "priced at the cache-read rate (input x 0.10 of a mid-tier model), not raw input; recurring per session",
+      note: "priced at the cache-read rate (input x 0.10 of a mid-tier model), not raw input",
     },
-    resentContext: {
-      wastedUsd: round6(finding.wastedUsd),
+    freshInput: {
+      premiumUsd: round6(finding.freshInputPremiumUsd),
       firstTouchUsd: round6(finding.firstTouchUsd),
       note:
-        "wastedUsd is context re-sent as fresh input above the warm-cache floor; firstTouchUsd is unavoidable cache-build cost — never sum the two",
+        "premiumUsd is the fresh-input premium above an all-cache-read floor; the avoidable share is unknowable from logs; firstTouchUsd is unavoidable cache-build cost — never sum the two",
       cacheHitRatePct: finding.cacheHitRatePct,
-      reads: finding.reads,
+      totalInputTokens: finding.totalInputTokens,
+      usageEntries: finding.usageEntries,
+      unsupportedPricingModeEntries: finding.unsupportedPricingModeEntries,
     },
     footer: {
       corpus: `${finding.catalogCount} skills, ${finding.sessionCount} sessions`,

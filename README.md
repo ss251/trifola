@@ -49,7 +49,7 @@ Trifola cloud, no telemetry. Source-auditable.** Idle CPU is ~0% in typical use.
 - 🟢 **Attention board** — every session as BLOCKED / WAITING / RUNNING / IDLE, worst-first,
   in a menu-bar glance.
 - 🧾 **Cost-cause audit** — **re-sent context** vs unavoidable first-touch (never summed into one
-  dishonest number), the "$20 hey" wasted-resend tax, Opus-on-lint, per-session receipts.
+  dishonest number), the fresh-input premium above an all-cache-read floor (avoidable share unknowable from logs), Opus-on-lint, per-session receipts.
 - 🧭 **Routing forensics** — silent model fallbacks and subagents that inherited the wrong model, with the
   exact fix you can paste into `CLAUDE.md`.
 - 🧹 **Config hygiene** — which of your skills never fire, priced as the per-session tax they

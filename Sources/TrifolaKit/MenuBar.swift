@@ -135,7 +135,7 @@ public enum MenuBarReducer {
             .filter { $0.usedPercent > quotaHotPercent }
             .max { $0.usedPercent < $1.usedPercent }
         guard let hot else { return nil }
-        var line = "\(hot.title) \(Int(hot.usedPercent))% used"
+        var line = "\(hot.title) \(hot.roundedUsedPercent)% used"
         if let resets = hot.resetsAt {
             line += " · resets \(fmtCountdown(resets.timeIntervalSince(now)))"
         }

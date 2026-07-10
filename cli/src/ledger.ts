@@ -6,7 +6,7 @@
 
 import type { Skill } from "./skills.js";
 import type { CorpusStats } from "./transcripts.js";
-import { resolvedRate, reSentContextDollarsOfUsage, firstTouchDollarsOfUsage } from "./pricing.js";
+import { costOfUsage, resolvedRate, reSentContextDollarsOfUsage, firstTouchDollarsOfUsage } from "./pricing.js";
 
 /**
  * ModelTier.sonnet.rates.inp ($/M input) from Models.swift — the FLAT tier
@@ -26,16 +26,24 @@ export interface Finding {
   catalogCount: number;
   /** Interactive (non-subagent) session transcripts scanned. */
   sessionCount: number;
-  /** Recurring per-session prompt-tax cost of the dead skills' descriptions, API-equivalent USD. */
+  /** Cumulative prompt-tax cost across the scanned interactive sessions. */
   taxUsd: number;
-  /** Re-sent context billed as fresh input above the warm-cache floor, USD (never call this "leak" in output copy). */
-  wastedUsd: number;
-  /** Unavoidable cache-build cost (5m + 1h write slices), USD — shown separately, never summed with wastedUsd. */
+  /** Prompt-tax cost for one scanned session. */
+  taxUsdPerSession: number;
+  /** Total API-equivalent usage value across all deduped entries. */
+  usageValueUsd: number;
+  /** Fresh-input premium above an all-cache-read floor, USD. */
+  freshInputPremiumUsd: number;
+  /** Unavoidable cache-build cost (5m + 1h write slices), USD — shown separately, never summed with the premium. */
   firstTouchUsd: number;
   /** Fleet-wide cache-hit rate, as a whole percent (0-100). */
   cacheHitRatePct: number;
-  /** Total deduped billed-usage entries across the corpus — the "R reads" denominator behind cacheHitRatePct. */
-  reads: number;
+  /** Total input tokens behind cacheHitRatePct. */
+  totalInputTokens: number;
+  /** Total deduped billed-usage entries across the corpus. */
+  usageEntries: number;
+  /** Entries explicitly marked fast/batch (or another non-standard mode). */
+  unsupportedPricingModeEntries: number;
   /** Sorted ids of the never-fired skills. LOCAL-ONLY detail: surfaced solely
    * behind `--list-dead` — never in the anonymized share card or default JSON. */
   deadNames: string[];
@@ -58,15 +66,17 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
   const deadPromptTaxTokens = dead.reduce((sum, sk) => sum + estimateDescriptionTokens(sk.description), 0);
 
   const sessionCount = corpus.sessionCount;
-  const taxUsd =
-    (deadPromptTaxTokens / 1_000_000) * (SONNET_TIER_INPUT_RATE * CACHE_READ_MULTIPLIER) * Math.max(sessionCount, 1);
+  const taxUsdPerSession = (deadPromptTaxTokens / 1_000_000) * (SONNET_TIER_INPUT_RATE * CACHE_READ_MULTIPLIER);
+  const taxUsd = taxUsdPerSession * sessionCount;
 
-  let wastedUsd = 0;
+  let usageValueUsd = 0;
+  let freshInputPremiumUsd = 0;
   let firstTouchUsd = 0;
   for (const [day, byModel] of corpus.usageByDayModel) {
     for (const [model, usage] of byModel) {
       const rate = resolvedRate(model, day);
-      wastedUsd += reSentContextDollarsOfUsage(usage, rate);
+      usageValueUsd += costOfUsage(usage, rate);
+      freshInputPremiumUsd += reSentContextDollarsOfUsage(usage, rate);
       firstTouchUsd += firstTouchDollarsOfUsage(usage, rate);
     }
   }
@@ -80,10 +90,14 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
     catalogCount,
     sessionCount,
     taxUsd,
-    wastedUsd,
+    taxUsdPerSession,
+    usageValueUsd,
+    freshInputPremiumUsd,
     firstTouchUsd,
     cacheHitRatePct,
-    reads: corpus.totalDedupedEntries,
+    totalInputTokens: totalInput,
+    usageEntries: corpus.totalDedupedEntries,
+    unsupportedPricingModeEntries: corpus.unsupportedPricingModeEntries,
     deadNames: dead.map((sk) => sk.id).sort(),
   };
 }

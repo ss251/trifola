@@ -20,6 +20,8 @@ function assistantLine(opts: {
   cacheCreate?: number;
   cacheRead?: number;
   cache1h?: number;
+  speed?: string;
+  serviceTier?: string;
   toolUseSkill?: string;
 }): string {
   const blocks: unknown[] = [];
@@ -34,6 +36,8 @@ function assistantLine(opts: {
   if (opts.cache1h) {
     usage["cache_creation"] = { ephemeral_1h_input_tokens: opts.cache1h };
   }
+  if (opts.speed !== undefined) usage["speed"] = opts.speed;
+  if (opts.serviceTier !== undefined) usage["service_tier"] = opts.serviceTier;
   return JSON.stringify({
     type: "assistant",
     requestId: opts.requestId,
@@ -181,5 +185,48 @@ describe("scanProjects", () => {
     assert.equal(stats.sessionCount, 0);
     assert.equal(stats.fileCount, 0);
     assert.equal(stats.totalDedupedEntries, 0);
+  });
+
+  test("clamps malformed token fields and bounds 1h cache creation", async () => {
+    await withTempDir("trifola-clamps-", async (dir) => {
+      const negative = assistantLine({
+        model: "claude-opus-4-8", requestId: "r1", messageId: "m1",
+        timestamp: "2026-07-01T10:00:00.000Z", input: -10, output: -20,
+        cacheCreate: -30, cacheRead: -40, cache1h: -50,
+      });
+      const oversized = assistantLine({
+        model: "claude-opus-4-8", requestId: "r2", messageId: "m2",
+        timestamp: "2026-07-01T10:01:00.000Z", input: 1, output: 2,
+        cacheCreate: 100, cacheRead: 3, cache1h: 900,
+      });
+      writeFile(path.join(dir, "p", "s.jsonl"), [negative, oversized].join("\n"));
+      const usage = scanProjects(dir).totalUsage;
+      assert.deepEqual(usage, {
+        inputTokens: 1, outputTokens: 2, cacheCreateTokens: 100,
+        cacheReadTokens: 3, cacheCreate1hTokens: 100,
+      });
+    });
+  });
+
+  test("counts non-standard speed/service tiers once per deduped entry", async () => {
+    await withTempDir("trifola-speed-", async (dir) => {
+      const standard = assistantLine({
+        model: "claude-opus-4-8", requestId: "r1", messageId: "m1",
+        timestamp: "2026-07-01T10:00:00.000Z", input: 1, speed: "standard",
+      });
+      const fastChunk = assistantLine({
+        model: "claude-opus-4-8", requestId: "r2", messageId: "m2",
+        timestamp: "2026-07-01T10:01:00.000Z", input: 1, speed: "fast",
+      });
+      const batchLastChunk = assistantLine({
+        model: "claude-opus-4-8", requestId: "r2", messageId: "m2",
+        timestamp: "2026-07-01T10:02:00.000Z", input: 2, serviceTier: "batch",
+      });
+      writeFile(path.join(dir, "p", "s.jsonl"), [standard, fastChunk, batchLastChunk].join("\n"));
+      const stats = scanProjects(dir);
+      assert.equal(stats.totalDedupedEntries, 2);
+      assert.equal(stats.unsupportedPricingModeEntries, 1);
+      assert.equal(stats.totalUsage.inputTokens, 3);
+    });
   });
 });

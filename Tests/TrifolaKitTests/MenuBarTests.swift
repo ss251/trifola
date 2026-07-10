@@ -181,6 +181,14 @@ struct MenuBarJudgmentTests {
         #expect(MenuBarReducer.hotQuotaLine(snap, now: now) == nil)
         #expect(MenuBarReducer.hotQuotaLine(nil, now: now) == nil)
     }
+
+    @Test func quotaFractionAboveThresholdAlertsAndRoundsForDisplay() {
+        let now = Date()
+        let window = QuotaWindow(title: "Session (5h)", usedPercent: 80.9, resetsAt: nil)
+        let snap = QuotaSnapshot(fiveHour: window, weekly: nil, scoped: [], fetchedAt: now)
+        #expect(window.roundedUsedPercent == 81)
+        #expect(MenuBarReducer.hotQuotaLine(snap, now: now) == "Session (5h) 81% used")
+    }
 }
 
 @Suite("Menu-bar presence preference store")

@@ -219,6 +219,10 @@ public struct QuotaWindow: Sendable, Equatable {
         self.usedPercent = usedPercent
         self.resetsAt = resetsAt
     }
+
+    /// Shared display rounding for every quota surface. Alert thresholds keep
+    /// comparing the raw value; only rendered text uses this integer.
+    public var roundedUsedPercent: Int { Int(usedPercent.rounded()) }
 }
 
 public struct QuotaSnapshot: Sendable, Equatable {
@@ -479,18 +483,21 @@ public final class QuotaStore: ObservableObject {
     /// Pure (no store state) — nonisolated so the selfcheck + tests can call it.
     public nonisolated static func describe(_ error: ClaudeQuotaError) -> String {
         switch error {
-        case .noCredentials(let reason): return "unavailable — \(reason)"
-        case .expired: return "all credentials expired — run `claude` (any prompt) to re-authenticate, then Refresh"
-        case .unauthorized: return "unauthorized — run `claude` (any prompt) to re-authenticate, then Refresh"
+        case .noCredentials(let reason):
+            if reason.contains("keychain access denied") {
+                return "Keychain access was denied — Trifola works fully without plan quota."
+            }
+            return "No Claude credentials were found — Trifola works fully without plan quota."
+        case .expired, .unauthorized:
+            return "Signed out — run claude once to sign in, then Retry."
         case .rateLimited(let after):
             let f = DateFormatter()
             f.locale = Locale(identifier: "en_US_POSIX")
             f.dateFormat = "HH:mm"
             let until = f.string(from: after ?? Date().addingTimeInterval(300))
             return "rate-limited — cooling down until \(until)"
-        case .server(let code): return "usage endpoint returned \(code) — will retry on the next refresh"
-        case .network(let reason): return "offline or unreachable — \(reason)"
-        case .badPayload: return "unreadable response — the endpoint's shape may have changed"
+        case .server, .network, .badPayload:
+            return "Plan quota unavailable — the usage endpoint didn't answer. Costs and attention don't need it."
         }
     }
 }

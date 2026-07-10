@@ -35,7 +35,7 @@ export async function withTempDir<T>(prefix: string, fn: (dir: string) => T | Pr
  *
  * See fixture.test.ts's file header for the full by-hand derivation. Summary:
  *   catalogCount=4, deadCount=2, sessionCount=2, reads=3,
- *   cacheHitRatePct=29, taxUsd≈0.000018, wastedUsd≈9.45, firstTouchUsd≈1.45.
+ *   cacheHitRatePct=29, taxUsd≈0.000018, freshInputPremiumUsd≈9.45, firstTouchUsd≈1.45.
  */
 export function buildSyntheticClaudeTree(root: string): void {
   const skillsDir = path.join(root, "skills");
@@ -133,6 +133,7 @@ export function buildSyntheticClaudeTree(root: string): void {
         output_tokens: 50_000,
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 100_000,
+        speed: "fast",
       },
     },
   });

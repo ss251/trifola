@@ -119,6 +119,20 @@ struct LedgerCandidateTests {
         let fix = lessons.first { $0.kind == .deadSkillArchive }!.candidate
         #expect(fix.revealTargets.contains { $0.path == "/skills/log-parser/SKILL.md" })
     }
+
+    @Test func zeroScannedSessionsInventNoPromptTax() throws {
+        let dead = SkillLedgerEntry(name: "unused", invocations: 0, sessionsTouched: 0,
+                                    lastFired: nil, inCatalog: true, descriptionTokens: 1_000)
+        let ledger = SkillLedger(catalogCount: 1, distinctFired: 0, firedInCatalog: 0,
+                                 deadCount: 1, deadPromptTaxTokens: 1_000,
+                                 sessionCount: 0, fired: [], dead: [dead])
+        let report = AuditReport(cacheMiss: [], totalLeakDollars: 0,
+                                 totalFirstTouchDollars: 0, skillLedger: ledger,
+                                 mismatches: [], totalMismatchOverspend: 0,
+                                 mismatchCount: 0)
+        let lesson = try #require(LessonMiner.deadSkillArchive(report, catalog: []))
+        #expect(lesson.impact == 0)
+    }
 }
 
 // MARK: - settings.json reader

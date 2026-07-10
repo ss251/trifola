@@ -64,7 +64,8 @@ struct ClaudeCredentialResolverTests {
             Issue.record("expired credentials must never be fetched")
             return .failure(.unauthorized)
         }
-        #expect(resolved.failure.map(QuotaStore.describe)?.contains("all credentials expired") == true)
+        #expect(resolved.failure.map(QuotaStore.describe) ==
+                "Signed out — run claude once to sign in, then Retry.")
     }
 
     @Test("keychain denial is not reported as missing credentials")
@@ -81,8 +82,15 @@ struct ClaudeCredentialResolverTests {
             Issue.record("no credential candidate should be fetched")
             return .failure(.unauthorized)
         }
-        #expect(resolved.failure.map(QuotaStore.describe)?.contains("keychain access denied") == true)
-        #expect(resolved.failure.map(QuotaStore.describe)?.contains("no credentials found") == false)
+        #expect(resolved.failure.map(QuotaStore.describe) ==
+                "Keychain access was denied — Trifola works fully without plan quota.")
+
+        let missingResolved = await ClaudeQuotaResolver.resolve(candidates: missing) { _ in
+            Issue.record("no credential candidate should be fetched")
+            return .failure(.unauthorized)
+        }
+        #expect(missingResolved.failure.map(QuotaStore.describe) ==
+                "No Claude credentials were found — Trifola works fully without plan quota.")
     }
 
     @Test("CLAUDE_CONFIG_DIR overrides the MCP config root")

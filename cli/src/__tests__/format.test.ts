@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { fmtUSD, fmtPct, fmtCount } from "../format.js";
+import { fmtUSD, fmtTinyUSD, fmtPct, fmtCount, fmtTokens } from "../format.js";
 
 // Mirrors the fmtUSD / fmtPct / fmtGrouped expectations baked into
 // Sources/TrifolaKit/Models.swift and exercised throughout its UI/receipt
@@ -25,6 +25,13 @@ describe("fmtUSD", () => {
   });
 });
 
+describe("fmtTinyUSD", () => {
+  test("keeps sub-cent prompt-tax estimates visible", () => {
+    assert.equal(fmtTinyUSD(0.000009), "$0.000009");
+    assert.equal(fmtTinyUSD(0), "$0.00");
+  });
+});
+
 describe("fmtPct", () => {
   test("rounds a 0..1 fraction to a whole percent", () => {
     assert.equal(fmtPct(0.34), "34%");
@@ -40,5 +47,14 @@ describe("fmtCount", () => {
     assert.equal(fmtCount(41204), "41,204");
     assert.equal(fmtCount(0), "0");
     assert.equal(fmtCount(95), "95");
+  });
+});
+
+describe("fmtTokens", () => {
+  test("uses compact token-denominated units", () => {
+    assert.equal(fmtTokens(950), "950");
+    assert.equal(fmtTokens(1_500), "1.5k");
+    assert.equal(fmtTokens(5_800_000), "5.8M");
+    assert.equal(fmtTokens(12_560_000_000), "12.6B");
   });
 });

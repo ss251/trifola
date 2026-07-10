@@ -78,6 +78,24 @@ describe("resolvedRate — catalog + date-dependent Sonnet 5", () => {
     assert.equal(haiku.output, 5);
   });
 
+  test("fable 5 and haiku 3.5 pin all constants through dated ids", () => {
+    const fable = resolvedRate("claude-fable-5-20260301");
+    assert.deepEqual(fable, {
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite5m: 12.5,
+      cacheWrite1h: 20,
+    });
+
+    const haiku35 = resolvedRate("claude-3-5-haiku-20241022");
+    assert.equal(haiku35.input, 0.8);
+    assert.equal(haiku35.output, 4);
+    assert.ok(Math.abs(haiku35.cacheRead - 0.08) < 1e-12);
+    assert.equal(haiku35.cacheWrite5m, 1);
+    assert.ok(Math.abs(haiku35.cacheWrite1h - 1.6) < 1e-12);
+  });
+
   test("unknown model falls back to tier rate", () => {
     const alias = resolvedRate("opus");
     assert.equal(alias.input, 5);

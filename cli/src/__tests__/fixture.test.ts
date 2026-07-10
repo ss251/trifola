@@ -43,7 +43,7 @@ import { withTempDir, buildSyntheticClaudeTree } from "./testutil.js";
 //     wasted = 0.5M * (1 - 0.1) = $0.45
 //
 //   sessionCount = 2 (subagent file excluded)
-//   totals: wastedUsd     = 5.40+3.60+0.45 = $9.45
+//   totals: freshInputPremiumUsd = 5.40+3.60+0.45 = $9.45
 //           firstTouchUsd = 0+1.45+0       = $1.45
 //   reads (deduped usage entries) = 1 (session1, collapsed) + 1 (session2) + 1 (subagent) = 3
 //   totalInput (fleet) = 1,800,000 + 3,400,000 + 600,000 = 5,800,000
@@ -63,11 +63,15 @@ describe("end-to-end: synthetic fake ~/.claude tree -> exact known finding", () 
       assert.equal(finding.catalogCount, 4);
       assert.equal(finding.deadCount, 2);
       assert.equal(finding.sessionCount, 2); // subagent excluded
-      assert.equal(finding.reads, 3);
+      assert.equal(finding.usageEntries, 3);
+      assert.equal(finding.totalInputTokens, 5_800_000);
+      assert.equal(finding.unsupportedPricingModeEntries, 1);
       assert.equal(finding.cacheHitRatePct, 29);
 
       assert.ok(Math.abs(finding.taxUsd - 0.000018) < 1e-9, `taxUsd was ${finding.taxUsd}`);
-      assert.ok(Math.abs(finding.wastedUsd - 9.45) < 0.0001, `wastedUsd was ${finding.wastedUsd}`);
+      assert.ok(Math.abs(finding.taxUsdPerSession - 0.000009) < 1e-9);
+      assert.ok(Math.abs(finding.usageValueUsd - 18.46) < 0.0001, `usageValueUsd was ${finding.usageValueUsd}`);
+      assert.ok(Math.abs(finding.freshInputPremiumUsd - 9.45) < 0.0001);
       assert.ok(Math.abs(finding.firstTouchUsd - 1.45) < 0.0001, `firstTouchUsd was ${finding.firstTouchUsd}`);
     });
   });
@@ -87,8 +91,13 @@ describe("end-to-end: synthetic fake ~/.claude tree -> exact known finding", () 
         assert.ok(!json.includes(needle), `json leaked "${needle}"`);
       }
       // Denominators always: no bare "NN%" without an adjoining "of <count>".
-      assert.match(card, /of \d[\d,]* reads/);
+      assert.match(card, /29% of 5\.8M input tokens served from cache/);
       assert.match(card, /\d+ of \d+ catalog skills/);
+      assert.match(card, /\$0\.000009\/session · \$0\.000018 across 2 scanned sessions/);
+      assert.match(card, /fresh-input premium above an all-cache-read floor/);
+      assert.match(card, /avoidable share is unknowable from logs/);
+      assert.match(card, /1 entries used fast\/batch pricing modes trifola does not yet price/);
+      assert.ok(!card.includes("wasted re-sending"));
       // The word "leak" must never appear in printed output copy.
       assert.ok(!card.toLowerCase().includes("leak"));
       assert.ok(!json.toLowerCase().includes("leak"));
