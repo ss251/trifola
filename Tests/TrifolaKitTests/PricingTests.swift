@@ -48,12 +48,12 @@ struct PricingCatalogTests {
 
     @Test func fable5AndHaiku35ConstantsAndDatedIDsArePinned() throws {
         let cat = PricingCatalog.bundled
-        let fable = try #require(cat.rate(model: "claude-fable-5-20260301"))
-        #expect(fable.input == 10)
-        #expect(fable.output == 50)
-        #expect(fable.cacheRead == 1)
-        #expect(fable.cacheWrite5m == 12.5)
-        #expect(fable.cacheWrite1h == 20)
+        let fableRate = try #require(cat.rate(model: "claude-fable-5-20260301"))
+        #expect(fableRate.input == 10)
+        #expect(fableRate.output == 50)
+        #expect(fableRate.cacheRead == 1)
+        #expect(fableRate.cacheWrite5m == 12.5)
+        #expect(fableRate.cacheWrite1h == 20)
 
         let haiku = try #require(cat.rate(model: "claude-3-5-haiku-20241022"))
         #expect(haiku.input == 0.8)

@@ -467,8 +467,8 @@ private func writePNG<V: View>(_ content: V, to path: String, dark: Bool, width:
 
 // MARK: - Permanent full-window layout render (`--render-layout`)
 
-/// The production rail + scaffold + Overview hero at the two launch widths Fable
-/// judges. This is intentionally permanent: C-5's temporary projection drifted
+/// The production rail + scaffold + Overview hero at the two launch widths the
+/// design review judges. This is intentionally permanent: a temporary projection drifted
 /// from the shipped rail and silently reintroduced both the gray slab and a greedy
 /// KPI card.
 enum LayoutRender {

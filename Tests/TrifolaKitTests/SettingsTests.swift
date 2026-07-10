@@ -157,15 +157,15 @@ struct NotificationPolicyTests {
 @Suite("Claude config location")
 struct ClaudeConfigLocationTests {
     @Test func defaultDelegatesToDotClaude() {
-        let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        let home = URL(fileURLWithPath: "/Users/dev/", isDirectory: true)
         let location = ClaudeConfigLocation.resolve(home: home, environment: [:])
-        #expect(location.url.path == "/Users/tester/.claude")
+        #expect(location.url.path == "/Users/dev/.claude")
         #expect(location.source == .defaultDirectory)
         #expect(location.explainer.contains("~/.claude"))
     }
 
     @Test func environmentOverrideIsResolvedAndExplained() {
-        let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        let home = URL(fileURLWithPath: "/Users/dev/", isDirectory: true)
         let location = ClaudeConfigLocation.resolve(
             home: home,
             environment: ["CLAUDE_CONFIG_DIR": "/tmp/team-claude"]

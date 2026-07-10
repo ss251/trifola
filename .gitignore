@@ -23,5 +23,8 @@ dist/
 .roast-*
 REPORT-*.md
 
+# Regenerable render output (docs/screenshots holds the published set)
+screenshots-new/
+
 # Node / npm (cli/) — dist/ above already covers cli/dist/ (unanchored match).
 node_modules/

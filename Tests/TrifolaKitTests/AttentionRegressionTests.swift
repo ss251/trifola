@@ -4,7 +4,7 @@ import Testing
 
 // Synthetic fixtures preserve the real Claude JSONL envelope and tool schemas
 // observed locally on 2026-07-10. No transcript content is copied from disk.
-@Suite("Attention classifier regressions — cmux failure classes")
+@Suite("Attention classifier regressions — publicly-reported upstream failure classes")
 struct AttentionRegressionTests {
     private let base = Date(timeIntervalSince1970: 1_780_000_000)
 

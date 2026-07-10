@@ -79,8 +79,8 @@ describe("resolvedRate — catalog + date-dependent Sonnet 5", () => {
   });
 
   test("fable 5 and haiku 3.5 pin all constants through dated ids", () => {
-    const fable = resolvedRate("claude-fable-5-20260301");
-    assert.deepEqual(fable, {
+    const fableRate = resolvedRate("claude-fable-5-20260301");
+    assert.deepEqual(fableRate, {
       input: 10,
       output: 50,
       cacheRead: 1,

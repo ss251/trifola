@@ -27,10 +27,10 @@ struct TerminalLinkTests {
         """
         let resolver = TerminalLinkResolver(snapshots: FakeTerminalSnapshots(
             ps: ps,
-            lsofByPID: [502: lsofCWD("/Users/test/Developer/trifola")]
+            lsofByPID: [502: lsofCWD("/Users/dev/Developer/trifola")]
         ))
 
-        let target = resolver.resolve(sessionCWD: "/Users/test/Developer/trifola/")
+        let target = resolver.resolve(sessionCWD: "/Users/dev/Developer/trifola/")
 
         #expect(target?.processID == 502)
         #expect(target?.tty == "/dev/ttys005")
@@ -49,7 +49,7 @@ struct TerminalLinkTests {
             lsofByPID: [600: nil]
         ))
 
-        #expect(resolver.resolve(sessionCWD: "/Users/test/project") == nil)
+        #expect(resolver.resolve(sessionCWD: "/Users/dev/project") == nil)
     }
 
     @Test("ambiguous: the newest Claude process with the same cwd wins")
@@ -60,7 +60,7 @@ struct TerminalLinkTests {
           702   701 ttys001  Fri Jul 10 09:02:00 2026 claude
           703   701 ttys002  Fri Jul 10 10:02:00 2026 /opt/homebrew/bin/claude --resume abc
         """
-        let cwd = "/Users/test/shared-project"
+        let cwd = "/Users/dev/shared-project"
         let resolver = TerminalLinkResolver(snapshots: FakeTerminalSnapshots(
             ps: ps,
             lsofByPID: [702: lsofCWD(cwd), 703: lsofCWD(cwd)]
@@ -82,10 +82,10 @@ struct TerminalLinkTests {
         """
         let resolver = TerminalLinkResolver(snapshots: FakeTerminalSnapshots(
             ps: ps,
-            lsofByPID: [801: lsofCWD("/Users/test/a-different-project")]
+            lsofByPID: [801: lsofCWD("/Users/dev/a-different-project")]
         ))
 
-        #expect(resolver.resolve(sessionCWD: "/Users/test/wanted-project") == nil)
+        #expect(resolver.resolve(sessionCWD: "/Users/dev/wanted-project") == nil)
     }
 
     @Test("Ghostty resolves for app-level fallback but not exact targeting")
@@ -97,10 +97,10 @@ struct TerminalLinkTests {
         """
         let resolver = TerminalLinkResolver(snapshots: FakeTerminalSnapshots(
             ps: ps,
-            lsofByPID: [902: lsofCWD("/Users/test/project")]
+            lsofByPID: [902: lsofCWD("/Users/dev/project")]
         ))
 
-        let target = resolver.resolve(sessionCWD: "/Users/test/project")
+        let target = resolver.resolve(sessionCWD: "/Users/dev/project")
 
         #expect(target?.ownerApplication == .ghostty)
         #expect(target?.ownerProcessID == 900)
@@ -109,8 +109,8 @@ struct TerminalLinkTests {
 
     @Test("parser accepts tabular lsof diagnostics and rejects malformed ps")
     func parserTolerance() {
-        let tabular = "claude 100 test cwd DIR 1,2 64 123 /Users/test/My Project\n"
-        #expect(TerminalLinkResolver.parseWorkingDirectory(tabular) == "/Users/test/My Project")
+        let tabular = "claude 100 test cwd DIR 1,2 64 123 /Users/dev/My Project\n"
+        #expect(TerminalLinkResolver.parseWorkingDirectory(tabular) == "/Users/dev/My Project")
         #expect(TerminalLinkResolver.parseProcessList("not ps output").isEmpty)
         #expect(TerminalLinkResolver.normalizedTTY("ttys004") == "/dev/ttys004")
         #expect(TerminalLinkResolver.normalizedTTY("??") == nil)

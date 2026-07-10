@@ -175,7 +175,7 @@ private struct MachineSettings: View {
             }
 
             Section("Add a host") {
-                TextField("Name (for example, devcube)", text: $name)
+                TextField("Name (for example, mac-studio)", text: $name)
                 TextField("Host or Tailscale name", text: $host)
                 TextField("SSH user", text: $user)
                 HStack {
