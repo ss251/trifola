@@ -92,6 +92,7 @@ struct MenuBarGlyphTests {
         #expect(row.cwd == "/tmp/s0")
         #expect(row.age == 55)
         #expect(row.tierLabel == "Opus")   // ModelTier.label for claude-opus-4-8
+        #expect(row.classifierDiagnostic == "low: state supplied without classifier evidence")
     }
 }
 

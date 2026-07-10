@@ -52,25 +52,37 @@ public enum ToolProbeEngine {
 
     public static let perProbeTimeout: Duration = .seconds(6)
 
-    public static func run(_ probes: [any ToolProbe],
-                           timeout: Duration = perProbeTimeout) async -> [String: ProbeResult] {
-        await withTaskGroup(of: (String, ProbeResult).self) { group in
-            for probe in probes {
-                group.addTask {
-                    let start = ContinuousClock.now
-                    let result = await withTimeout(timeout, fallback: ProbeResult(
-                        status: .unknown, detail: "probe timed out")) {
-                        await probe.check()
-                    }
-                    let elapsed = start.duration(to: .now)
-                    var stamped = result
-                    stamped.latencyMs = Int(elapsed.components.seconds) * 1000
-                        + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
-                    return (probe.id, stamped)
+    public static func run(
+        _ probes: [any ToolProbe],
+        timeout: Duration = perProbeTimeout,
+        coordinator: ProviderRefreshCoordinator = .shared
+    ) async -> [String: ProbeResult] {
+        let results = Locked<[String: ProbeResult]>([:])
+        let refreshProbes = probes.map { probe in
+            ProviderRefreshProbe(id: "stack.\(probe.id)") {
+                let start = ContinuousClock.now
+                let result = await withTimeout(timeout, fallback: ProbeResult(
+                    status: .unknown, detail: "probe timed out")) {
+                    await probe.check()
                 }
+                let elapsed = start.duration(to: .now)
+                var stamped = result
+                stamped.latencyMs = Int(elapsed.components.seconds) * 1000
+                    + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+                results.withLock { $0[probe.id] = stamped }
             }
-            var out: [String: ProbeResult] = [:]
-            for await (id, result) in group { out[id] = result }
+        }
+        let batch = await coordinator.refresh(refreshProbes)
+        let skipped = Set(batch.skippedProbeIDs)
+        return results.withLock { captured in
+            var out = captured
+            for probe in probes where out[probe.id] == nil {
+                let refreshID = "stack.\(probe.id)"
+                let detail = skipped.contains(refreshID)
+                    ? "probe skipped — hard ceiling of \(ProviderRefreshCoordinator.hardProbeCeiling)"
+                    : "probe coalesced with an in-flight provider batch"
+                out[probe.id] = ProbeResult(status: .unknown, detail: detail)
+            }
             return out
         }
     }

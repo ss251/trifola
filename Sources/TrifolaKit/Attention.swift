@@ -56,24 +56,95 @@ public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
     /// reusing the existing `isActive` 15-minute window.
     public static let idleThreshold: TimeInterval = 15 * 60
 
-    /// The pure classifier. Time-dependent (`now`) so a session transitions
-    /// RUNNING→BLOCKED at 30s and WAITING→IDLE at 15m without re-reading the file.
+    /// Compatibility surface for callers that need only the state. The detailed
+    /// classifier below is authoritative and also explains confidence + reason.
     public static func classify(_ s: AttentionSignals, now: Date) -> AttentionState {
-        guard let last = s.lastEventAt else { return .idle }
+        classifyDetailed(s, now: now).state
+    }
+
+    /// The pure, diagnosable classifier. A dangling subagent call is positive
+    /// evidence of work in flight, never a human gate. Conversely, an ended
+    /// assistant turn is WAITING only when its text positively asks the human for
+    /// permission, a yes/no answer, or plan approval; ordinary completion is IDLE.
+    public static func classifyDetailed(
+        _ s: AttentionSignals,
+        now: Date
+    ) -> AttentionClassification {
+        guard let last = s.lastEventAt else {
+            return AttentionClassification(
+                state: .idle, confidence: .high,
+                reason: "no meaningful transcript event")
+        }
         let age = now.timeIntervalSince(last)
-        // 🔴 dangling tool_use past the threshold, nothing newer. Checked BEFORE
-        // idle: a session stuck on a permission prompt for 20 minutes is still
-        // BLOCKED-on-you, not quietly idle — it needs you more, not less.
-        if s.hasDanglingToolUse, age > blockedThreshold { return .blocked }
+
+        if s.hasDanglingToolUse {
+            if AttentionSignals.isSubagentTool(s.lastToolName) {
+                return AttentionClassification(
+                    state: .running, confidence: .high,
+                    reason: "in-flight subagent call \(s.lastToolName ?? "unknown")")
+            }
+            // A non-subagent dangling call can be waiting at Claude's permission
+            // gate. Explicit human-question tools are high confidence; other tool
+            // calls retain the existing permission-safe behavior at medium
+            // confidence, with the ambiguity made visible in the reason string.
+            if age > blockedThreshold {
+                let explicitHumanGate = AttentionSignals.isExplicitHumanGateTool(s.lastToolName)
+                return AttentionClassification(
+                    state: .blocked,
+                    confidence: explicitHumanGate ? .high : .medium,
+                    reason: explicitHumanGate
+                        ? "unanswered human gate \(s.lastToolName ?? "unknown")"
+                        : "unresolved \(s.lastToolName ?? "tool") may be awaiting permission")
+            }
+            return AttentionClassification(
+                state: .running, confidence: .medium,
+                reason: "tool call is inside the \(Int(blockedThreshold))s execution window")
+        }
+
         // ⚪ otherwise, no activity for >15m ⇒ the session has gone quiet.
-        if age > idleThreshold { return .idle }
-        // 🟡 turn ended cleanly on assistant text — the ball is in the user's court.
-        if s.lastKind == .assistantText, s.lastStopReason == "end_turn" { return .waiting }
+        if age > idleThreshold {
+            return AttentionClassification(
+                state: .idle, confidence: .high,
+                reason: "no meaningful activity for more than 15 minutes")
+        }
+
+        if s.lastKind == .assistantText, s.lastStopReason == "end_turn" {
+            if let evidence = AttentionSignals.humanPromptEvidence(in: s.lastAssistantText) {
+                return AttentionClassification(
+                    state: .waiting, confidence: .high,
+                    reason: "assistant requested \(evidence.reason)")
+            }
+            return AttentionClassification(
+                state: .idle, confidence: .high,
+                reason: "assistant turn ended without a human-answerable prompt")
+        }
+
         // 🟢 everything else inside the live window: a fresh dangling tool_use
         // (<30s, tool still executing), a just-arrived tool_result, a user prompt
         // the assistant is answering — all "work in flight".
-        return .running
+        return AttentionClassification(
+            state: .running, confidence: .medium,
+            reason: "recent transcript activity indicates work in flight")
     }
+}
+
+public struct AttentionClassification: Sendable, Equatable, Hashable {
+    public enum Confidence: String, Sendable, Equatable, Hashable, Codable {
+        case high, medium, low
+    }
+
+    public let state: AttentionState
+    public let confidence: Confidence
+    public let reason: String
+
+    public init(state: AttentionState, confidence: Confidence, reason: String) {
+        self.state = state
+        self.confidence = confidence
+        self.reason = reason
+    }
+
+    /// Pasteable in a bug report and compact enough for a future UI disclosure.
+    public var diagnostic: String { "\(confidence.rawValue): \(reason)" }
 }
 
 // MARK: - Attention signals
@@ -93,6 +164,9 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
     /// `stop_reason` on the most recent assistant message carrying content
     /// (`end_turn`, `tool_use`, …), or nil.
     public var lastStopReason: String?
+    /// Text from the most recent assistant message, when present. WAITING needs
+    /// positive evidence in this text; an ordinary completed turn is IDLE.
+    public var lastAssistantText: String?
     /// True iff the tail ends on a `tool_use` whose `tool_use_id` never received a
     /// matching `tool_result` — the dangling-tool-call signal.
     public var hasDanglingToolUse: Bool
@@ -114,15 +188,71 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
     public init(lastEventAt: Date? = nil, lastKind: LastKind = .none,
                 lastStopReason: String? = nil, hasDanglingToolUse: Bool = false,
                 danglingToolUseAt: Date? = nil, lastToolActivityAt: Date? = nil,
-                lastToolName: String? = nil, lastToolDetail: String? = nil) {
+                lastToolName: String? = nil, lastToolDetail: String? = nil,
+                lastAssistantText: String? = nil) {
         self.lastEventAt = lastEventAt
         self.lastKind = lastKind
         self.lastStopReason = lastStopReason
+        self.lastAssistantText = lastAssistantText
         self.hasDanglingToolUse = hasDanglingToolUse
         self.danglingToolUseAt = danglingToolUseAt
         self.lastToolActivityAt = lastToolActivityAt
         self.lastToolName = lastToolName
         self.lastToolDetail = lastToolDetail
+    }
+
+    /// Claude has used both `Task` and `Agent`; `TaskOutput` is the blocking
+    /// join for a background subagent. None is answerable by the human.
+    static func isSubagentTool(_ name: String?) -> Bool {
+        guard let name else { return false }
+        return ["Agent", "Task", "TaskOutput"].contains(name)
+    }
+
+    /// Tool calls whose entire purpose is to obtain a human decision.
+    static func isExplicitHumanGateTool(_ name: String?) -> Bool {
+        guard let name else { return false }
+        return ["AskUserQuestion", "ExitPlanMode"].contains(name)
+    }
+
+    enum HumanPromptEvidence: String, Sendable {
+        case permission
+        case yesNo
+        case planApproval
+
+        var reason: String {
+            switch self {
+            case .permission: return "permission"
+            case .yesNo: return "a yes/no answer"
+            case .planApproval: return "plan approval"
+            }
+        }
+    }
+
+    /// Positive, deliberately narrow needs-input shapes. A question mark alone
+    /// is insufficient: final explanations routinely contain rhetorical questions.
+    static func humanPromptEvidence(in text: String?) -> HumanPromptEvidence? {
+        guard let text else { return nil }
+        let normalized = text.lowercased()
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "  ", with: " ")
+
+        let planShapes = [
+            "approve the plan", "plan approval", "approve this plan",
+            "ready to proceed with this plan", "exit plan mode",
+        ]
+        if planShapes.contains(where: normalized.contains) { return .planApproval }
+
+        let yesNoShapes = [
+            "(y/n)", "[y/n]", "yes/no", "yes or no", "do you want me to",
+            "would you like me to", "should i proceed", "may i proceed", "shall i proceed",
+        ]
+        if yesNoShapes.contains(where: normalized.contains) { return .yesNo }
+
+        let permissionWord = normalized.contains("permission") || normalized.contains("approval required")
+        let permissionAction = ["allow", "approve", "required", "need", "grant"]
+            .contains(where: normalized.contains)
+        if permissionWord && permissionAction { return .permission }
+        return nil
     }
 
     /// Walk transcript tail lines in order, matching tool_use ids to their
@@ -137,6 +267,7 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
         var lastToolActivityAt: Date? = nil
         var lastToolName: String? = nil     // freshest tool_use in the tail → now-line
         var lastToolDetail: String? = nil
+        var lastAssistantText: String? = nil
 
         for line in lines {
             guard let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
@@ -149,6 +280,7 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
                 guard let msg = obj["message"] as? [String: Any],
                       let blocks = msg["content"] as? [[String: Any]] else { break }
                 var sawContent = false
+                var assistantTexts: [String] = []
                 for b in blocks {
                     switch b["type"] as? String {
                     case "tool_use":
@@ -170,6 +302,7 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
                         if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             lastKind = .assistantText
                             lastEventAt = ts
+                            assistantTexts.append(t)
                             sawContent = true
                         }
                     case "thinking":
@@ -180,7 +313,12 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
                         break
                     }
                 }
-                if sawContent { lastStop = msg["stop_reason"] as? String }
+                if sawContent {
+                    lastStop = msg["stop_reason"] as? String
+                    lastAssistantText = assistantTexts.isEmpty
+                        ? nil
+                        : assistantTexts.joined(separator: "\n")
+                }
 
             case "user":
                 guard let msg = obj["message"] as? [String: Any] else { break }
@@ -235,7 +373,8 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
             danglingToolUseAt: dangling ? lastEventAt : nil,
             lastToolActivityAt: lastToolActivityAt,
             lastToolName: lastToolName,
-            lastToolDetail: lastToolDetail
+            lastToolDetail: lastToolDetail,
+            lastAssistantText: lastAssistantText
         )
     }
 
@@ -263,14 +402,23 @@ public struct AttentionItem: Identifiable, Sendable, Hashable {
     public let state: AttentionState
     /// Seconds since the session's last activity (for the chip's "2m" age).
     public let age: TimeInterval
+    public let classifierConfidence: AttentionClassification.Confidence
+    public let classifierReason: String
 
-    public init(session: SessionSummary, state: AttentionState, age: TimeInterval) {
+    public init(session: SessionSummary, state: AttentionState, age: TimeInterval,
+                classifierConfidence: AttentionClassification.Confidence = .low,
+                classifierReason: String = "state supplied without classifier evidence") {
         self.session = session
         self.state = state
         self.age = age
+        self.classifierConfidence = classifierConfidence
+        self.classifierReason = classifierReason
     }
 
     public var needsAttention: Bool { state.needsAttention }
+    public var classifierDiagnostic: String {
+        "\(classifierConfidence.rawValue): \(classifierReason)"
+    }
 }
 
 // MARK: - The attention board (the sorted, counted heart)
@@ -323,8 +471,13 @@ public struct AttentionBoard: Sendable, Equatable {
             guard !s.isSubagent else { continue }
             var sig = signals[s.id] ?? AttentionSignals(lastEventAt: last)
             if sig.lastEventAt == nil { sig.lastEventAt = last }   // never lose the recency anchor
-            let state = AttentionState.classify(sig, now: now)
-            items.append(AttentionItem(session: s, state: state, age: age))
+            let classification = AttentionState.classifyDetailed(sig, now: now)
+            items.append(AttentionItem(
+                session: s,
+                state: classification.state,
+                age: age,
+                classifierConfidence: classification.confidence,
+                classifierReason: classification.reason))
         }
         items.sort {
             $0.state.sortRank != $1.state.sortRank

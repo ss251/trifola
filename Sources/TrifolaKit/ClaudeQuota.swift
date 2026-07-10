@@ -447,8 +447,11 @@ public final class QuotaStore: ObservableObject {
 
     private var cooldownUntil: Date?
     private var inFlight = false
+    private let refreshCoordinator: ProviderRefreshCoordinator
 
-    public init() {}
+    public init(refreshCoordinator: ProviderRefreshCoordinator = .shared) {
+        self.refreshCoordinator = refreshCoordinator
+    }
 
     public func refresh(minInterval: TimeInterval = 300) async {
         let now = Date()
@@ -458,12 +461,21 @@ public final class QuotaStore: ObservableObject {
         inFlight = true
         defer { inFlight = false }
 
-        // File I/O + Keychain subprocess stay off-main. The same candidate
-        // resolver drives MCP, including expiry filtering and 401 fallback.
-        let candidates = await Task.detached(priority: .utility, operation: {
-            ClaudeCredentialReader.loadCandidates()
-        }).value
-        switch await ClaudeQuotaResolver.resolve(candidates: candidates) {
+        // This is one probe in the global provider batch. Credential I/O and
+        // network work execute inside the coordinator's task group, off-main;
+        // overlapping stack/machine/future-provider triggers coalesce here.
+        let resolved = Locked<Result<ResolvedQuota, ClaudeQuotaError>?>(nil)
+        let probe = ProviderRefreshProbe(id: "claude.quota") {
+            let candidates = ClaudeCredentialReader.loadCandidates()
+            let result = await ClaudeQuotaResolver.resolve(candidates: candidates)
+            resolved.withLock { $0 = result }
+        }
+        _ = await refreshCoordinator.refresh([probe])
+        // A different provider batch may have won the single flight. Its work is
+        // authoritative for this trigger; the next cadence tick can try quota.
+        guard let result = resolved.withLock({ $0 }) else { return }
+
+        switch result {
         case .success(let resolved):
             source = resolved.source
             snapshot = resolved.snapshot
