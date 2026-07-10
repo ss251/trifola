@@ -75,11 +75,11 @@ public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
                 reason: "no meaningful transcript event")
         }
         let age = now.timeIntervalSince(last)
-        let permissionEvidence = s.hasPermissionGate
+        let permissionEvidence = s.canObserveBlocking && s.hasPermissionGate
         let promptEvidence = AttentionSignals.humanPromptEvidence(in: s.lastAssistantText)
             ?? AttentionSignals.humanPromptEvidence(in: s.lastToolDetail)
 
-        if s.hasPermissionGate, age > blockedThreshold {
+        if permissionEvidence, age > blockedThreshold {
             return AttentionClassification(
                 state: .blocked, confidence: .high,
                 reason: "unanswered permission record")
@@ -92,18 +92,20 @@ public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
                     reason: "in-flight subagent call \(s.lastToolName ?? "unknown")")
             }
             if age > blockedThreshold {
-                let explicitHumanGate = AttentionSignals.isExplicitHumanGateTool(s.lastToolName)
-                if explicitHumanGate || permissionEvidence || promptEvidence != nil {
-                    let reason: String
-                    if explicitHumanGate {
-                        reason = "unanswered human gate \(s.lastToolName ?? "unknown")"
-                    } else if permissionEvidence {
-                        reason = "unanswered permission record"
-                    } else {
-                        reason = "tool call carries \(promptEvidence!.reason) evidence"
+                if s.canObserveBlocking {
+                    let explicitHumanGate = AttentionSignals.isExplicitHumanGateTool(s.lastToolName)
+                    if explicitHumanGate || permissionEvidence || promptEvidence != nil {
+                        let reason: String
+                        if explicitHumanGate {
+                            reason = "unanswered human gate \(s.lastToolName ?? "unknown")"
+                        } else if permissionEvidence {
+                            reason = "unanswered permission record"
+                        } else {
+                            reason = "tool call carries \(promptEvidence!.reason) evidence"
+                        }
+                        return AttentionClassification(
+                            state: .blocked, confidence: .high, reason: reason)
                     }
-                    return AttentionClassification(
-                        state: .blocked, confidence: .high, reason: reason)
                 }
                 return AttentionClassification(
                     state: .running, confidence: .high,
@@ -119,6 +121,12 @@ public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
             return AttentionClassification(
                 state: .idle, confidence: .high,
                 reason: "no meaningful activity for more than 15 minutes")
+        }
+
+        if s.lastKind == .turnComplete {
+            return AttentionClassification(
+                state: .waiting, confidence: .high,
+                reason: "runtime turn completed; waiting on the human")
         }
 
         if s.lastKind == .assistantText, s.lastStopReason == "end_turn" {
@@ -167,7 +175,8 @@ public struct AttentionClassification: Sendable, Equatable, Hashable {
 public struct AttentionSignals: Sendable, Equatable, Hashable {
     /// Kind of the last meaningful (non-meta) event in the tail.
     public enum LastKind: String, Sendable, Equatable, Hashable, Codable {
-        case assistantText, toolUse, toolResult, userPrompt, thinking, system, none
+        case assistantText, toolUse, toolResult, userPrompt, thinking, system
+        case runtimeActivity, turnComplete, none
     }
 
     /// Timestamp of the most recent meaningful event (drives age / staleness).
@@ -200,13 +209,17 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
     /// Positive transcript record that Claude Code is waiting at a permission
     /// boundary. A mere `permission-mode` setting is not a gate.
     public var hasPermissionGate: Bool
+    /// Whether this provider's on-disk surface can persist human-gate evidence.
+    /// Codex rollouts cannot, so tool-shaped input may never become BLOCKED.
+    public let canObserveBlocking: Bool
 
     public init(lastEventAt: Date? = nil, lastKind: LastKind = .none,
                 lastStopReason: String? = nil, hasDanglingToolUse: Bool = false,
                 danglingToolUseAt: Date? = nil, lastToolActivityAt: Date? = nil,
                 lastToolName: String? = nil, lastToolDetail: String? = nil,
                 lastAssistantText: String? = nil,
-                hasPermissionGate: Bool = false) {
+                hasPermissionGate: Bool = false,
+                canObserveBlocking: Bool = true) {
         self.lastEventAt = lastEventAt
         self.lastKind = lastKind
         self.lastStopReason = lastStopReason
@@ -217,6 +230,7 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
         self.lastToolName = lastToolName
         self.lastToolDetail = lastToolDetail
         self.hasPermissionGate = hasPermissionGate
+        self.canObserveBlocking = canObserveBlocking
     }
 
     /// Claude has used both `Task` and `Agent`; `TaskOutput` is the blocking
@@ -414,19 +428,50 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
         )
     }
 
-    /// Read the last `tailBytes` of a transcript and extract signals. The first
-    /// (probably partial) line is dropped when we began mid-file, exactly like the
-    /// FileTailer. Returns nil only when the file can't be opened.
-    public static func extractFromTail(path: String, tailBytes: Int = 256_000) -> AttentionSignals? {
+    /// Read a provider transcript's bounded tail and extract its native signals.
+    /// Compressed Codex rollouts pass through the bounded decompressor first.
+    public static func extractFromTail(
+        path: String,
+        provider: Provider = .claude,
+        tailBytes: Int = 256_000
+    ) -> AttentionSignals? {
+        let lines: [Data]?
+        if provider == .codex, path.hasSuffix(".jsonl.zst") {
+            guard let data = CodexRolloutFile.data(at: URL(fileURLWithPath: path)) else {
+                return nil
+            }
+            let bounded = max(1, tailBytes)
+            lines = splitTail(
+                Data(data.suffix(bounded)),
+                droppingPartialHead: data.count > bounded)
+        } else {
+            lines = readTailLines(path: path, tailBytes: tailBytes)
+        }
+        guard let lines else { return nil }
+        switch provider {
+        case .claude:
+            return extract(fromTailLines: lines)
+        case .codex:
+            return CodexRolloutAccumulator.attentionSignals(fromTailLines: lines)
+        }
+    }
+
+    private static func readTailLines(path: String, tailBytes: Int) -> [Data]? {
         guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? fh.close() }
         let size = (try? fh.seekToEnd()) ?? 0
-        let start = size > UInt64(tailBytes) ? size - UInt64(tailBytes) : 0
+        let bounded = UInt64(max(1, tailBytes))
+        let start = size > bounded ? size - bounded : 0
         try? fh.seek(toOffset: start)
         guard let data = try? fh.readToEnd() else { return nil }
+        return splitTail(data, droppingPartialHead: start > 0)
+    }
+
+    private static func splitTail(_ data: Data,
+                                  droppingPartialHead: Bool) -> [Data] {
         var lines = data.split(separator: UInt8(0x0A)).map { Data($0) }
-        if start > 0, !lines.isEmpty { lines.removeFirst() }   // drop the partial head line
-        return extract(fromTailLines: lines)
+        if droppingPartialHead, !lines.isEmpty { lines.removeFirst() }
+        return lines
     }
 }
 
@@ -548,13 +593,14 @@ public final class AttentionStore: ObservableObject {
     /// already be the recent pool (AppServices filters by the board window); this
     /// only reads their tails.
     public func refresh(candidates: [SessionSummary], tailBytes: Int = 256_000) async {
-        let jobs: [(String, String)] = candidates
+        let jobs: [(String, String, Provider)] = candidates
             .filter { !$0.isSubagent && !$0.filePath.isEmpty }
-            .map { ($0.id, $0.filePath) }
+            .map { ($0.id, $0.filePath, $0.provider) }
         let result = await Task.detached(priority: .userInitiated) {
             var out: [String: AttentionSignals] = [:]
-            for (id, path) in jobs {
-                if let sig = AttentionSignals.extractFromTail(path: path, tailBytes: tailBytes) {
+            for (id, path, provider) in jobs {
+                if let sig = AttentionSignals.extractFromTail(
+                    path: path, provider: provider, tailBytes: tailBytes) {
                     out[id] = sig
                 }
             }

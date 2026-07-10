@@ -224,6 +224,41 @@ struct ReconcileDeltaTests {
         #expect(abs((rows[0].theirModels["claude-opus-4-8"] ?? 0) - 5.0) < 0.0001)
     }
 
+    @Test func mixedCodexUsageDoesNotMoveClaudeCacheDelta() throws {
+        let claudeUsage = SessionUsage(inputTokens: 1_000_000)
+        let claude = SessionSummary(
+            id: "claude", provider: .claude,
+            project: "p", cwd: "/tmp", model: "claude-opus-4-8",
+            lastActivity: nil, messageCount: 1, usage: claudeUsage,
+            contextWeight: 0,
+            usageByModelDay: [
+                "2026-07-05": ["claude-opus-4-8": claudeUsage],
+            ])
+        let codexUsage = SessionUsage(inputTokens: 9_000_000)
+        let codex = SessionSummary(
+            id: "codex", provider: .codex,
+            project: "p", cwd: "/tmp", model: "gpt-5.6-sol",
+            lastActivity: nil, messageCount: 1, usage: codexUsage,
+            contextWeight: 0,
+            usageByModelDay: [
+                "2026-07-05": ["gpt-5.6-sol": codexUsage],
+            ])
+        let json = #"{"version":1,"days":{"2026-07-05":{"claude-opus-4-8":[1000000,0,0,0,5000000000,1,1,0]}}}"#
+        let cache = try #require(CodexBarReconcile.parse(Data(json.utf8)))
+
+        let claudeOnly = CodexBarReconcile.compare(
+            sessions: [claude], cache: cache, days: ["2026-07-05"])
+        let mixed = CodexBarReconcile.compare(
+            sessions: [claude, codex], cache: cache, days: ["2026-07-05"])
+
+        #expect(mixed == claudeOnly)
+        let row = try #require(mixed.first)
+        #expect(row.delta == 0)
+        #expect(row.matches)
+        #expect(row.ourModels["gpt-5.6-sol"] == nil)
+        #expect(row.ourUsage["gpt-5.6-sol"] == nil)
+    }
+
     /// The staleness note: CodexBar's lastScan on/before the compared day →
     /// the calm "it lags live sessions" explanation, never panic language.
     @Test func staleScanExplainsLagCalmly() {

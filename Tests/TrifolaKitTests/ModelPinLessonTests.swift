@@ -34,10 +34,12 @@ private func modelPinPolicy(source: DeclaredPolicySource = .claude) -> ClaudeSet
 
 private func modelPinParent(
     _ invocations: [SubagentInvocation],
-    id: String = "P"
+    id: String = "P",
+    provider: Provider = .claude
 ) -> SessionSummary {
     SessionSummary(
-        id: id, project: "trifola", cwd: modelPinRoot.path, model: "claude-opus-4-8",
+        id: id, provider: provider,
+        project: "trifola", cwd: modelPinRoot.path, model: "claude-opus-4-8",
         lastActivity: Date(), messageCount: 5, usage: SessionUsage(),
         contextWeight: 0, filePath: modelPinRoot.appendingPathComponent("\(id).jsonl").path,
         agentCalls: invocations.count, subagentInvocations: invocations)
@@ -47,12 +49,14 @@ private func modelPinChild(
     agentID: String,
     model: String,
     input: Int,
-    parentID: String = "P"
+    parentID: String = "P",
+    provider: Provider = .claude
 ) -> SessionSummary {
     let usage = SessionUsage(inputTokens: input)
     let tier = ModelTier(raw: model)
     return SessionSummary(
-        id: "\(parentID)/agent-\(agentID)", project: "trifola", cwd: modelPinRoot.path,
+        id: "\(parentID)/agent-\(agentID)", provider: provider,
+        project: "trifola", cwd: modelPinRoot.path,
         model: model, lastActivity: Date(), messageCount: 3, usage: usage,
         contextWeight: 0,
         filePath: modelPinRoot.appendingPathComponent(
@@ -169,6 +173,50 @@ struct ModelPinDetectorTests {
         let lessons = LessonMiner.mint(
             report: report, catalog: [], settings: modelPinPolicy())
         #expect(lessons.first?.kind == .modelPin)
+    }
+
+    @Test func claudeLikeCodexParentAndChildNeverEnterModelPinAnalysis() throws {
+        let claudeInvocation = SubagentInvocation(
+            agentID: "claude", agentType: "Explore",
+            resolvedModel: "claude-opus-4-8")
+        let codexInvocation = SubagentInvocation(
+            agentID: "codex", agentType: "Explore",
+            resolvedModel: "claude-opus-4-8")
+        let sessions = [
+            modelPinParent([claudeInvocation], id: "CLAUDE"),
+            modelPinChild(
+                agentID: "claude", model: "claude-opus-4-8",
+                input: 1_000_000, parentID: "CLAUDE"),
+            modelPinParent([codexInvocation], id: "CODEX", provider: .codex),
+            modelPinChild(
+                agentID: "codex", model: "claude-opus-4-8",
+                input: 5_000_000, parentID: "CODEX", provider: .codex),
+        ]
+
+        let legs = AuditReport.subagentModelLegs(sessions)
+        #expect(legs.count == 1)
+        #expect(try #require(legs.first).provider == .claude)
+        let result = LessonMiner.modelPinMismatches(
+            sessions: sessions, settings: modelPinPolicy(),
+            fallbackDay: modelPinDay)
+        #expect(result.count == 1)
+        #expect(result.top.map(\.sessionID) == ["CLAUDE/agent-claude"])
+        #expect(abs(result.total - 3) < 0.0001)
+    }
+
+    @Test func directCodexLegCannotBypassClaudeSettingsBoundary() {
+        let usage = SessionUsage(inputTokens: 1_000_000)
+        let leg = SubagentModelLeg(
+            provider: .codex, sessionID: "codex/direct", project: "trifola",
+            cwd: modelPinRoot.path, filePath: "/tmp/codex.jsonl",
+            agentType: "Explore", requestedModel: nil,
+            resolvedModel: "claude-opus-4-8", usage: usage,
+            usageByModelDay: [:], actualCost: 5)
+        let result = LessonMiner.modelPinMismatches(
+            legs: [leg], settings: modelPinPolicy(), fallbackDay: modelPinDay)
+        #expect(result.count == 0)
+        #expect(result.total == 0)
+        #expect(result.top.isEmpty)
     }
 }
 

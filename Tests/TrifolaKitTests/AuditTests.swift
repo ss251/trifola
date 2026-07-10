@@ -131,8 +131,11 @@ struct SkillLedgerTests {
               allowedTools: [], hasManifest: true, wordCount: 100, fileCount: 1,
               modified: .distantPast, path: "/skills/\(id)")
     }
-    private func session(_ fires: [String: Int], last: Date? = Date(), sub: Bool = false) -> SessionSummary {
-        SessionSummary(id: UUID().uuidString, project: "p", cwd: "/tmp/p", model: "claude-opus-4-8",
+    private func session(_ fires: [String: Int], last: Date? = Date(),
+                         sub: Bool = false,
+                         provider: Provider = .claude) -> SessionSummary {
+        SessionSummary(id: UUID().uuidString, provider: provider,
+                       project: "p", cwd: "/tmp/p", model: "claude-opus-4-8",
                        lastActivity: last, messageCount: 1, usage: SessionUsage(), contextWeight: 0,
                        filePath: sub ? "/x/PARENT/subagents/agent-1.jsonl" : "/x/s.jsonl",
                        skillInvocations: fires)
@@ -188,6 +191,22 @@ struct SkillLedgerTests {
             catalog: [skill("x")])
         #expect(led.sessionCount == 1)                  // subagent not counted
     }
+
+    @Test func codexSessionsCannotChangeClaudeDeadSkillsOrPromptTaxDenominator() {
+        let catalog = [skill("used"), skill("dead")]
+        let claude = session(["used": 2])
+        let codex = session(
+            ["dead": 99, "codex-only": 7], provider: .codex)
+        let claudeOnly = AuditReport.skillLedger(
+            sessions: [claude], catalog: catalog)
+        let mixed = AuditReport.skillLedger(
+            sessions: [claude, codex], catalog: catalog)
+
+        #expect(mixed == claudeOnly)
+        #expect(mixed.sessionCount == 1)
+        #expect(mixed.dead.map(\.name) == ["dead"])
+        #expect(!mixed.fired.contains { $0.name == "codex-only" })
+    }
 }
 
 // MARK: - Subagent doctrine
@@ -207,8 +226,10 @@ struct SubagentDoctrineTests {
 @Suite("Model mismatch")
 struct MismatchTests {
     private func sess(id: String, tier: ModelTier, fresh: Int, msgs: Int,
-                      agents: Int, edits: Int) -> SessionSummary {
-        SessionSummary(id: id, project: id, cwd: "/tmp/\(id)", model: tier.rawValue,
+                      agents: Int, edits: Int,
+                      provider: Provider = .claude) -> SessionSummary {
+        SessionSummary(id: id, provider: provider,
+                       project: id, cwd: "/tmp/\(id)", model: tier.rawValue,
                        lastActivity: nil, messageCount: msgs,
                        usage: SessionUsage(inputTokens: fresh), contextWeight: 0,
                        filePath: "/x/\(id).jsonl",
@@ -291,6 +312,19 @@ struct MismatchTests {
             [orchestration, bigSession, cheap, tiny, subagent], fallbackDay: "2026-07-06")
         #expect(count == 0)
         #expect(top.isEmpty)
+    }
+
+    @Test func codexSessionWithClaudeLikeOpusShapeIsNotRightSizedAgainstClaudeSettings() {
+        let codex = sess(
+            id: "codex-opus-shape", tier: .opus, fresh: 2_000_000,
+            msgs: 20, agents: 0, edits: 1, provider: .codex)
+        let result = AuditReport.mismatchCandidates(
+            [codex], fallbackDay: "2026-07-06")
+        #expect(result.count == 0)
+        #expect(result.total == 0)
+        #expect(result.top.isEmpty)
+        #expect(AuditReport.frontierOverspend(
+            codex, fallbackDay: "2026-07-06") == 0)
     }
 }
 

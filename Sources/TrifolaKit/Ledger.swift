@@ -749,7 +749,7 @@ public enum LessonMiner {
         var total = 0.0
         var resolutionCache: [String: DeclaredPolicyResolution] = [:]
 
-        for leg in legs {
+        for leg in legs where leg.provider == .claude {
             guard !leg.hasExplicitModelOverride else { continue }
             let policy: DeclaredRoutingPolicy
             let target: String
@@ -943,7 +943,7 @@ public enum LessonMiner {
         \(listLines)
 
         Prompt tokens removed if archived: ≈\(fmtTokens(ledger.deadPromptTaxTokens)) description tokens \
-        that rides every one of ~\(ledger.sessionCount) sessions' system prompt.
+        that rides every one of ~\(ledger.sessionCount) Claude sessions' system prompt.
         """
         let revealTargets = topDead.prefix(8).compactMap { e -> RevealTarget? in
             guard let p = pathByName[e.name], !p.isEmpty else { return nil }
@@ -969,7 +969,7 @@ public enum LessonMiner {
             kind: .deadSkillArchive,
             metricValue: Double(ledger.deadCount),
             metricLabel: "\(ledger.deadCount)/\(ledger.catalogCount) skills",
-            why: "\(ledger.deadCount) of \(ledger.catalogCount) catalog skills were never explicitly invoked, yet their descriptions ride every session's prompt (≈\(fmtTokens(ledger.deadPromptTaxTokens)) prompt tokens).",
+            why: "\(ledger.deadCount) of \(ledger.catalogCount) catalog skills were never explicitly invoked, yet their descriptions ride every Claude session's prompt (≈\(fmtTokens(ledger.deadPromptTaxTokens)) prompt tokens).",
             evidence: Array(evidence),
             candidate: candidate,
             impact: taxDollars)
@@ -1075,7 +1075,7 @@ public enum LessonMiner {
         let after  = "\"effortLevel\": \"\(EffortLevel.doctrineDefault.rawValue)\""
         let copyText = """
         High-effort default: settings.json persists effortLevel = "\(settings.effortRaw)" — above the \
-        recommended High default. xhigh/max asks the model to spend more compute on every session. \
+        recommended High default. xhigh/max asks the model to spend more compute on every Claude session. \
         Reconsider the persisted default. The app never writes settings — apply via /config \
         or edit settings.json yourself.
 
@@ -1089,12 +1089,12 @@ public enum LessonMiner {
             copyLabel: "Copy settings",
             beforeText: before,
             afterText: after,
-            note: "The app never writes settings.json — apply this via /config. xhigh/max requests extra compute on every session.")
+            note: "The app never writes settings.json — apply this via /config. xhigh/max requests extra compute on every Claude session.")
         return Lesson(
             kind: .effortFurnace,
             metricValue: 1,
             metricLabel: settings.effort.label,
-            why: "settings.json persists effortLevel = \(settings.effortRaw), above the recommended High default, so every session requests extra compute.",
+            why: "settings.json persists effortLevel = \(settings.effortRaw), above the recommended High default, so every Claude session requests extra compute.",
             evidence: [LessonEvidence(
                 label: "Claude settings.json",
                 detail: "persisted default · effortLevel = \(settings.effortRaw)",

@@ -35,6 +35,13 @@ private func codexTokenCount(
     #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":\#(lastInput),"cached_input_tokens":\#(lastCached),"output_tokens":\#(lastOutput),"reasoning_output_tokens":\#(lastReasoning),"total_tokens":\#(lastInput + lastOutput)},"total_token_usage":{"input_tokens":\#(totalInput),"cached_input_tokens":\#(totalCached),"output_tokens":\#(totalOutput),"reasoning_output_tokens":\#(totalReasoning),"total_tokens":\#(totalInput + totalOutput)}},"rate_limits":null}}"#
 }
 
+private func codexCumulativeOnly(
+    input: Int, cached: Int, output: Int, reasoning: Int,
+    timestamp: String
+) -> String {
+    #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\#(input),"cached_input_tokens":\#(cached),"output_tokens":\#(output),"reasoning_output_tokens":\#(reasoning)}},"rate_limits":null}}"#
+}
+
 @Suite("Codex read adapter")
 struct CodexAdapterTests {
     @Test func providerDefaultsToClaudeAndLegacyDecodeStaysClaude() throws {
@@ -88,6 +95,90 @@ struct CodexAdapterTests {
         // 0.6M fresh × $5 + 0.4M cached × $0.50 + 0.1M output × $30
         // = $3 + $0.20 + $3 = $6.20. Reasoning is already in output.
         #expect(abs(usage.cost(rate: rate) - 6.20) < 0.000_001)
+    }
+
+    @Test func cachedInputGreaterThanInputIsClampedWithoutNegativeMoney() throws {
+        let lines = [
+            codexMetadata(id: "malformed-cache"),
+            codexTurn(),
+            codexTokenCount(
+                lastInput: 100, lastCached: 150,
+                lastOutput: 10, lastReasoning: 0,
+                totalInput: 100, totalCached: 150,
+                totalOutput: 10, totalReasoning: 0,
+                timestamp: "2026-07-10T10:01:00Z"),
+        ]
+        var accumulator = CodexRolloutAccumulator(defaultID: "fallback")
+        accumulator.ingest(Data((lines.joined(separator: "\n") + "\n").utf8))
+        let summary = accumulator.summary(filePath: "/malformed-cache.jsonl")
+
+        #expect(summary.usage.inputTokens == 0)
+        #expect(summary.usage.cacheReadTokens == 150)
+        #expect(summary.usage.outputTokens == 10)
+        #expect(summary.cost >= 0)
+    }
+
+    @Test func cumulativeCounterResetStartsFreshEpochWithoutNegativeOrOverwrite() {
+        let lines = [
+            codexMetadata(id: "counter-reset"),
+            codexTurn(),
+            codexTokenCount(
+                lastInput: 100, lastCached: 40,
+                lastOutput: 10, lastReasoning: 4,
+                totalInput: 100, totalCached: 40,
+                totalOutput: 10, totalReasoning: 4,
+                timestamp: "2026-07-10T10:01:00Z"),
+            codexCumulativeOnly(
+                input: 200, cached: 80, output: 20, reasoning: 8,
+                timestamp: "2026-07-10T10:02:00Z"),
+            // A repeated cumulative heartbeat must not replace the non-zero
+            // slice already stored under this total tuple.
+            codexCumulativeOnly(
+                input: 200, cached: 80, output: 20, reasoning: 8,
+                timestamp: "2026-07-10T10:02:30Z"),
+            codexCumulativeOnly(
+                input: 100, cached: 40, output: 10, reasoning: 4,
+                timestamp: "2026-07-10T10:03:00Z"),
+        ]
+        var accumulator = CodexRolloutAccumulator(defaultID: "fallback")
+        accumulator.ingest(Data((lines.joined(separator: "\n") + "\n").utf8))
+        let summary = accumulator.summary(filePath: "/counter-reset.jsonl")
+
+        #expect(summary.usage.inputTokens == 180)
+        #expect(summary.usage.cacheReadTokens == 120)
+        #expect(summary.usage.outputTokens == 30)
+        #expect(summary.usage.totalInput == 300)
+        #expect(summary.rawUsageBlocks == 3)
+        #expect(summary.cost >= 0)
+        #expect(accumulator.usageReconcilesWithLatestTotal == nil)
+    }
+
+    @Test func reasoningOnlyCounterChangesDoNotAlterBillingOrStartResetEpoch() {
+        let lines = [
+            codexMetadata(id: "reasoning-only"),
+            codexTurn(),
+            codexTokenCount(
+                lastInput: 100, lastCached: 40,
+                lastOutput: 10, lastReasoning: 4,
+                totalInput: 100, totalCached: 40,
+                totalOutput: 10, totalReasoning: 4,
+                timestamp: "2026-07-10T10:01:00Z"),
+            codexCumulativeOnly(
+                input: 100, cached: 40, output: 10, reasoning: 5,
+                timestamp: "2026-07-10T10:02:00Z"),
+            codexCumulativeOnly(
+                input: 100, cached: 40, output: 10, reasoning: 3,
+                timestamp: "2026-07-10T10:03:00Z"),
+        ]
+        var accumulator = CodexRolloutAccumulator(defaultID: "fallback")
+        accumulator.ingest(Data((lines.joined(separator: "\n") + "\n").utf8))
+        let summary = accumulator.summary(filePath: "/reasoning-only.jsonl")
+
+        #expect(summary.usage.inputTokens == 60)
+        #expect(summary.usage.cacheReadTokens == 40)
+        #expect(summary.usage.outputTokens == 10)
+        #expect(summary.rawUsageBlocks == 1)
+        #expect(accumulator.usageReconcilesWithLatestTotal == true)
     }
 
     @Test func legacyRolloutProducesProviderNeutralSummaryAndReconciles() throws {
@@ -218,7 +309,7 @@ struct CodexAdapterTests {
         #expect(CodexImportManifest.load(from: link) == CodexImportManifest())
     }
 
-    @Test func codexCacheRoundTripPreservesProviderAndUsesVersion18() throws {
+    @Test func codexCacheRoundTripPreservesProviderAndUsesVersion19() throws {
         let root = try codexTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let sessions = root.appendingPathComponent("sessions", isDirectory: true)
@@ -237,7 +328,7 @@ struct CodexAdapterTests {
         let cacheObject = try #require(
             JSONSerialization.jsonObject(with: Data(contentsOf: cache))
                 as? [String: Any])
-        #expect((cacheObject["version"] as? NSNumber)?.intValue == 18)
+        #expect((cacheObject["version"] as? NSNumber)?.intValue == 19)
         let loaded = try #require(SessionStore.loadIndexCache(from: cache))
         #expect(loaded.summaries.first?.provider == .codex)
         #expect(loaded.summaries.first?.id == "cache")
@@ -268,6 +359,99 @@ struct CodexAdapterTests {
         #expect(summary.id == "zstd-session")
         #expect(summary.provider == .codex)
         #expect(summary.model == "gpt-5.6-sol")
+    }
+
+    @Test func decompressorSubprocessIsBoundedByTimeoutAndOutputCap() throws {
+        let sleep = URL(fileURLWithPath: "/bin/sleep")
+        let printf = URL(fileURLWithPath: "/usr/bin/printf")
+        #expect(FileManager.default.isExecutableFile(atPath: sleep.path))
+        #expect(FileManager.default.isExecutableFile(atPath: printf.path))
+
+        let started = Date()
+        let timedOut = CodexRolloutFile.runBounded(
+            executable: sleep, arguments: ["5"],
+            timeout: 0.2, maxOutputBytes: 1_024)
+        #expect(timedOut == nil)
+        #expect(Date().timeIntervalSince(started) < 2)
+
+        let capped = CodexRolloutFile.runBounded(
+            executable: printf, arguments: ["123456"],
+            timeout: 2, maxOutputBytes: 5)
+        #expect(capped == nil)
+        let exact = CodexRolloutFile.runBounded(
+            executable: printf, arguments: ["123456"],
+            timeout: 2, maxOutputBytes: 6)
+        #expect(exact == Data("123456".utf8))
+    }
+
+    @Test @MainActor
+    func codexAttentionSignalsDriveWaitingRunningIdleAndNeverBlocked() async throws {
+        let root = try codexTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rollout = root.appendingPathComponent("rollout-attention.jsonl")
+        let completedAt = "2026-07-10T10:05:00Z"
+        let taskComplete = #"{"timestamp":"2026-07-10T10:05:00Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}"#
+        try writeRollout([codexMetadata(id: "attention"), taskComplete], to: rollout)
+        let completedDate = try #require(parseDate(completedAt))
+        let session = SessionSummary(
+            id: "attention", provider: .codex,
+            project: "p", cwd: "/tmp/p", model: "gpt-5.6-sol",
+            lastActivity: completedDate, messageCount: 2,
+            usage: SessionUsage(), contextWeight: 0, filePath: rollout.path)
+
+        let store = AttentionStore()
+        await store.refresh(candidates: [session])
+        let signals = try #require(store.signals[session.id])
+        #expect(signals.lastKind == .turnComplete)
+        #expect(!signals.canObserveBlocking)
+        let waiting = AttentionBoard.build(
+            sessions: [session], signals: store.signals,
+            now: completedDate.addingTimeInterval(60))
+        #expect(waiting.items.first?.state == .waiting)
+        #expect(waiting.blockedCount == 0)
+        let idle = AttentionBoard.build(
+            sessions: [session], signals: store.signals,
+            now: completedDate.addingTimeInterval(AttentionState.idleThreshold + 1))
+        #expect(idle.items.first?.state == .idle)
+
+        let activity = #"{"timestamp":"2026-07-10T10:06:00Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input"}}"#
+        try writeRollout([codexMetadata(id: "attention"), taskComplete, activity], to: rollout)
+        await store.refresh(candidates: [session])
+        let runningSignals = try #require(store.signals[session.id])
+        #expect(runningSignals.lastKind == .runtimeActivity)
+        #expect(AttentionState.classify(
+            runningSignals,
+            now: try #require(parseDate("2026-07-10T10:06:31Z"))) == .running)
+        #expect(AttentionState.classify(
+            runningSignals,
+            now: try #require(parseDate("2026-07-10T10:21:01Z"))) == .idle)
+    }
+
+    @Test func providerCorpusPresenceDetectsNoneClaudeCodexAndBoth() throws {
+        let root = try codexTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let claude = root.appendingPathComponent("claude/projects", isDirectory: true)
+        let codex = root.appendingPathComponent("codex/sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        let sources: [SessionSource] = [.claude(root: claude), .codex(root: codex)]
+
+        try Data("{}\n".utf8).write(to: codex.appendingPathComponent("session_index.jsonl"))
+        #expect(ProviderCorpusPresence.detect(sources: sources).isEmpty)
+
+        let claudeFile = claude.appendingPathComponent("project/session.jsonl")
+        try writeRollout([#"{"type":"user"}"#], to: claudeFile)
+        #expect(ProviderCorpusPresence.detect(sources: sources).providers == [.claude])
+
+        let codexFile = codex.appendingPathComponent(
+            "2026/07/11/rollout-codex.jsonl.zst")
+        try FileManager.default.createDirectory(
+            at: codexFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([0x00]).write(to: codexFile)
+        #expect(ProviderCorpusPresence.detect(sources: sources).providers == [.claude, .codex])
+
+        try FileManager.default.removeItem(at: claudeFile)
+        #expect(ProviderCorpusPresence.detect(sources: sources).providers == [.codex])
     }
 
     @Test func noNetworkQuotaProviderReadsFreshestRolloutLimits() async throws {

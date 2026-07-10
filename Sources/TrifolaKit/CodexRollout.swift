@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // MARK: - Approved Codex read surface
 
@@ -123,10 +124,12 @@ public struct CodexTokenUsage: Sendable, Hashable, Codable {
 
     public init(inputTokens: Int, cachedInputTokens: Int,
                 outputTokens: Int, reasoningOutputTokens: Int = 0) {
-        self.inputTokens = inputTokens
-        self.cachedInputTokens = cachedInputTokens
-        self.outputTokens = outputTokens
-        self.reasoningOutputTokens = reasoningOutputTokens
+        // Rollouts are an upstream, version-unstable input. Negative counters
+        // cannot represent billable usage and must never flow into dollar math.
+        self.inputTokens = max(0, inputTokens)
+        self.cachedInputTokens = max(0, cachedInputTokens)
+        self.outputTokens = max(0, outputTokens)
+        self.reasoningOutputTokens = max(0, reasoningOutputTokens)
     }
 
     init?(_ object: [String: Any]?) {
@@ -143,8 +146,13 @@ public struct CodexTokenUsage: Sendable, Hashable, Codable {
     /// Trifola's additive representation. Reasoning output is already included
     /// in output and is deliberately not added a second time.
     public var sessionUsage: SessionUsage {
-        SessionUsage(
-            inputTokens: inputTokens - cachedInputTokens,
+        // Spell the clamp as a comparison rather than max(0, input - cached):
+        // malformed extreme integers must not trap before max gets to run.
+        let freshInput = inputTokens >= cachedInputTokens
+            ? inputTokens - cachedInputTokens
+            : 0
+        return SessionUsage(
+            inputTokens: freshInput,
             outputTokens: outputTokens,
             cacheCreateTokens: 0,
             cacheReadTokens: cachedInputTokens,
@@ -223,6 +231,11 @@ struct CodexRateLimits: Sendable, Hashable, Codable {
 
 // MARK: - Rollout accumulator
 
+enum CodexAttentionRecordKind: String, Sendable, Codable {
+    case activity
+    case taskComplete
+}
+
 /// Tolerant tagged-union parser for Codex rollout JSONL. Unknown outer and
 /// payload discriminators are ignored; malformed lines never abort the file.
 public struct CodexRolloutAccumulator: Sendable, Codable {
@@ -245,8 +258,12 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
     var tiersSeen: Set<ModelTier> = []
     var assistantTurnsByModel: [String: Int] = [:]
     var latestTotalUsage: CodexTokenUsage?
+    var counterEpoch = 0
+    var sawCounterReset = false
     var latestRateLimits: CodexRateLimits?
     var latestRateLimitsAt: Date?
+    var attentionRecordKind: CodexAttentionRecordKind?
+    var attentionEventAt: Date?
     var sawSessionMeta = false
     var markedImported = false
     var importedContentHash: String?
@@ -302,10 +319,33 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
             .computingCostBundle()
     }
 
+    /// Provider-honest facts derived from the rollout tail. Codex approval and
+    /// request-user-input states are transient and never persisted, so these
+    /// signals explicitly cannot support BLOCKED classification.
+    public var attentionSignals: AttentionSignals {
+        let kind: AttentionSignals.LastKind = switch attentionRecordKind {
+        case .activity: .runtimeActivity
+        case .taskComplete: .turnComplete
+        case nil: .none
+        }
+        return AttentionSignals(
+            lastEventAt: attentionEventAt ?? last,
+            lastKind: kind,
+            canObserveBlocking: false)
+    }
+
+    static func attentionSignals(fromTailLines lines: [Data]) -> AttentionSignals {
+        var accumulator = CodexRolloutAccumulator(defaultID: "attention-tail")
+        for line in lines { accumulator.consume(line: line) }
+        return accumulator.attentionSignals
+    }
+
     /// True when summed per-call deltas match the latest cumulative counters.
     /// Missing cumulative data is treated as not enough evidence, not failure.
     public var usageReconcilesWithLatestTotal: Bool? {
-        guard let latestTotalUsage else { return nil }
+        // A post-reset total is scoped only to the new counter epoch and is no
+        // longer a whole-session checksum.
+        guard !sawCounterReset, let latestTotalUsage else { return nil }
         return usage == latestTotalUsage.sessionUsage
     }
 
@@ -366,6 +406,8 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
         let timestamp = parseDate(object["timestamp"] as? String)
         observe(timestamp)
         let payload = object["payload"] as? [String: Any] ?? [:]
+        observeAttention(outerType: outerType, payload: payload,
+                         timestamp: timestamp)
 
         switch outerType {
         case "session_meta":
@@ -456,12 +498,28 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
         }
         guard let info = payload["info"] as? [String: Any] else { return }
         let total = CodexTokenUsage(info["total_token_usage"] as? [String: Any])
+        let priorTotal = latestTotalUsage
+        let reset = total.flatMap { current in
+            priorTotal.map { Self.counterReset(current, after: $0) }
+        } ?? false
+        if reset {
+            counterEpoch += 1
+            sawCounterReset = true
+        }
         let delta = CodexTokenUsage(info["last_token_usage"] as? [String: Any])
-            ?? total.flatMap { current in
-                latestTotalUsage.map { Self.delta(current, minus: $0) }
+            ?? total.map { current in
+                guard let priorTotal else { return current }
+                return reset ? current : Self.delta(current, minus: priorTotal)
             }
         if let total { latestTotalUsage = total }
         guard let delta else { return }
+        guard delta.inputTokens != 0
+                || delta.cachedInputTokens != 0
+                || delta.outputTokens != 0 else {
+            // Repeated cumulative snapshots are heartbeats, not new usage. In
+            // particular, never overwrite the prior non-zero slice at this key.
+            return
+        }
         rawUsageBlocks += 1
         contextWeight = delta.inputTokens
         let normalizedModel = PricingCatalog.normalize(model)
@@ -469,7 +527,9 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
         let day = timestamp.map(localDayKey) ?? ""
         let key: String
         if let total {
-            key = "\(total.inputTokens):\(total.cachedInputTokens):\(total.outputTokens)"
+            // Totals can revisit an earlier tuple after a reset. Namespacing by
+            // epoch prevents the fresh baseline from overwriting pre-reset usage.
+            key = "\(counterEpoch):\(total.inputTokens):\(total.cachedInputTokens):\(total.outputTokens)"
         } else {
             unkeyedSequence += 1
             key = "#\(unkeyedSequence)"
@@ -485,6 +545,43 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
     private mutating func observe(_ timestamp: Date?) {
         guard let timestamp else { return }
         if last == nil || timestamp > last! { last = timestamp }
+    }
+
+    private mutating func observeAttention(
+        outerType: String,
+        payload: [String: Any],
+        timestamp: Date?
+    ) {
+        let payloadType = (payload["type"] as? String)?.lowercased()
+        let nestedItem = payload["item"] as? [String: Any]
+        let nestedType = (nestedItem?["type"] as? String)?.lowercased()
+
+        let kind: CodexAttentionRecordKind?
+        if outerType == "task_complete"
+            || payloadType == "task_complete"
+            || nestedType == "task_complete" {
+            kind = .taskComplete
+        } else if outerType == "response_item"
+                    || outerType == "function_call"
+                    || payloadType == "token_count"
+                    || payloadType == "function_call"
+                    || nestedType == "token_count"
+                    || nestedType == "function_call" {
+            kind = .activity
+        } else {
+            kind = nil
+        }
+
+        guard let kind else { return }
+        attentionRecordKind = kind
+        attentionEventAt = timestamp ?? last
+    }
+
+    private static func counterReset(_ current: CodexTokenUsage,
+                                     after prior: CodexTokenUsage) -> Bool {
+        current.inputTokens < prior.inputTokens
+            || current.cachedInputTokens < prior.cachedInputTokens
+            || current.outputTokens < prior.outputTokens
     }
 
     private static func delta(_ current: CodexTokenUsage,
@@ -523,25 +620,99 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
 // MARK: - Rollout file reads
 
 enum CodexRolloutFile {
+    static let decompressionTimeout: TimeInterval = 30
+    static let maxDecompressedBytes = 512 * 1_024 * 1_024
+
     static func data(at url: URL) -> Data? {
         guard url.path.hasSuffix(".jsonl.zst") else {
             return try? Data(contentsOf: url)
         }
         guard let executable = zstdExecutable() else { return nil }
+        return runBounded(
+            executable: executable,
+            arguments: ["--decompress", "--stdout", "--quiet", url.path],
+            timeout: decompressionTimeout,
+            maxOutputBytes: maxDecompressedBytes)
+    }
+
+    /// Drain a subprocess concurrently with a hard deadline and byte ceiling.
+    /// Exceeding either bound SIGKILLs the writer so it cannot remain blocked on
+    /// a full pipe. Internal for direct unit tests of the bounding seam.
+    static func runBounded(
+        executable: URL,
+        arguments: [String],
+        timeout: TimeInterval,
+        maxOutputBytes: Int
+    ) -> Data? {
+        guard timeout > 0, maxOutputBytes >= 0,
+              FileManager.default.isExecutableFile(atPath: executable.path) else {
+            return nil
+        }
         let process = Process()
         let output = Pipe()
         process.executableURL = executable
-        process.arguments = ["--decompress", "--stdout", "--quiet", url.path]
+        process.arguments = arguments
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        let processDone = DispatchSemaphore(value: 0)
+        let readerDone = DispatchSemaphore(value: 0)
+        let result = Locked<(data: Data, exceeded: Bool, failed: Bool)>(
+            (Data(), false, false))
+        process.terminationHandler = { _ in processDone.signal() }
         do {
             try process.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return process.terminationStatus == 0 ? data : nil
         } catch {
             return nil
         }
+
+        DispatchQueue.global(qos: .utility).async {
+            var data = Data()
+            var exceeded = false
+            var failed = false
+            do {
+                while true {
+                    let remaining = maxOutputBytes - data.count
+                    // Read one sentinel byte beyond the remaining capacity so an
+                    // exact-cap result succeeds while cap+1 is rejected.
+                    let request = remaining >= 64 * 1_024
+                        ? 64 * 1_024
+                        : remaining + 1
+                    let chunk = try output.fileHandleForReading.read(
+                        upToCount: max(1, request)) ?? Data()
+                    if chunk.isEmpty { break }
+                    if chunk.count > remaining {
+                        exceeded = true
+                        Self.kill(process)
+                        break
+                    }
+                    data.append(chunk)
+                }
+            } catch {
+                failed = true
+            }
+            result.withLock { $0 = (data, exceeded, failed) }
+            readerDone.signal()
+        }
+
+        let deadline = DispatchTime.now() + timeout
+        guard processDone.wait(timeout: deadline) != .timedOut else {
+            kill(process)
+            _ = processDone.wait(timeout: .now() + 0.25)
+            return nil
+        }
+        guard readerDone.wait(timeout: deadline) != .timedOut else {
+            kill(process)
+            return nil
+        }
+        let captured = result.withLock { $0 }
+        guard process.terminationStatus == 0,
+              !captured.exceeded, !captured.failed else { return nil }
+        return captured.data
+    }
+
+    private static func kill(_ process: Process) {
+        guard process.isRunning else { return }
+        Darwin.kill(process.processIdentifier, SIGKILL)
     }
 
     private static func zstdExecutable() -> URL? {

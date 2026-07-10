@@ -99,7 +99,7 @@ public struct SkillLedger: Sendable, Equatable {
     public let firedInCatalog: Int       // fired AND present in the catalog
     public let deadCount: Int            // catalog skills never explicit-fired
     public let deadPromptTaxTokens: Int  // sum of dead-skill description tokens
-    public let sessionCount: Int         // interactive sessions the catalog rides in
+    public let sessionCount: Int         // interactive Claude sessions the catalog rides in
     public let fired: [SkillLedgerEntry] // sorted by invocations desc
     public let dead: [SkillLedgerEntry]  // sorted by prompt-tax desc (most expensive dead first)
 
@@ -154,6 +154,7 @@ public struct MismatchCandidate: Identifiable, Sendable, Hashable {
 /// full SessionSummary or requiring app-layer rewiring.
 public struct SubagentModelLeg: Identifiable, Sendable, Equatable {
     public var id: String { sessionID }
+    public let provider: Provider
     public let sessionID: String
     public let project: String
     public let cwd: String
@@ -165,11 +166,13 @@ public struct SubagentModelLeg: Identifiable, Sendable, Equatable {
     public let usageByModelDay: [String: [String: SessionUsage]]
     public let actualCost: Double
 
-    public init(sessionID: String, project: String, cwd: String, filePath: String,
+    public init(provider: Provider = .claude,
+                sessionID: String, project: String, cwd: String, filePath: String,
                 agentType: String?, requestedModel: String?, resolvedModel: String,
                 usage: SessionUsage,
                 usageByModelDay: [String: [String: SessionUsage]],
                 actualCost: Double) {
+        self.provider = provider
         self.sessionID = sessionID
         self.project = project
         self.cwd = cwd
@@ -254,11 +257,15 @@ public struct AuditReport: Sendable, Equatable {
     /// Join parent Agent results to child transcript filenames once, while the
     /// full corpus is already in hand. Missing joins stay absent (honest quiet).
     public static func subagentModelLegs(_ sessions: [SessionSummary]) -> [SubagentModelLeg] {
-        let parents = Dictionary(uniqueKeysWithValues: sessions
+        // Agent/subagents paths and ClaudeSettings declarations are Claude-only
+        // evidence. A Codex row that happens to resemble that shape must not be
+        // compared with the user's Claude routing files.
+        let claudeSessions = sessions.filter { $0.provider == .claude }
+        let parents = Dictionary(uniqueKeysWithValues: claudeSessions
             .filter { !$0.isSubagent }
             .map { ($0.id, $0) })
         var out: [SubagentModelLeg] = []
-        for child in sessions where child.isSubagent {
+        for child in claudeSessions where child.isSubagent {
             guard let parentID = child.parentSessionID,
                   let parent = parents[parentID] else { continue }
             let stem = ((child.filePath as NSString).lastPathComponent as NSString)
@@ -268,7 +275,8 @@ public struct AuditReport: Sendable, Equatable {
             guard let invocation = parent.subagentInvocations.first(where: { $0.agentID == agentID }),
                   let resolved = invocation.resolvedModel ?? child.model else { continue }
             out.append(SubagentModelLeg(
-                sessionID: child.id, project: child.project, cwd: child.cwd,
+                provider: child.provider, sessionID: child.id,
+                project: child.project, cwd: child.cwd,
                 filePath: child.filePath, agentType: invocation.agentType,
                 requestedModel: invocation.requestedModel, resolvedModel: resolved,
                 usage: child.usage, usageByModelDay: child.usageByModelDay,
@@ -306,6 +314,7 @@ public struct AuditReport: Sendable, Equatable {
     static func estimateTokens(_ text: String) -> Int { max(1, text.count / 4) }
 
     public static func skillLedger(sessions: [SessionSummary], catalog: [Skill]) -> SkillLedger {
+        let claudeSessions = sessions.filter { $0.provider == .claude }
         // Aggregate explicit Skill-tool invocations AND slash-command invocations
         // across the index (task #41) — a skill fired only via `/name` emits no
         // Skill tool_use, so the two lanes are merged per-session before the
@@ -313,7 +322,7 @@ public struct AuditReport: Sendable, Equatable {
         var counts: [String: Int] = [:]
         var touched: [String: Int] = [:]
         var lastFired: [String: Date] = [:]
-        for s in sessions {
+        for s in claudeSessions {
             var merged = s.skillInvocations
             for (name, n) in s.commandInvocations { merged[name, default: 0] += n }
             guard !merged.isEmpty else { continue }
@@ -351,7 +360,7 @@ public struct AuditReport: Sendable, Equatable {
             ? $0.descriptionTokens > $1.descriptionTokens : $0.name < $1.name }
 
         let firedInCatalog = catalog.filter(catalogFired).count
-        let sessionCount = sessions.filter { !$0.isSubagent }.count
+        let sessionCount = claudeSessions.filter { !$0.isSubagent }.count
 
         return SkillLedger(
             catalogCount: catalog.count,
@@ -382,6 +391,7 @@ public struct AuditReport: Sendable, Equatable {
     /// WITHOUT per-day data (synthetic/tests); nil = today.
     public static func frontierOverspend(_ s: SessionSummary,
                                          fallbackDay: String? = nil) -> Double {
+        guard s.provider == .claude else { return 0 }
         let catalog = PricingCatalog.current
         var over = 0.0
         if !s.usageByModelDay.isEmpty {
@@ -410,7 +420,8 @@ public struct AuditReport: Sendable, Equatable {
         var candidates: [MismatchCandidate] = []
         var total = 0.0
         for s in sessions {
-            guard !s.isSubagent,
+            guard s.provider == .claude,
+                  !s.isSubagent,
                   s.tier == .opus,
                   s.agentCalls == 0,
                   s.fileEdits <= mismatchMaxEdits,

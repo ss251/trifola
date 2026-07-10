@@ -154,6 +154,21 @@ struct AttentionClassifyTests {
         #expect(AttentionState.classify(sig, now: at(45)) == .blocked)
     }
 
+    @Test func codexDiskSignalsCanNeverClassifyBlocked() {
+        // Deliberately hostile/block-shaped facts prove the capability flag is
+        // an invariant, not an accident of today's rollout parser.
+        let sig = AttentionSignals(
+            lastEventAt: at(0), lastKind: .toolUse,
+            lastStopReason: "tool_use", hasDanglingToolUse: true,
+            danglingToolUseAt: at(0), lastToolName: "AskUserQuestion",
+            lastToolDetail: "Permission required; approve? yes/no",
+            hasPermissionGate: true, canObserveBlocking: false)
+        #expect(AttentionState.classify(sig, now: at(31)) == .running)
+        #expect(AttentionState.classify(sig, now: at(20 * 60)) == .running)
+        #expect(AttentionState.classify(sig, now: at(31)) != .blocked)
+        #expect(AttentionState.classify(sig, now: at(20 * 60)) != .blocked)
+    }
+
     @Test func freshDanglingToolUseIsRunningNotBlocked() {
         let sig = AttentionSignals(lastEventAt: at(0), lastKind: .toolUse,
                                    lastStopReason: "tool_use", hasDanglingToolUse: true,

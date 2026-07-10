@@ -295,13 +295,13 @@ public enum CodexBarReconcile {
 
     // MARK: our side of the ledger
 
-    /// OUR per-model dollars for one LOCAL day — the exact `--spend-by-model`
-    /// aggregation: Σ every session's (model, day) slice, priced at the
-    /// catalog's date-aware rate. The same code path as every headline dollar.
+    /// OUR Claude per-model dollars for one LOCAL day — the provider-matched
+    /// side of CodexBar's Claude-only `claude-v4` cache, priced at the catalog's
+    /// date-aware rate.
     public static func ourModelUsage(sessions: [SessionSummary], day: String)
         -> [String: SessionUsage] {
         var byModel: [String: SessionUsage] = [:]
-        for s in sessions {
+        for s in sessions where s.provider == .claude {
             for (model, u) in s.usageByModelDay[day] ?? [:] {
                 byModel[model] = (byModel[model] ?? SessionUsage()) + u
             }

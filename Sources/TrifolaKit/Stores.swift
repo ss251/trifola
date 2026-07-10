@@ -622,6 +622,85 @@ public struct SessionSource: Sendable, Equatable {
     }
 }
 
+/// Lightweight, provider-aware corpus presence for onboarding and empty-state
+/// decisions. This checks only accepted regular files; it never parses a session.
+public struct ProviderCorpusPresence: Sendable, Equatable {
+    public let providers: Set<Provider>
+
+    public init(providers: Set<Provider>) {
+        self.providers = providers
+    }
+
+    public var isEmpty: Bool { providers.isEmpty }
+    public var hasClaude: Bool { providers.contains(.claude) }
+    public var hasCodex: Bool { providers.contains(.codex) }
+
+    public func contains(_ provider: Provider) -> Bool {
+        providers.contains(provider)
+    }
+
+    /// Convenience for the two approved local roots used by the default store.
+    public static func detect(
+        claudePaths: ClaudePaths = .process,
+        codexPaths: CodexPaths = .process,
+        fileManager: FileManager = .default
+    ) -> ProviderCorpusPresence {
+        detect(sources: [
+            .claude(root: claudePaths.projects),
+            .codex(root: codexPaths.sessions,
+                   importManifestURL: codexPaths.externalAgentImportsJSON),
+        ], fileManager: fileManager)
+    }
+
+    /// Fixture/frontend seam for any explicit set of provider roots.
+    public static func detect(
+        sources: [SessionSource],
+        fileManager: FileManager = .default
+    ) -> ProviderCorpusPresence {
+        var present: Set<Provider> = []
+        for source in sources where !present.contains(source.provider) {
+            if containsAcceptedSession(in: source, fileManager: fileManager) {
+                present.insert(source.provider)
+            }
+        }
+        return ProviderCorpusPresence(providers: present)
+    }
+
+    private static func containsAcceptedSession(
+        in source: SessionSource,
+        fileManager: FileManager
+    ) -> Bool {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey]
+        guard let enumerator = fileManager.enumerator(
+            at: source.root,
+            includingPropertiesForKeys: keys,
+            options: [],
+            errorHandler: { _, _ in true }) else { return false }
+        let rootPath = source.root.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+
+        while let url = enumerator.nextObject() as? URL {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)) else {
+                continue
+            }
+            if values.isSymbolicLink == true {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(prefix) else { continue }
+            let relative = String(path.dropFirst(prefix.count))
+            guard source.accepts(relative),
+                  SessionIndex.isSafeRegularFile(url, beneath: source.root) else {
+                continue
+            }
+            return true
+        }
+        return false
+    }
+}
+
 struct PreparedSessionSource: Sendable {
     let source: SessionSource
     let imports: CodexImportManifest
@@ -842,7 +921,7 @@ public struct SessionIndex: Sendable {
             for rel in files where source.accepts(rel) {
                 let url = source.root.appendingPathComponent(rel)
                 if source.provider == .codex,
-                   !isSafeCodexRollout(url, beneath: source.root) {
+                   !isSafeRegularFile(url, beneath: source.root) {
                     continue
                 }
                 let path = url.path
@@ -915,7 +994,7 @@ public struct SessionIndex: Sendable {
     /// Codex enumeration is stricter than the legacy Claude scanner: regular
     /// files only, no symlinks, and the fully resolved path must remain under
     /// the explicitly approved sessions root.
-    private static func isSafeCodexRollout(_ url: URL, beneath root: URL) -> Bool {
+    fileprivate static func isSafeRegularFile(_ url: URL, beneath root: URL) -> Bool {
         guard let values = try? url.resourceValues(
             forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
               values.isRegularFile == true,
@@ -1410,7 +1489,10 @@ public final class SessionStore: ObservableObject {
     // row. Old caches cannot choose that winner without a one-time reparse.
     // v18: SessionSummary gained `provider`; cached entries now retain their
     // provider/parser/machine source so Claude and Codex can share one index.
-    private nonisolated static let cacheVersion = 18
+    // v19: CodexRolloutAccumulator retains counter-reset epochs and its latest
+    // provider-native attention signal. Old entries cannot recover either fact
+    // without replaying their rollout once.
+    private nonisolated static let cacheVersion = 19
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
