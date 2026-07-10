@@ -343,7 +343,14 @@ struct MCPQuotaTimeoutTests {
         #expect(clock.duration(to: .now) < .seconds(2))
     }
 
-    @Test func blockingQuotaFetchNeverHangsTheCallingThread() {
+    // Reads the real Keychain and issues a real network fetch through the
+    // semaphore bridge — OS integration a locked-down CI runner cannot provide,
+    // and which leaves a detached credential/network task running past the test
+    // body. The pure cap arithmetic is covered by the waitBounded* tests above;
+    // this end-to-end smoke runs on a developer machine only (CI-gated like the
+    // other real-socket/subprocess/CLI integration tests).
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CI"] == nil))
+    func blockingQuotaFetchNeverHangsTheCallingThread() {
         // End-to-end smoke of the REAL static path `.live(...)` wires up
         // (blockingQuotaFetch → loadCredentialsBounded → runCommand/parse →
         // the semaphore bridge). Whatever credentials happen to exist on the
