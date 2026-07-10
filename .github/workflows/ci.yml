@@ -27,33 +27,21 @@ jobs:
       - name: Test
         timeout-minutes: 15
         shell: bash
-        # The two ungated real-I/O tests (loopback TCP connect + real
-        # Keychain/network quota fetch) are now CI-gated like ProbePrimitives
-        # and the CLI test, so this run should stay hermetic. The side-channel
-        # sampler + raw-exit capture remain so that IF the process still dies,
-        # the log shows the resource curve and the exact signal (137=SIGKILL,
-        # etc.) instead of a message-less "exit code 1".
-        env:
-          SWIFT_BACKTRACE: enable=yes,symbolicate=full,interactive=no
+        # Runner-only OOM: the test process balloons to tens of GB (compressed)
+        # and is jetsam-killed. It never reproduces locally (114 MB peak) and is
+        # not any single suspect found by reasoning, so this sampler CORRELATES
+        # system memory with the currently-running test line every 2s — when
+        # free memory craters, `$last` names the exact ballooning test across
+        # all 118 suites. No pgrep (swift-testing's process name did not match).
         run: |
-          # Sample RSS / thread-count / swap of the test process to a FILE (not
-          # the buffered test stream) every 3s, so the curve survives even a
-          # SIGKILL that leaves stdout unflushed — the one thing the buffered
-          # runner log cannot show.
           (
             while true; do
               ts=$(date +%H:%M:%S)
-              pid=$(pgrep -f 'xctest|TrifolaPackageTests|swiftpm-testing-helper|\.build/debug/.*[Tt]est' | head -1)
-              if [ -n "$pid" ]; then
-                rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
-                thr=$(ps -M -p "$pid" 2>/dev/null | grep -c .)
-                echo "[$ts] pid=$pid rssKB=${rss:-?} threads~=${thr:-?}"
-              else
-                echo "[$ts] (no test process)"
-              fi
-              vm_stat 2>/dev/null | grep -Ei 'Pageout|Compressor occupied|Swapout' | tr '\n' ' ' | sed 's/^/          vm: /'
-              echo
-              sleep 3
+              freepg=$(vm_stat 2>/dev/null | awk -F: '/Pages free/{gsub(/[ .]/,"",$2);print $2}')
+              swap=$(sysctl -n vm.swapusage 2>/dev/null | tr -d '\n')
+              last=$(tail -1 test-output.log 2>/dev/null | tr -d '\r')
+              echo "[$ts] freePages=${freepg:-?} swap=[$swap] :: $last"
+              sleep 2
             done
           ) > sampler.log 2>&1 &
           SAMPLER=$!
