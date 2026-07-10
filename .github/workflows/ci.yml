@@ -25,4 +25,5 @@ jobs:
         run: swift build -c release
 
       - name: Test
+        timeout-minutes: 10
         run: swift test

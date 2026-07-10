@@ -103,7 +103,13 @@ struct ToolProbeEngineTests {
 
 // MARK: - Primitives
 
-@Suite("ProbePrimitives")
+// Real loopback sockets + subprocess spawning: OS-integration behavior a
+// locked-down CI runner cannot provide (it can't open a loopback listener, and
+// a connect against its network sandbox can hang). These validate the real
+// primitives on a developer machine; they self-disable where CI is set. The
+// pure engine (ToolProbeEngine) and filesystem probes (Concrete probes) run
+// everywhere via fakes.
+@Suite("ProbePrimitives", .enabled(if: ProcessInfo.processInfo.environment["CI"] == nil))
 struct ProbePrimitivesTests {
 
     @Test func tcpPortOpenSeesARealListener() {
