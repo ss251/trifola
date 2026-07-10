@@ -129,7 +129,7 @@ private struct PaletteRow: View {
         if entry.kind == .session, let tier = entry.tier {
             // The door light at palette density: state fill + 1pt tier ring — the
             // same session-dot object the Fleet floor and the strip wear.
-            StatusDot(color: (entry.state ?? .idle).color, size: 9, ring: tier.color)
+            SeatMark(fill: (entry.state ?? .idle).color, ring: tier.color, size: 9)
         } else {
             Image(systemName: entry.icon)
                 .font(.footnote.weight(.medium))
@@ -176,9 +176,7 @@ struct PalettePanel<Field: View>: View {
                         .frame(maxHeight: 430)
                         .onChange(of: selection) { _, s in
                             guard results.indices.contains(s) else { return }
-                            withAnimation(.easeOut(duration: 0.1)) {
-                                proxy.scrollTo(results[s].id, anchor: .center)
-                            }
+                            proxy.scrollTo(results[s].id, anchor: .center)
                         }
                 }
             } else {
@@ -424,7 +422,7 @@ enum PaletteEntries {
                    "arrow.clockwise", ["reload", "rescan", "sync data"]) { [weak services] in
                 services?.refreshAll()
             },
-            action("dream", "Dream now", "mint lessons from the latest findings",
+            action("dream", "Distill findings", "mint lessons from the latest findings",
                    "moon.stars", ["ledger", "lessons", "dreaming"]) { [weak services] in
                 guard let services else { return }
                 services.dreamNow(trigger: .manual)

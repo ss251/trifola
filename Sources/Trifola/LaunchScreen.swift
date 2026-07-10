@@ -237,7 +237,7 @@ struct LaunchScreen: View {
                     .lineLimit(1).truncationMode(.middle)
             }
             if store.recipes.isEmpty {
-                Text("No recipes yet. Compose one above and Save — it becomes a launchable JSON artifact (the self-populating half the Dreaming Ledger will feed).")
+                Text("No recipes yet. Compose one above and Save — recipes are plain JSON in ~/Library/Application Support/Trifola/recipes.")
                     .font(.caption).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -544,7 +544,7 @@ private struct AgentsEditor: View {
                 } label: { Label("Add agent", systemImage: "plus") }
                     .buttonStyle(.bordered).controlSize(.small)
             }
-            Text("Each agent pins a model at composition time — the default is Opus, so a subagent never silently inherits the main-loop model.")
+            Text("Each agent pins a model at composition time, so a subagent never silently inherits the main-loop model.")
                 .font(.caption2).foregroundStyle(Theme.faint).fixedSize(horizontal: false, vertical: true)
             if agents.isEmpty {
                 Text("No custom agents — the session runs with your defaults.")

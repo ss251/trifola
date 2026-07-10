@@ -19,6 +19,7 @@ struct BurnGovernorSection: View {
     /// The render harness forces the receipt open so the expanded state can be
     /// judged headlessly.
     var receiptInitiallyExpanded = false
+    var showsDisclaimer = true
 
     private var today: DailyBurn { governor.today }
 
@@ -29,9 +30,11 @@ struct BurnGovernorSection: View {
                 Spacer()
                 // The honest limit, permanent and calm — these are API-rate
                 // equivalents, not the metered credit bill (which isn't on disk).
-                Text("API-rate equivalent — not your real credit bill")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                if showsDisclaimer {
+                    Text("API-rate equivalent — not your bill")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.faint)
+                }
             }
 
             headline

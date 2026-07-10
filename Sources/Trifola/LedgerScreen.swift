@@ -50,7 +50,7 @@ struct LedgerScreen: View {
     private var dreamButton: some View {
         DreamNowButton {
             services.dreamNow(trigger: .manual)
-            flash("Dreamed · \(store.pending.count) proposal\(store.pending.count == 1 ? "" : "s")")
+            flash("Distilled · \(store.pending.count) proposal\(store.pending.count == 1 ? "" : "s")")
         }
     }
 
@@ -94,7 +94,7 @@ struct DreamNowButton: View {
     var action: () -> Void = {}
     var body: some View {
         ProminentTapButton(size: .small, action: action) {
-            Label("Dream now", systemImage: "sparkles")
+            Label("Distill findings", systemImage: "sparkles")
         }
         .help("Run the deterministic pass: recompute lessons from the current audit + settings.")
     }
@@ -149,13 +149,13 @@ private struct DreamLine: View {
                 // the duration says "took", and the trigger is a noun ("manual" /
                 // "on launch") — never the verb "Dream now", which read as an
                 // illegible header button in the render.
-                Text("Last dream \(DreamLine.time.string(from: d.ranAt))")
+                Text("Last distillation \(DreamLine.time.string(from: d.ranAt))")
                     .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
                 Text("·").foregroundStyle(Theme.faint)
                 Text("took \(d.durationMs)ms")
                     .font(.caption).foregroundStyle(Theme.faint)
                 Text("·").foregroundStyle(Theme.faint)
-                Text("\(fmtTokens(d.sessionsScanned)) sessions")
+                Text("\(fmtGrouped(d.sessionsScanned)) sessions")
                     .font(.subheadline).foregroundStyle(Theme.muted)
                 Text("·").foregroundStyle(Theme.faint)
                 Text("\(proposals) proposal\(proposals == 1 ? "" : "s")")
@@ -164,9 +164,9 @@ private struct DreamLine: View {
                 Text(d.trigger == .manual ? "manual" : d.trigger.label)
                     .font(.caption).foregroundStyle(Theme.faint)
             } else {
-                Text("Never dreamed")
+                Text("No findings distilled yet")
                     .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
-                Text("— press Dream now to run the deterministic pass.")
+                Text("— press Distill findings to run the deterministic pass.")
                     .font(.subheadline).foregroundStyle(Theme.muted)
             }
             Spacer()
@@ -189,8 +189,8 @@ private struct LedgerEmptyState: View {
             icon: "checkmark.seal",
             title: "Workflow is lean — nothing to distill.",
             detail: dream.map {
-                "Dreamed over \(fmtTokens($0.sessionsScanned)) sessions — no finding crossed the threshold worth proposing. A ledger that mostly says nothing is believed the day it says something."
-            } ?? "Press Dream now to mine the audit findings into candidate fixes.",
+                "Distilled over \(fmtGrouped($0.sessionsScanned)) sessions — no finding crossed the threshold worth proposing. A ledger that mostly says nothing is believed the day it says something."
+            } ?? "Press Distill findings to mine the audit findings into candidate fixes.",
             tint: Theme.green,
             maxWidth: 460)
     }

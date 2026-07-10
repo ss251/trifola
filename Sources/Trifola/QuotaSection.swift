@@ -13,6 +13,7 @@ struct QuotaSection: View {
     let status: String
     let source: ClaudeCredentialSource?
     var now: Date = Date()
+    var onRetry: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.rhythm) {
@@ -21,12 +22,14 @@ struct QuotaSection: View {
                 Spacer()
                 // Status caption: the source token (`file`/`keychain`) reads
                 // mono — it is an identifier, not prose.
-                if let source, snapshot != nil {
+                if let source, let snapshot, !snapshot.isEmpty {
                     (Text("ok · ").font(.caption)
                         + Text(source.rawValue).font(.caption.monospaced()))
                         .foregroundStyle(Theme.faint)
                 } else {
-                    Text(status).font(.caption).foregroundStyle(Theme.faint)
+                    Button("Retry", action: onRetry)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                 }
             }
 
@@ -42,11 +45,22 @@ struct QuotaSection: View {
             } else {
                 // Graceful degradation: ONE calm explanatory line. No spinner,
                 // no alert — the app is fully functional without this surface.
-                Text("Quota \(status). The app works fully without it.")
+                Text(unavailableCopy)
                     .font(.callout)
                     .foregroundStyle(Theme.muted)
             }
         }
+    }
+
+    private var unavailableCopy: String {
+        if status == "Signed out — run claude once to sign in, then Retry."
+            || status == "Plan quota unavailable — the usage endpoint didn't answer. Costs and attention don't need it." {
+            return status
+        }
+        if status.lowercased().hasPrefix("unauthorized") {
+            return "Signed out — run claude once to sign in, then Retry."
+        }
+        return "Plan quota unavailable — the usage endpoint didn't answer. Costs and attention don't need it."
     }
 }
 

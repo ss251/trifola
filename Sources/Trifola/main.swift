@@ -305,7 +305,7 @@ if headlessFlags {
 // coordinator's job, never this binary's.
 if CommandLine.arguments.contains("--mcp") {
     let server = MCPIntrospectionServer.live()
-    FileHandle.standardError.write(Data("my-app --mcp: stdio MCP server up (protocol \(MCPIntrospectionServer.latestProtocolVersion), \(MCPIntrospectionServer.toolDescriptors().count) tools)\n".utf8))
+    FileHandle.standardError.write(Data("trifola --mcp: stdio MCP server up (protocol \(MCPIntrospectionServer.latestProtocolVersion), \(MCPIntrospectionServer.toolDescriptors().count) tools)\n".utf8))
     while let line = readLine(strippingNewline: true) {
         if let reply = server.handleLine(line) {
             print(reply)
@@ -336,7 +336,7 @@ if CommandLine.arguments.contains("--selfcheck") {
     let tierStats = SessionStore.aggregateTiers(sessions)
     let heavy = sessions.filter { $0.isContextHeavy }.sorted { $0.contextWeight > $1.contextWeight }
 
-    print("=== Claude Code Mission Control — self-check ===")
+    print("=== trifola — self-check ===")
     print("sessions parsed:      \(sessions.count)  (scan \(String(format: "%.2f", scanSecs))s)")
     print("active (<15m):        \(active.count)")
     print("total tokens:         \(fmtTokens(totalTokens))")
@@ -354,7 +354,7 @@ if CommandLine.arguments.contains("--selfcheck") {
     // Bucket API-equiv cost by day over the last 30d and project a monthly pace
     // from the recent run-rate. API-EQUIV, not the real credit bill.
     let burn = BurnGovernor(sessions: sessions)
-    print("--- daily burn (API-equiv, not your real credit bill) ---")
+    print("--- daily burn (API-rate equivalent — not your bill) ---")
     print("  today:                \(fmtUSD(burn.today.cost)) API-equiv · \(fmtPct(burn.today.opusShare)) Opus · \(burn.today.sessions) session(s)")
     print("  at this pace:         ≈\(fmtUSD(burn.monthProjection))/mo  (from the last \(burn.runRateDays)d run-rate · \(fmtUSD(burn.dailyRunRate))/day avg)")
     print("  30d window:           \(fmtUSD(burn.windowCost)) API-equiv across \(burn.days.count) days")

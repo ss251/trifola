@@ -770,7 +770,7 @@ enum CrossMachineRender {
                         MachineChip(machineID: r.machine.id)
                         Text(r.machine.name).font(.subheadline).foregroundStyle(Theme.ink)
                         if r.activeCount > 0 {
-                            StatusDot(color: Theme.green, size: 6)
+                            SeatMark(fill: Theme.green, size: 6)
                             Text("\(r.activeCount) active").font(.caption).foregroundStyle(Theme.muted)
                         }
                         Spacer()
@@ -1123,10 +1123,10 @@ enum PaletteRender {
         // An action (won't match "cr" — shows the index is broad).
         let aID = "action:dream"
         out.append(PaletteEntry(
-            id: aID, kind: .action, title: "Dream now",
+            id: aID, kind: .action, title: "Distill findings",
             hint: Text("mint lessons from the latest findings").font(.caption2),
             icon: "moon.stars",
-            candidate: PaletteCandidate(id: aID, primary: "Dream now",
+            candidate: PaletteCandidate(id: aID, primary: "Distill findings",
                                         secondary: ["ledger", "lessons"],
                                         group: PaletteKind.action.rawValue),
             run: {}))
@@ -1172,7 +1172,7 @@ enum IdentityRender {
                 HStack(spacing: 9) {
                     SeatMark(fill: Theme.ink, ring: ring, size: 15, ringWidth: 1.5, gapped: true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Mission Control").font(.headline).foregroundStyle(Theme.ink)
+                        Text("Trifola").font(.headline).foregroundStyle(Theme.ink)
                         Text("Claude Code fleet").font(.caption).foregroundStyle(Theme.muted)
                     }
                     Spacer(minLength: 8)
@@ -1731,4 +1731,3 @@ enum QuotaRender {
         writePNG(content, to: path, dark: dark, width: 860)
     }
 }
-

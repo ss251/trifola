@@ -18,7 +18,7 @@ struct SpendScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Spend & Routing",
-            subtitle: "API-rate equivalents estimated from real token counts — the number a metered key would have billed"
+            subtitle: "API-rate equivalent — estimated from real token counts — what a metered key would have billed"
         ) {
             headline
             // "Show the math" (W3): the whole-corpus receipt behind the
@@ -53,7 +53,7 @@ struct SpendScreen: View {
             StatTile(label: "Est. total spend", value: fmtUSD(store.totalCost),
                      sub: "\(fmtTokens(store.totalUsage.total)) tokens all time")
             Divider()
-            StatTile(label: "Cache savings", value: fmtUSD(store.totalCacheSavings),
+            StatTile(label: "Cache savings — net of write premiums", value: fmtUSD(store.totalCacheSavings),
                      sub: "cache reads billed at 10% of input")
             Divider()
             StatTile(label: "Cache hit rate", value: fmtPct(store.totalUsage.cacheHitRate),
@@ -113,8 +113,8 @@ struct SpendScreen: View {
     private var header: some View {
         HStack {
             Text("Tier").frame(width: 110, alignment: .leading)
-            Text("Sessions").frame(width: 70, alignment: .trailing)
-            Text("Tokens").frame(width: 76, alignment: .trailing)
+            Text("Sessions (dominant tier)").frame(width: 122, alignment: .trailing)
+            Text("tok (excl. cache reads)").frame(width: 130, alignment: .trailing)
             Spacer()
             Text("Est. cost").frame(width: 84, alignment: .trailing)
         }
@@ -136,11 +136,11 @@ struct SpendScreen: View {
                 Text("\(st.sessions)")
                     .font(.subheadline)
                     .foregroundStyle(Theme.muted)
-                    .frame(width: 70, alignment: .trailing)
+                    .frame(width: 122, alignment: .trailing)
                 Text(fmtTokens(st.tokens))
                     .font(.subheadline)
                     .foregroundStyle(Theme.muted)
-                    .frame(width: 76, alignment: .trailing)
+                    .frame(width: 130, alignment: .trailing)
                 Spacer()
                 Text(fmtUSD(st.cost))
                     .font(.subheadline.weight(.medium))

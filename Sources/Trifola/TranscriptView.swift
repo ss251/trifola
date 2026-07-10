@@ -53,13 +53,13 @@ struct TranscriptView: View {
         HStack(spacing: 6) {
             switch store.state {
             case .live:
-                StatusDot(color: Theme.green, size: 6)
+                SeatMark(fill: Theme.green, size: 6)
                 Text("Tailing").font(.caption).foregroundStyle(Theme.muted)
             case .idle:
-                StatusDot(color: Theme.faint, size: 6, active: false)
+                SeatMark(fill: Theme.faint, size: 6, active: false)
                 Text("Opening").font(.caption).foregroundStyle(Theme.muted)
             case .error(let why):
-                StatusDot(color: Theme.red, size: 6, active: false)
+                SeatMark(fill: Theme.red, size: 6, active: false)
                 Text(why).font(.caption).foregroundStyle(Theme.red).lineLimit(1)
             }
             if store.startedMidFile || store.droppedHead {
@@ -119,7 +119,7 @@ struct TranscriptView: View {
                         Label("Jump to live", systemImage: "arrow.down.to.line")
                     }
                     .padding(.bottom, 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .motionTransition(edge: .bottom)
                 }
             }
             .animation(.easeOut(duration: 0.18), value: pinnedToLive)

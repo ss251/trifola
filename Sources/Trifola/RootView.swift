@@ -42,10 +42,8 @@ private struct CommandPaletteHost: View {
         ZStack {
             if services.showPalette {
                 CommandPalette()
-                    .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.12), value: services.showPalette)
     }
 }
 
@@ -98,6 +96,10 @@ private struct ContentColumn: View {
 private struct Sidebar: View {
     @EnvironmentObject var services: AppServices
 
+    private let v1Sections: [AppSection] = [
+        .overview, .fleet, .sessions, .spend, .audit, .stack,
+    ]
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Wordmark()
@@ -105,7 +107,7 @@ private struct Sidebar: View {
                 .padding(.horizontal, Theme.gutter)
 
             VStack(spacing: 2) {
-                ForEach(AppSection.allCases) { section in
+                ForEach(v1Sections) { section in
                     SidebarItem(section: section)
                 }
             }
@@ -136,7 +138,7 @@ private struct Wordmark: View {
                      size: 15, ringWidth: 1.5, gapped: true)
                 .help(worstHelp(worst))
             VStack(alignment: .leading, spacing: 2) {
-                Text("Mission Control")
+                Text("Trifola")
                     .font(.headline)
                     .foregroundStyle(Theme.ink)
                 Text("Claude Code fleet")
@@ -164,7 +166,7 @@ private struct SidebarItem: View {
     private var isSelected: Bool { services.section == section }
 
     private var badge: Int? {
-        if section == .live {
+        if section == .fleet {
             let n = services.sessions.activeSessions.count
             return n > 0 ? n : nil
         }
@@ -230,7 +232,7 @@ private struct SidebarFooter: View {
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                 }
-                Text("API-equiv, not your credit bill")
+                Text("API-rate equivalent — not your bill")
                     .font(.caption2)
                     .foregroundStyle(Theme.faint)
             }

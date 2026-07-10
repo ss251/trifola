@@ -38,19 +38,14 @@ struct AttentionStripView: View {
                 Text("Attention")
                     .font(.body.weight(.medium))
                     .foregroundStyle(Theme.ink)
-                if let worst = board.worst, worst.needsAttention {
-                    Text(needsSummary(board))
-                        .font(.caption)
-                        .foregroundStyle(Theme.muted)
-                }
                 Spacer()
                 AttentionLegend(board: board)
             }
 
             if needs.isEmpty {
                 HStack(spacing: 8) {
-                    StatusDot(color: board.runningCount > 0 ? Theme.green : Theme.faint,
-                              size: 7, active: board.runningCount > 0)
+                    SeatMark(fill: board.runningCount > 0 ? Theme.green : Theme.faint,
+                             size: 7, active: board.runningCount > 0)
                     Text(allClearText(board))
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
@@ -71,17 +66,9 @@ struct AttentionStripView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(needs.isEmpty ? Theme.hairline : Theme.red.opacity(0.45),
-                              lineWidth: 1)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
         }
-        .animation(.snappy(duration: 0.25), value: needs.map(\.id))
-    }
-
-    private func needsSummary(_ b: AttentionBoard) -> String {
-        var parts: [String] = []
-        if b.blockedCount > 0 { parts.append("\(b.blockedCount) blocked") }
-        if b.waitingCount > 0 { parts.append("\(b.waitingCount) waiting on you") }
-        return "· " + parts.joined(separator: " · ")
+        .reorderMotion(value: needs.map(\.id))
     }
 
     private func allClearText(_ b: AttentionBoard) -> String {
@@ -121,11 +108,17 @@ private struct AttentionChip: View {
                 // The seat token: the state dot wears the tier as its 1pt ring
                 // (POLISH C10) — the same object as the Floor + the door light, so
                 // the chip's separate tier dot is gone; the tier label stays.
-                StatusDot(color: item.state.color, size: 7, ring: item.session.tier.color)
-                Text(item.session.displayTitle)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(1)
+                SeatMark(fill: item.state.color, ring: item.session.tier.color, size: 7)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.session.project)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                    Text(item.session.shortID)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(Theme.faint)
+                        .lineLimit(1)
+                }
                 Text(item.state.label)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(item.state.color)
@@ -156,7 +149,7 @@ private struct AttentionChip: View {
             }
         }
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
-        .help("Jump to \(item.session.project) — \(item.state.label.lowercased())")
+        .help("Jump to \(item.session.project) — \(item.session.id) — \(item.state.label.lowercased())")
     }
 }
 
@@ -171,7 +164,7 @@ private struct AttentionLegend: View {
                 let n = board.count(state)
                 if n > 0 {
                     HStack(spacing: 4) {
-                        Circle().fill(state.color).frame(width: 6, height: 6)
+                        SeatMark(fill: state.color, size: 6)
                         Text("\(n)")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Theme.ink)

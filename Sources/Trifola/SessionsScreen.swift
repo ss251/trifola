@@ -71,7 +71,7 @@ struct SessionsScreen: View {
                 Text("Sessions")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(Theme.ink)
-                    .padding(.top, 14)
+                    .padding(.top, ScreenScaffoldMetrics.topInset)
 
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
@@ -154,7 +154,7 @@ struct SessionsScreen: View {
                     // The one app-standard reorder motion (W6 wave 4): when a rank
                     // genuinely changes, the row glides — never teleports. Keyed on
                     // the id order so in-place value updates animate nothing.
-                    .animation(.snappy(duration: 0.25), value: shown.map(\.id))
+                    .reorderMotion(value: shown.map(\.id))
                 }
                 .scrollIndicators(.never)
                 .onAppear {
@@ -275,7 +275,7 @@ private struct SessionInspector: View {
                     .textSelection(.enabled)
                 SessionActions(session: session)
             }
-            .padding(.top, 14)
+            .padding(.top, ScreenScaffoldMetrics.topInset)
 
             Divider()
 
