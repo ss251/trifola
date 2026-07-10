@@ -80,16 +80,7 @@ Trifola cloud, no telemetry. Source-auditable.** Idle CPU is ~0% in typical use.
 
 ## Install
 
-**Fastest — see your own numbers, nothing to install:**
-
-```bash
-npx trifola
-```
-
-Reads your local `~/.claude`, prints your dead-skill count and wasted-resend audit, uploads
-nothing. Runs anywhere Node does — macOS, Linux, WSL.
-
-**The macOS app** (menu-bar attention board + live dashboard) — build from source:
+**The macOS app** — menu-bar attention board + live dashboard. Build from source:
 
 ```bash
 git clone https://github.com/ss251/trifola.git
@@ -100,6 +91,16 @@ open dist/trifola.app
 ```
 
 Requires macOS 15+ and a Swift 6 toolchain. Zero external dependencies.
+
+**Just the numbers, no app** — the CLI audit (dead-skill count + wasted-resend estimate) runs
+straight from the clone with nothing to install (zero dependencies), and uploads nothing:
+
+```bash
+node cli/dist/trifola.js
+```
+
+Runs anywhere Node does — macOS, Linux, WSL. (An `npx trifola` one-liner lands once the npm
+package is published.)
 
 > **On signing:** trifola is an indie project without a paid Apple Developer certificate, so
 > pre-built downloads aren't notarized. **Building from source (above) runs with no warnings.**
