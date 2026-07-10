@@ -69,6 +69,15 @@ enum NavOrigin {
     case programmatic
 }
 
+/// A fresh generation is published for every Tier-3 reveal, even if the same
+/// session inspector is already selected. The UI keys scroll/highlight/toast
+/// behavior from this token, making fallback observably non-idempotent.
+struct TerminalTranscriptReveal: Equatable {
+    let sessionID: String
+    let generation: Int
+    let message: String
+}
+
 /// Owns the stores, the FSEvents wiring and the navigation state. One instance
 /// for the whole app; everything on the MainActor.
 @MainActor
@@ -147,12 +156,14 @@ final class AppServices: ObservableObject {
     @Published private(set) var firstAppearanceSection: AppSection? = AppServices.initialSection
     private(set) var seenSections: Set<AppSection> = [AppServices.initialSection]
     @Published var selectedSessionID: String? = nil
+    @Published private(set) var terminalTranscriptReveal: TerminalTranscriptReveal? = nil
     /// Heartbeat so relative timestamps ("3m ago", `isActive`) re-render.
     @Published var now = Date()
 
     private var watcher: FSEventsWatcher?
     private var ticker: Task<Void, Never>?
     private var sessionsDebounce: Task<Void, Never>?
+    private var terminalRevealGeneration = 0
     private var forwarders: Set<AnyCancellable> = []
 
     init() {
@@ -526,14 +537,69 @@ final class AppServices: ObservableObject {
         select(.sessions, origin: .programmatic)
     }
 
-    /// The attention door light opens the real terminal when possible, then falls
-    /// back to today's transcript inspector without surfacing an error interruption.
+    /// Opens the exact local session when possible. Every unsuccessful typed
+    /// outcome executes a deterministic main-window transcript reveal instead of
+    /// selecting an arbitrary keyable window or silently preserving current state.
     func openTerminal(_ session: SessionSummary) {
-        TerminalLauncher.open(session: session) { [weak self] in
-            self?.inspect(session)
+        openTerminal(session) {
             NSApp.activate(ignoringOtherApps: true)
-            NSApp.windows.first(where: { $0.canBecomeKey && !$0.className.contains("StatusBar") })?
-                .makeKeyAndOrderFront(nil)
+            NSApp.windows.first(where: {
+                $0.title == "Trifola" && $0.canBecomeKey
+            })?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func openTerminal(_ session: SessionSummary,
+                      openMainWindow: @escaping @MainActor () -> Void) {
+        guard !session.isRemote else {
+            showTranscript(session, message: "Remote session — showing transcript",
+                           openMainWindow: openMainWindow)
+            return
+        }
+        TerminalLauncher.open(
+            session: session,
+            openMainWindow: openMainWindow,
+            selectSession: { [weak self] id in
+                guard let self else { return }
+                self.selectedSessionID = id
+                self.select(.sessions, origin: .programmatic)
+            },
+            revealTranscript: { [weak self] id, outcome in
+                self?.publishTranscriptReveal(
+                    sessionID: id,
+                    message: outcome.fallbackMessage
+                        ?? "No live terminal found — showing transcript"
+                )
+            }
+        )
+    }
+
+    /// Remote sessions intentionally expose Transcript, never Terminal. This path
+    /// contains no resolver call and remains visibly repeatable from the inspector.
+    func showTranscript(_ session: SessionSummary, message: String? = nil,
+                        openMainWindow: @escaping @MainActor () -> Void) {
+        NSApp.activate(ignoringOtherApps: true)
+        openMainWindow()
+        inspect(session)
+        publishTranscriptReveal(
+            sessionID: session.id,
+            message: message ?? "No live terminal found — showing transcript"
+        )
+    }
+
+    private func publishTranscriptReveal(sessionID: String, message: String) {
+        terminalRevealGeneration += 1
+        let generation = terminalRevealGeneration
+        terminalTranscriptReveal = TerminalTranscriptReveal(
+            sessionID: sessionID,
+            generation: generation,
+            message: message
+        )
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard let self,
+                  self.terminalTranscriptReveal?.generation == generation else { return }
+            self.terminalTranscriptReveal = nil
         }
     }
 

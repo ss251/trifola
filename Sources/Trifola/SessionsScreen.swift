@@ -187,6 +187,10 @@ struct SessionsScreen: View {
                         proxy.scrollTo(id, anchor: .center)
                     }
                 }
+                .onChange(of: services.terminalTranscriptReveal?.generation) {
+                    guard let request = services.terminalTranscriptReveal else { return }
+                    proxy.scrollTo(request.sessionID, anchor: .center)
+                }
             }
             .launchReveal(.content)
         }
@@ -284,6 +288,7 @@ private struct SessionRow: View {
 
 private struct SessionInspector: View {
     @EnvironmentObject var services: AppServices
+    @Environment(\.openWindow) private var openWindow
     let session: SessionSummary
 
     var body: some View {
@@ -306,10 +311,23 @@ private struct SessionInspector: View {
                     Spacer()
                     TapButton(
                         shortcut: KeyboardShortcut(.return, modifiers: .command),
-                        action: { services.openTerminal(session) }) {
+                        action: {
+                            let presentMain: @MainActor () -> Void = { openWindow(id: "main") }
+                            if session.isRemote {
+                                services.showTranscript(
+                                    session,
+                                    message: "Remote session — showing transcript",
+                                    openMainWindow: presentMain
+                                )
+                            } else {
+                                services.openTerminal(session, openMainWindow: presentMain)
+                            }
+                        }) {
                             HStack(spacing: Theme.rhythm) {
-                                Image(systemName: "terminal").font(.caption.weight(.medium))
-                                Text("Terminal").font(.caption.weight(.medium))
+                                Image(systemName: session.isRemote ? "doc.text" : "terminal")
+                                    .font(.caption.weight(.medium))
+                                Text(session.isRemote ? "Transcript" : "Terminal")
+                                    .font(.caption.weight(.medium))
                             }
                             .foregroundStyle(Theme.ink)
                             .padding(.horizontal, Theme.intraCell)
@@ -317,7 +335,9 @@ private struct SessionInspector: View {
                             .background(Theme.cardFill,
                                         in: RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous))
                         }
-                        .help("Open in Terminal — ⌘↩")
+                        .help(session.isRemote
+                              ? "Show the mirrored transcript — ⌘↩"
+                              : "Open the exact live terminal session — ⌘↩")
                 }
                 Text(session.id)
                     .font(.system(.caption2, design: .monospaced))
@@ -369,10 +389,34 @@ private struct SessionInspector: View {
 
             SectionLabel("Live transcript")
             TranscriptView(filePath: session.filePath)
+                .id("\(session.id):\(transcriptRevealGeneration)")
                 .frame(maxHeight: .infinity)
+                .overlay {
+                    if transcriptRevealGeneration > 0 {
+                        RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                            .strokeBorder(Theme.amber.opacity(0.9), lineWidth: 2)
+                            .allowsHitTesting(false)
+                    }
+                }
         }
         .padding(.horizontal, Theme.gutter)
         .padding(.bottom, Theme.paneInset)
+        .overlay(alignment: .top) {
+            if let request = services.terminalTranscriptReveal,
+               request.sessionID == session.id {
+                Toast(text: request.message)
+                    .id(request.generation)
+                    .padding(.top, Theme.sectionGap)
+                    .allowsHitTesting(false)
+            }
+        }
+        .motion(Theme.Motion.move, value: services.terminalTranscriptReveal?.generation)
+    }
+
+    private var transcriptRevealGeneration: Int {
+        guard let request = services.terminalTranscriptReveal,
+              request.sessionID == session.id else { return 0 }
+        return request.generation
     }
 
     private var attentionStateForInspector: AttentionState {

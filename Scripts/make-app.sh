@@ -56,6 +56,8 @@ cat > "${BUNDLE}/Contents/Info.plist" <<PLIST
     <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Trifola uses Automation to focus the exact Terminal or iTerm session you choose.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>
