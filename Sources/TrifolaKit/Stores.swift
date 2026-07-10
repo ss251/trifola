@@ -211,6 +211,15 @@ public struct SessionAccumulator: Sendable, Codable {
     var commandInvocations: [String: Int] = [:]
     /// `Agent`/`Task` tool-call count (orchestration signal, model-mismatch).
     var agentCalls = 0
+    struct PendingSubagentCall: Sendable, Codable {
+        var agentType: String?
+        var requestedModel: String?
+    }
+    /// Agent tool_use id → declared call shape until its tool_result supplies
+    /// the stable agentId/resolvedModel join.
+    var pendingSubagentCalls: [String: PendingSubagentCall] = [:]
+    /// Completed parent→subagent legs. The child filename is agent-<agentId>.jsonl.
+    var subagentInvocations: [SubagentInvocation] = []
     /// `Edit`/`Write`/`NotebookEdit`/`MultiEdit` tool-call count.
     var fileEdits = 0
     /// The transcript's auto topic title (`type:"ai-title"` record) — the name
@@ -324,6 +333,27 @@ public struct SessionAccumulator: Sendable, Codable {
                 // either shape depending on CLI version.
                 if name == "model" { sawModelCommandSinceTurn = true }
             }
+
+            // N1 model-pin join: the parent Agent call records the requested
+            // model on tool_use; its result records agentId + resolvedModel.
+            // Preserve the completed leg so the child transcript can be joined
+            // without re-reading the parent JSONL in the detector.
+            if let blocks = message["content"] as? [[String: Any]],
+               let result = obj["toolUseResult"] as? [String: Any] {
+                for block in blocks where (block["type"] as? String) == "tool_result" {
+                    guard let toolUseID = block["tool_use_id"] as? String,
+                          let pending = pendingSubagentCalls.removeValue(forKey: toolUseID),
+                          let agentID = (result["agentId"] as? String)
+                              ?? (result["agent_id"] as? String),
+                          !agentID.isEmpty else { continue }
+                    guard !subagentInvocations.contains(where: { $0.agentID == agentID }) else { continue }
+                    subagentInvocations.append(SubagentInvocation(
+                        agentID: agentID,
+                        agentType: (result["agentType"] as? String) ?? pending.agentType,
+                        requestedModel: pending.requestedModel,
+                        resolvedModel: result["resolvedModel"] as? String))
+                }
+            }
         }
         if obj["type"] as? String == "assistant", let m = obj["message"] as? [String: Any] {
             if let mm = m["model"] as? String {
@@ -371,6 +401,13 @@ public struct SessionAccumulator: Sendable, Codable {
                         }
                     case "Agent", "Task":
                         agentCalls += 1
+                        if let id = b["id"] as? String, pendingSubagentCalls[id] == nil {
+                            let input = b["input"] as? [String: Any]
+                            pendingSubagentCalls[id] = PendingSubagentCall(
+                                agentType: (input?["subagent_type"] as? String)
+                                    ?? (input?["agent_type"] as? String),
+                                requestedModel: input?["model"] as? String)
+                        }
                     case "Edit", "Write", "NotebookEdit", "MultiEdit":
                         fileEdits += 1
                         // CUSTOM ESTATE (W5): record WHICH file this model touched.
@@ -502,7 +539,9 @@ public struct SessionAccumulator: Sendable, Codable {
                               unsupportedPricingEntryCount: snap.unsupportedPricingEntryCount,
                               skillInvocations: snap.skillInvocations,
                               commandInvocations: snap.commandInvocations,
-                              agentCalls: snap.agentCalls, fileEdits: snap.fileEdits,
+                              agentCalls: snap.agentCalls,
+                              subagentInvocations: snap.subagentInvocations,
+                              fileEdits: snap.fileEdits,
                               tiersSeen: snap.tiersSeen,
                               assistantTurnsByModel: snap.assistantTurnsByModel,
                               toolCalls: snap.toolCalls,
@@ -913,7 +952,9 @@ public final class SessionStore: ObservableObject {
                                   unsupportedPricingEntryCount: s.unsupportedPricingEntryCount,
                                   skillInvocations: s.skillInvocations,
                                   commandInvocations: s.commandInvocations,
-                                  agentCalls: s.agentCalls, fileEdits: s.fileEdits,
+                                  agentCalls: s.agentCalls,
+                                  subagentInvocations: s.subagentInvocations,
+                                  fileEdits: s.fileEdits,
                                   tiersSeen: s.tiersSeen,
                                   assistantTurnsByModel: s.assistantTurnsByModel,
                                   toolCalls: s.toolCalls,
@@ -1010,7 +1051,9 @@ public final class SessionStore: ObservableObject {
     // v15: SessionAccumulator caches the human session handle + its source rank.
     // Old entries would otherwise fall back to a UUID, so every transcript gets
     // one intentional reparse to derive its ai-title/summary/first-prompt handle.
-    private nonisolated static let cacheVersion = 15
+    // v16: N1 model-pin evidence — pending Agent call declarations and completed
+    // parent→subagent invocation joins (agentId/requested/resolved model).
+    private nonisolated static let cacheVersion = 16
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

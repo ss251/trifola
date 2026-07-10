@@ -35,10 +35,17 @@ public struct MenuBarModel: Equatable, Sendable {
         public var lastUserMessage: String?
         public var age: TimeInterval     // seconds stuck / waiting
         public var tier: ModelTier       // the model wearing the seat
+        public var classifierConfidence: AttentionClassification.Confidence
+        public var classifierReason: String
         public var tierLabel: String { tier.label }
+        public var classifierDiagnostic: String {
+            "\(classifierConfidence.rawValue): \(classifierReason)"
+        }
 
         public init(id: String, title: String, project: String, cwd: String,
-                    lastUserMessage: String?, age: TimeInterval, tier: ModelTier) {
+                    lastUserMessage: String?, age: TimeInterval, tier: ModelTier,
+                    classifierConfidence: AttentionClassification.Confidence = .low,
+                    classifierReason: String = "state supplied without classifier evidence") {
             self.id = id
             self.title = title
             self.project = project
@@ -46,6 +53,8 @@ public struct MenuBarModel: Equatable, Sendable {
             self.lastUserMessage = lastUserMessage
             self.age = age
             self.tier = tier
+            self.classifierConfidence = classifierConfidence
+            self.classifierReason = classifierReason
         }
     }
 
@@ -159,7 +168,9 @@ public enum MenuBarReducer {
                                       cwd: item.session.cwd,
                                       lastUserMessage: item.session.lastUserMessage,
                                       age: item.age,
-                                      tier: item.session.tier)
+                                      tier: item.session.tier,
+                                      classifierConfidence: item.classifierConfidence,
+                                      classifierReason: item.classifierReason)
         }
         // Triage order: stuck longest first (the board sorts freshest-first).
         let blocked = board.items.filter { $0.state == .blocked }

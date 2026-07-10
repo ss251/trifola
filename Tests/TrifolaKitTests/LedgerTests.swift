@@ -178,7 +178,7 @@ struct LedgerPersistenceTests {
 
         repo.record(lessonID: "L-002", kind: .deadSkillArchive, status: .dismissed)
         repo.record(lessonID: "L-003", kind: .cacheMissDiscipline, status: .kept)
-        repo.record(lessonID: "L-001", kind: .rightSizing, status: .applied, appliedMetric: 78)
+        repo.record(lessonID: "L-001", kind: .modelPin, status: .applied, appliedMetric: 78)
 
         // Reload through a FRESH repository → state survived the disk round-trip.
         let reloaded = LedgerRepository(directory: repo.directory).loadStates()
@@ -192,8 +192,8 @@ struct LedgerPersistenceTests {
     @Test func appendOnlyArtifactTrailGrows() throws {
         let repo = tempRepo()
         defer { try? FileManager.default.removeItem(at: repo.directory) }
-        repo.record(lessonID: "L-001", kind: .rightSizing, status: .kept)
-        repo.record(lessonID: "L-001", kind: .rightSizing, status: .applied, appliedMetric: 78)
+        repo.record(lessonID: "L-001", kind: .modelPin, status: .kept)
+        repo.record(lessonID: "L-001", kind: .modelPin, status: .applied, appliedMetric: 78)
 
         let trail = repo.directory.appendingPathComponent("artifacts.jsonl")
         let text = try String(contentsOf: trail, encoding: .utf8)

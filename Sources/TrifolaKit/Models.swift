@@ -224,6 +224,30 @@ public struct SessionCostBundle: Sendable, Hashable, Codable {
 
 // MARK: - Session summary (one .jsonl file)
 
+/// One completed `Agent`/legacy `Task` call captured on its parent session.
+/// `agentID` joins to the `subagents/agent-<id>.jsonl` summary; requested model
+/// distinguishes silent inheritance (nil/"inherit") from an explicit override.
+public struct SubagentInvocation: Sendable, Hashable, Codable {
+    public let agentID: String
+    public let agentType: String?
+    public let requestedModel: String?
+    public let resolvedModel: String?
+
+    public init(agentID: String, agentType: String? = nil,
+                requestedModel: String? = nil, resolvedModel: String? = nil) {
+        self.agentID = agentID
+        self.agentType = agentType
+        self.requestedModel = requestedModel
+        self.resolvedModel = resolvedModel
+    }
+
+    public var hasExplicitModelOverride: Bool {
+        guard let raw = requestedModel?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return false }
+        return raw.lowercased() != "inherit" && raw.lowercased() != "default"
+    }
+}
+
 public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     public let id: String
     public let project: String
@@ -304,6 +328,9 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     /// A heavy frontier session with zero Agent calls is shape-evidence of a
     /// single-thread task that a cheaper model could have done (VISION 2.3).
     public let agentCalls: Int
+    /// Completed Agent/Task legs issued by this session, joined to child
+    /// transcripts by `agentID`. Empty for pre-N1 caches/synthetic summaries.
+    public let subagentInvocations: [SubagentInvocation]
     /// Count of `Edit`/`Write`/`NotebookEdit`/`MultiEdit` tool calls — the
     /// "how much did this session actually touch" signal for model-mismatch.
     public let fileEdits: Int
@@ -357,7 +384,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                 rawUsageBlocks: Int = 0,
                 unsupportedPricingEntryCount: Int = 0,
                 skillInvocations: [String: Int] = [:], commandInvocations: [String: Int] = [:],
-                agentCalls: Int = 0, fileEdits: Int = 0,
+                agentCalls: Int = 0, subagentInvocations: [SubagentInvocation] = [],
+                fileEdits: Int = 0,
                 tiersSeen: Set<ModelTier> = [],
                 assistantTurnsByModel: [String: Int] = [:], toolCalls: Int = 0,
                 filesTouchedByModel: [String: [String]] = [:],
@@ -387,6 +415,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         self.skillInvocations = skillInvocations
         self.commandInvocations = commandInvocations
         self.agentCalls = agentCalls
+        self.subagentInvocations = subagentInvocations
         self.fileEdits = fileEdits
         self.tiersSeen = tiersSeen
         self.assistantTurnsByModel = assistantTurnsByModel
@@ -425,6 +454,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         skillInvocations = try c.decodeIfPresent([String: Int].self, forKey: .skillInvocations) ?? [:]
         commandInvocations = try c.decodeIfPresent([String: Int].self, forKey: .commandInvocations) ?? [:]
         agentCalls = try c.decodeIfPresent(Int.self, forKey: .agentCalls) ?? 0
+        subagentInvocations = try c.decodeIfPresent(
+            [SubagentInvocation].self, forKey: .subagentInvocations) ?? []
         fileEdits = try c.decodeIfPresent(Int.self, forKey: .fileEdits) ?? 0
         tiersSeen = try c.decodeIfPresent(Set<ModelTier>.self, forKey: .tiersSeen) ?? []
         assistantTurnsByModel = try c.decodeIfPresent([String: Int].self, forKey: .assistantTurnsByModel) ?? [:]
@@ -450,7 +481,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                        messagesByModelDay: messagesByModelDay, rawUsageBlocks: rawUsageBlocks,
                        unsupportedPricingEntryCount: unsupportedPricingEntryCount,
                        skillInvocations: skillInvocations, commandInvocations: commandInvocations,
-                       agentCalls: agentCalls,
+                       agentCalls: agentCalls, subagentInvocations: subagentInvocations,
                        fileEdits: fileEdits, tiersSeen: tiersSeen,
                        assistantTurnsByModel: assistantTurnsByModel, toolCalls: toolCalls,
                        filesTouchedByModel: filesTouchedByModel, modelFlips: modelFlips,
@@ -519,7 +550,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                               messagesByModelDay: messagesByModelDay, rawUsageBlocks: rawUsageBlocks,
                               unsupportedPricingEntryCount: unsupportedPricingEntryCount,
                               skillInvocations: skillInvocations, commandInvocations: commandInvocations,
-                              agentCalls: agentCalls,
+                              agentCalls: agentCalls, subagentInvocations: subagentInvocations,
                               fileEdits: fileEdits, tiersSeen: tiersSeen,
                               assistantTurnsByModel: assistantTurnsByModel, toolCalls: toolCalls,
                               filesTouchedByModel: filesTouchedByModel, modelFlips: modelFlips,

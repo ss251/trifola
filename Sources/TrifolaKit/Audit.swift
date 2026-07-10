@@ -149,6 +149,46 @@ public struct MismatchCandidate: Identifiable, Sendable, Hashable {
     }
 }
 
+/// Compact resolved subagent leg carried from the session corpus into the Audit
+/// report, so the Ledger can compare it with settings without retaining every
+/// full SessionSummary or requiring app-layer rewiring.
+public struct SubagentModelLeg: Identifiable, Sendable, Equatable {
+    public var id: String { sessionID }
+    public let sessionID: String
+    public let project: String
+    public let cwd: String
+    public let filePath: String
+    public let agentType: String?
+    public let requestedModel: String?
+    public let resolvedModel: String
+    public let usage: SessionUsage
+    public let usageByModelDay: [String: [String: SessionUsage]]
+    public let actualCost: Double
+
+    public init(sessionID: String, project: String, cwd: String, filePath: String,
+                agentType: String?, requestedModel: String?, resolvedModel: String,
+                usage: SessionUsage,
+                usageByModelDay: [String: [String: SessionUsage]],
+                actualCost: Double) {
+        self.sessionID = sessionID
+        self.project = project
+        self.cwd = cwd
+        self.filePath = filePath
+        self.agentType = agentType
+        self.requestedModel = requestedModel
+        self.resolvedModel = resolvedModel
+        self.usage = usage
+        self.usageByModelDay = usageByModelDay
+        self.actualCost = actualCost
+    }
+
+    public var hasExplicitModelOverride: Bool {
+        guard let raw = requestedModel?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return false }
+        return raw.lowercased() != "inherit" && raw.lowercased() != "default"
+    }
+}
+
 // MARK: - The report (all four findings, computed once)
 
 public struct AuditReport: Sendable, Equatable {
@@ -165,20 +205,25 @@ public struct AuditReport: Sendable, Equatable {
     /// Full count of review candidates (the `mismatches` list is capped to top-N
     /// for display; this is how many there really are).
     public let mismatchCount: Int
+    /// Provider-neutral corpus seam consumed by L-001. Claude fills it today;
+    /// the Codex adapter can emit the same value type in N3.
+    public let subagentModelLegs: [SubagentModelLeg]
 
     public static let empty = AuditReport(
         cacheMiss: [], totalLeakDollars: 0, totalFirstTouchDollars: 0,
         skillLedger: .empty, mismatches: [],
-        totalMismatchOverspend: 0, mismatchCount: 0)
+        totalMismatchOverspend: 0, mismatchCount: 0, subagentModelLegs: [])
 
     public init(cacheMiss: [CacheMissFinding], totalLeakDollars: Double,
                 totalFirstTouchDollars: Double,
                 skillLedger: SkillLedger, mismatches: [MismatchCandidate],
-                totalMismatchOverspend: Double, mismatchCount: Int) {
+                totalMismatchOverspend: Double, mismatchCount: Int,
+                subagentModelLegs: [SubagentModelLeg] = []) {
         self.cacheMiss = cacheMiss; self.totalLeakDollars = totalLeakDollars
         self.totalFirstTouchDollars = totalFirstTouchDollars
         self.skillLedger = skillLedger; self.mismatches = mismatches
         self.totalMismatchOverspend = totalMismatchOverspend; self.mismatchCount = mismatchCount
+        self.subagentModelLegs = subagentModelLegs
     }
 
     // Tunable knobs, named so tests and UI share one source.
@@ -198,10 +243,38 @@ public struct AuditReport: Sendable, Equatable {
         let (cm, leakTotal, firstTouchTotal) = cacheMissLeaders(sessions)
         let ledger = skillLedger(sessions: sessions, catalog: skills)
         let (mm, mmTotal, mmCount) = mismatchCandidates(sessions)
+        let modelLegs = subagentModelLegs(sessions)
         return AuditReport(cacheMiss: cm, totalLeakDollars: leakTotal,
                            totalFirstTouchDollars: firstTouchTotal,
                            skillLedger: ledger, mismatches: mm,
-                           totalMismatchOverspend: mmTotal, mismatchCount: mmCount)
+                           totalMismatchOverspend: mmTotal, mismatchCount: mmCount,
+                           subagentModelLegs: modelLegs)
+    }
+
+    /// Join parent Agent results to child transcript filenames once, while the
+    /// full corpus is already in hand. Missing joins stay absent (honest quiet).
+    public static func subagentModelLegs(_ sessions: [SessionSummary]) -> [SubagentModelLeg] {
+        let parents = Dictionary(uniqueKeysWithValues: sessions
+            .filter { !$0.isSubagent }
+            .map { ($0.id, $0) })
+        var out: [SubagentModelLeg] = []
+        for child in sessions where child.isSubagent {
+            guard let parentID = child.parentSessionID,
+                  let parent = parents[parentID] else { continue }
+            let stem = ((child.filePath as NSString).lastPathComponent as NSString)
+                .deletingPathExtension
+            guard stem.hasPrefix("agent-"), stem.count > "agent-".count else { continue }
+            let agentID = String(stem.dropFirst("agent-".count))
+            guard let invocation = parent.subagentInvocations.first(where: { $0.agentID == agentID }),
+                  let resolved = invocation.resolvedModel ?? child.model else { continue }
+            out.append(SubagentModelLeg(
+                sessionID: child.id, project: child.project, cwd: child.cwd,
+                filePath: child.filePath, agentType: invocation.agentType,
+                requestedModel: invocation.requestedModel, resolvedModel: resolved,
+                usage: child.usage, usageByModelDay: child.usageByModelDay,
+                actualCost: child.cost))
+        }
+        return out
     }
 
     // MARK: finding 1 — re-sent-context leaders (leak vs first-touch)

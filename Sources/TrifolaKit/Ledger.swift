@@ -28,6 +28,31 @@ import Combine
 
 // MARK: - settings.json reader (model + effort)
 
+/// Provider tag on a declared routing-policy source. Claude is parsed today;
+/// Codex is an explicit seam for N3 rather than a later parallel type hierarchy.
+public enum DeclaredPolicySource: String, Sendable, Codable, Hashable {
+    case claude
+    case codex
+}
+
+/// One parseable declared model policy and the file that declared it.
+/// `selector` is "session-default", "*", a lane such as "execute", or an
+/// exact subagent type.
+public struct DeclaredRoutingPolicy: Sendable, Codable, Hashable {
+    public let source: DeclaredPolicySource
+    public let model: String
+    public let selector: String
+    public let filePath: String
+
+    public init(source: DeclaredPolicySource, model: String,
+                selector: String = "session-default", filePath: String) {
+        self.source = source
+        self.model = model
+        self.selector = selector
+        self.filePath = filePath
+    }
+}
+
 /// The two persisted-default facts the Ledger reads from `~/.claude/settings.json`
 /// (read-only, like everything else the app touches under ~/.claude).
 public struct ClaudeSettings: Sendable, Equatable {
@@ -36,11 +61,25 @@ public struct ClaudeSettings: Sendable, Equatable {
     /// Raw effort string as written on disk (so a value outside the known enum
     /// still surfaces honestly instead of being silently normalized).
     public let effortRaw: String
+    /// Provider-tagged routing declarations: settings.json default plus narrow,
+    /// parseable CLAUDE.md subagent pins.
+    public let declaredPolicies: [DeclaredRoutingPolicy]
 
-    public init(model: String = "—", effort: EffortLevel = .doctrineDefault, effortRaw: String? = nil) {
+    public init(model: String = "—", effort: EffortLevel = .doctrineDefault,
+                effortRaw: String? = nil,
+                declaredPolicies: [DeclaredRoutingPolicy]? = nil) {
         self.model = model
         self.effort = effort
         self.effortRaw = effortRaw ?? effort.rawValue
+        if let declaredPolicies {
+            self.declaredPolicies = declaredPolicies
+        } else if model != "—", !model.isEmpty {
+            self.declaredPolicies = [DeclaredRoutingPolicy(
+                source: .claude, model: model, selector: "session-default",
+                filePath: Self.defaultURL.path)]
+        } else {
+            self.declaredPolicies = []
+        }
     }
 
     public static var defaultURL: URL {
@@ -48,23 +87,125 @@ public struct ClaudeSettings: Sendable, Equatable {
             .appendingPathComponent(".claude/settings.json")
     }
 
+    public static var defaultClaudeMDURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/CLAUDE.md")
+    }
+
     /// Read model + effortLevel. Missing file / keys degrade to the doctrine
     /// default — never a crash, never a fabricated value.
-    public static func load(_ url: URL = defaultURL) -> ClaudeSettings {
-        guard let data = try? Data(contentsOf: url),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return ClaudeSettings()
-        }
+    public static func load(
+        _ url: URL = defaultURL,
+        claudeMDURLs: [URL]? = nil
+    ) -> ClaudeSettings {
+        let obj: [String: Any] = FileManager.default.contents(atPath: url.path)
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
         let model = (obj["model"] as? String) ?? "—"
-        let raw = (obj["effortLevel"] as? String)
+        let raw = obj["effortLevel"] as? String
         let effort = raw.flatMap(EffortLevel.init(rawValue:)) ?? .doctrineDefault
-        return ClaudeSettings(model: model, effort: effort, effortRaw: raw ?? effort.rawValue)
+        var policies: [DeclaredRoutingPolicy] = []
+        if model != "—", !model.isEmpty {
+            policies.append(DeclaredRoutingPolicy(
+                source: .claude, model: model, selector: "session-default",
+                filePath: url.path))
+        }
+        for claudeMDURL in claudeMDURLs ?? [defaultClaudeMDURL] {
+            guard let text = try? String(contentsOf: claudeMDURL, encoding: .utf8) else { continue }
+            policies.append(contentsOf: parseClaudeMDPolicies(text, filePath: claudeMDURL.path))
+        }
+        return ClaudeSettings(model: model, effort: effort, effortRaw: raw ?? effort.rawValue,
+                              declaredPolicies: policies)
+    }
+
+    /// Parse only explicit, one-line subagent model declarations. Generic
+    /// `model:` examples and prose such as "use a cheaper model" stay ignored.
+    public static func parseClaudeMDPolicies(
+        _ text: String,
+        filePath: String
+    ) -> [DeclaredRoutingPolicy] {
+        var out: [DeclaredRoutingPolicy] = []
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            if let captures = regexCaptures(
+                #"(?i)\bsubagent(?:\s+([A-Za-z0-9_.-]+))?\s+(?:pin\s+)?model\s*:\s*([A-Za-z0-9_.\-\[\]]+)"#,
+                in: line) {
+                out.append(DeclaredRoutingPolicy(
+                    source: .claude, model: captures[1],
+                    selector: captures[0].isEmpty ? "*" : captures[0],
+                    filePath: filePath))
+                continue
+            }
+            if line.range(of: #"(?i)\bdefault\s+pins?\s*:"#,
+                          options: .regularExpression) != nil {
+                for captures in regexAllCaptures(
+                    #"([A-Za-z0-9_.\-\[\]]+)\s*\(([^)]+)\)"#, in: line) {
+                    let selectors = captures[1].split(whereSeparator: { $0 == "/" || $0 == "," })
+                    for selector in selectors {
+                        out.append(DeclaredRoutingPolicy(
+                            source: .claude, model: captures[0], selector: String(selector),
+                            filePath: filePath))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// Most-specific declared policy for a subagent leg.
+    public func policy(forSubagentType agentType: String?) -> DeclaredRoutingPolicy? {
+        let type = agentType?.lowercased() ?? ""
+        let specific = declaredPolicies.filter { $0.selector != "session-default" }
+            .sorted { policyScore($0.selector, agentType: type) < policyScore($1.selector, agentType: type) }
+            .first { policyScore($0.selector, agentType: type) < Int.max }
+        return specific ?? declaredPolicies.first { $0.selector == "session-default" }
+    }
+
+    private func policyScore(_ selector: String, agentType: String) -> Int {
+        let selector = selector.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if !agentType.isEmpty, selector == agentType { return 0 }
+        if selector == "*" || selector == "all" || selector == "subagents" { return 2 }
+        if selector == "execute" {
+            let reasoningWords = ["review", "reason", "architect", "plan"]
+            return reasoningWords.contains(where: agentType.contains) ? Int.max : 1
+        }
+        if selector == "reason" || selector == "review" {
+            return agentType.contains(selector) ? 1 : Int.max
+        }
+        return Int.max
+    }
+
+    /// Capture groups only (not the full match); unmatched optional groups are "".
+    private static func regexCaptures(_ pattern: String, in line: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: line, range: NSRange(line.startIndex..<line.endIndex, in: line))
+        else { return nil }
+        return (1..<match.numberOfRanges).map { index in
+            let range = match.range(at: index)
+            guard range.location != NSNotFound, let swiftRange = Range(range, in: line) else { return "" }
+            return String(line[swiftRange])
+        }
+    }
+
+    private static func regexAllCaptures(_ pattern: String, in line: String) -> [[String]] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let matches = regex.matches(
+            in: line, range: NSRange(line.startIndex..<line.endIndex, in: line))
+        return matches.map { match in
+            (1..<match.numberOfRanges).map { index in
+                let range = match.range(at: index)
+                guard range.location != NSNotFound,
+                      let swiftRange = Range(range, in: line) else { return "" }
+                return String(line[swiftRange])
+            }
+        }
     }
 }
 
 // MARK: - Lesson kind (the finite detector taxonomy)
 
 public enum LessonKind: String, Sendable, Codable, CaseIterable {
+    case modelPin           // L-001
     case deadSkillArchive   // L-002
     case cacheMissDiscipline // L-003
     case rightSizing        // L-004
@@ -74,6 +215,7 @@ public enum LessonKind: String, Sendable, Codable, CaseIterable {
     /// lesson per kind, so the code is a stable fingerprint for dismiss/keep state).
     public var code: String {
         switch self {
+        case .modelPin: return "L-001"
         case .deadSkillArchive: return "L-002"
         case .cacheMissDiscipline: return "L-003"
         case .rightSizing: return "L-004"
@@ -83,6 +225,7 @@ public enum LessonKind: String, Sendable, Codable, CaseIterable {
 
     public var title: String {
         switch self {
+        case .modelPin: return "Pin inherited subagent models"
         case .deadSkillArchive: return "Unused skills — archive candidates"
         case .cacheMissDiscipline: return "Cache-miss discipline"
         case .rightSizing: return "Model right-sizing"
@@ -90,9 +233,17 @@ public enum LessonKind: String, Sendable, Codable, CaseIterable {
         }
     }
 
-    /// Lessons rank by dollar impact (see `Lesson.rank`); the priority tier is
-    /// uniform now that every detector is dollar-ranked.
-    var priority: Int { 1 }
+    /// Stable semantic priority; dollar impact breaks ties within a detector.
+    /// The routing fix is the headline, then direct-dollar findings, then hygiene.
+    var priority: Int {
+        switch self {
+        case .modelPin: return 0
+        case .cacheMissDiscipline: return 1
+        case .rightSizing: return 2
+        case .deadSkillArchive: return 3
+        case .effortFurnace: return 4
+        }
+    }
 }
 
 // MARK: - Candidate fix (the flywheel: finding → an action the human takes)
@@ -201,6 +352,35 @@ public struct Lesson: Identifiable, Sendable, Codable, Hashable {
     var rank: (Int, Double) { (kind.priority, -impact) }
 }
 
+/// One silent-inheritance mismatch, already priced as actual minus the same
+/// usage repriced at the declared model's catalog rate.
+public struct ModelPinMismatch: Identifiable, Sendable, Hashable {
+    public var id: String { sessionID }
+    public let provider: DeclaredPolicySource
+    public let sessionID: String
+    public let project: String
+    public let agentType: String?
+    public let declaredModel: String
+    public let resolvedModel: String
+    public let deltaDollars: Double
+    public let filePath: String
+    public let targetPath: String
+
+    public init(provider: DeclaredPolicySource, sessionID: String, project: String,
+                agentType: String?, declaredModel: String, resolvedModel: String,
+                deltaDollars: Double, filePath: String, targetPath: String) {
+        self.provider = provider
+        self.sessionID = sessionID
+        self.project = project
+        self.agentType = agentType
+        self.declaredModel = declaredModel
+        self.resolvedModel = resolvedModel
+        self.deltaDollars = deltaDollars
+        self.filePath = filePath
+        self.targetPath = targetPath
+    }
+}
+
 // MARK: - Lesson state (dismiss / keep / apply — persisted, NEVER ~/.claude)
 
 public enum LessonStatus: String, Sendable, Codable {
@@ -283,14 +463,175 @@ public enum LessonMiner {
     /// same inputs → same lessons, so a skeptic re-derives them. `catalog` is used
     /// only to resolve dead-skill folder paths for Reveal-in-Finder.
     public static func mint(report: AuditReport, catalog: [Skill],
-                            settings: ClaudeSettings, now: Date = Date()) -> [Lesson] {
+                            settings: ClaudeSettings,
+                            sessions: [SessionSummary] = [],
+                            now: Date = Date()) -> [Lesson] {
         var out: [Lesson] = []
+        let modelLegs = sessions.isEmpty
+            ? report.subagentModelLegs
+            : AuditReport.subagentModelLegs(sessions)
+        if let l = modelPin(legs: modelLegs, settings: settings) { out.append(l) }
         if let l = deadSkillArchive(report, catalog: catalog) { out.append(l) }
         if let l = cacheMissDiscipline(report) { out.append(l) }
         if let l = rightSizing(report) { out.append(l) }
         if let l = effortFurnace(settings) { out.append(l) }
         out.sort { $0.rank < $1.rank }
         return out
+    }
+
+    // MARK: L-001 — model pin (THE headline)
+
+    /// Compare declared routing policy to resolved child-session legs. Only
+    /// silent inheritance is eligible: an explicit Agent `model` override is a
+    /// deliberate choice and is excluded even when it differs from policy.
+    public static func modelPinMismatches(
+        sessions: [SessionSummary],
+        settings: ClaudeSettings,
+        limit: Int = 12,
+        fallbackDay: String? = nil
+    ) -> (top: [ModelPinMismatch], total: Double, count: Int) {
+        modelPinMismatches(
+            legs: AuditReport.subagentModelLegs(sessions), settings: settings,
+            limit: limit, fallbackDay: fallbackDay)
+    }
+
+    public static func modelPinMismatches(
+        legs: [SubagentModelLeg],
+        settings: ClaudeSettings,
+        limit: Int = 12,
+        fallbackDay: String? = nil
+    ) -> (top: [ModelPinMismatch], total: Double, count: Int) {
+        var mismatches: [ModelPinMismatch] = []
+        var total = 0.0
+
+        for leg in legs {
+            guard !leg.hasExplicitModelOverride,
+                  let policy = settings.policy(forSubagentType: leg.agentType),
+                  !modelsMatch(declared: policy.model, resolved: leg.resolvedModel)
+            else { continue }
+
+            let repriced = repricedCost(leg, at: policy.model, fallbackDay: fallbackDay)
+            let delta = max(0, leg.actualCost - repriced)
+            guard delta > 0 else { continue }
+            total += delta
+            mismatches.append(ModelPinMismatch(
+                provider: policy.source,
+                sessionID: leg.sessionID,
+                project: leg.project,
+                agentType: leg.agentType,
+                declaredModel: policy.model,
+                resolvedModel: leg.resolvedModel,
+                deltaDollars: delta,
+                filePath: leg.filePath,
+                targetPath: targetPath(policy: policy, leg: leg)))
+        }
+
+        mismatches.sort {
+            $0.deltaDollars != $1.deltaDollars
+                ? $0.deltaDollars > $1.deltaDollars
+                : $0.sessionID < $1.sessionID
+        }
+        return (Array(mismatches.prefix(limit)), total, mismatches.count)
+    }
+
+    static func modelPin(sessions: [SessionSummary], settings: ClaudeSettings,
+                         fallbackDay: String? = nil) -> Lesson? {
+        modelPin(
+            legs: AuditReport.subagentModelLegs(sessions), settings: settings,
+            fallbackDay: fallbackDay)
+    }
+
+    static func modelPin(legs: [SubagentModelLeg], settings: ClaudeSettings,
+                         fallbackDay: String? = nil) -> Lesson? {
+        let result = modelPinMismatches(
+            legs: legs, settings: settings, fallbackDay: fallbackDay)
+        guard result.count > 0, let lead = result.top.first else { return nil }
+        let top = max(lead.deltaDollars, 0.0001)
+        let evidence = result.top.prefix(6).map { mismatch in
+            LessonEvidence(
+                label: mismatch.project,
+                detail: "\(mismatch.agentType ?? "subagent") · declared \(mismatch.declaredModel) → resolved \(mismatch.resolvedModel)",
+                value: "≈\(fmtUSD(mismatch.deltaDollars))",
+                barFraction: mismatch.deltaDollars / top,
+                navPath: mismatch.filePath,
+                nav: mismatch.filePath.isEmpty ? .none : .inspect)
+        }
+        let edit = "model: \(lead.declaredModel)"
+        let targetLabel = (lead.targetPath as NSString).lastPathComponent
+        let candidate = CandidateFix(
+            action: .copyEdit,
+            summary: "Pin the inherited subagent to the declared model in \(targetLabel).",
+            copyText: edit,
+            copyLabel: "Copy edit",
+            beforeText: "model: inherit",
+            afterText: edit,
+            revealTargets: [RevealTarget(
+                label: targetLabel, detail: edit, path: lead.targetPath)],
+            note: "Candidate only — Trifola never writes routing files. Explicit Agent model overrides are excluded.")
+        return Lesson(
+            kind: .modelPin,
+            metricValue: Double(result.count),
+            metricLabel: "\(result.count) silent inherits",
+            why: "\(result.count) subagent legs resolved above declared policy — ≈\(fmtUSD(result.total)) API-rate difference when repriced at the declared model.",
+            evidence: Array(evidence),
+            candidate: candidate,
+            detectorVersion: "detector v1.1",
+            impact: result.total)
+    }
+
+    private static func modelsMatch(declared: String, resolved: String) -> Bool {
+        let declaredNormalized = PricingCatalog.normalize(declared)
+        let resolvedNormalized = PricingCatalog.normalize(resolved)
+        if declaredNormalized == resolvedNormalized { return true }
+        // Bare policy aliases intentionally match the resolved family.
+        if ["opus", "sonnet", "haiku"].contains(declaredNormalized) {
+            return ModelTier(raw: declaredNormalized) == ModelTier(raw: resolvedNormalized)
+        }
+        return false
+    }
+
+    private static func repricedCost(
+        _ leg: SubagentModelLeg,
+        at declaredModel: String,
+        fallbackDay: String?
+    ) -> Double {
+        let catalog = PricingCatalog.current
+        let pricedModel: String = switch PricingCatalog.normalize(declaredModel) {
+        case "opus": "claude-opus-4-8"
+        case "sonnet": "claude-sonnet-5"
+        case "haiku": "claude-haiku-4-5"
+        default: declaredModel
+        }
+        if !leg.usageByModelDay.isEmpty {
+            return leg.usageByModelDay.reduce(0) { total, daySlice in
+                total + daySlice.value.values.reduce(0) {
+                    $0 + $1.cost(rate: catalog.resolvedRate(
+                        model: pricedModel, onDay: daySlice.key))
+                }
+            }
+        }
+        return leg.usage.cost(rate: catalog.resolvedRate(
+            model: pricedModel, onDay: fallbackDay))
+    }
+
+    private static func targetPath(
+        policy: DeclaredRoutingPolicy,
+        leg: SubagentModelLeg
+    ) -> String {
+        // `model:` is valid custom-agent frontmatter, not a standalone settings
+        // or CLAUDE.md edit. Point at the concrete project agent definition when
+        // its type is known; only fall back to the policy source without a type.
+        guard let agentType = leg.agentType, !agentType.isEmpty else {
+            return policy.filePath
+        }
+        let safeType = agentType.map {
+            $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "-"
+        }
+        let root = leg.cwd.isEmpty
+            ? (policy.filePath as NSString).deletingLastPathComponent
+            : leg.cwd
+        return (root as NSString).appendingPathComponent(
+            ".claude/agents/\(String(safeType)).md")
     }
 
     // MARK: L-002 — dead-skill archive
@@ -675,8 +1016,10 @@ public final class LedgerStore: ObservableObject {
     /// count and the queue reflect current findings even before a real pass runs.
     @discardableResult
     public func remint(report: AuditReport, catalog: [Skill], settings: ClaudeSettings,
-                       now: Date = Date()) -> [Lesson] {
-        let minted = LessonMiner.mint(report: report, catalog: catalog, settings: settings, now: now)
+                       sessions: [SessionSummary] = [], now: Date = Date()) -> [Lesson] {
+        let minted = LessonMiner.mint(
+            report: report, catalog: catalog, settings: settings,
+            sessions: sessions, now: now)
         // Compare-before-assign (W6 wave 4): the silent remint runs on every data
         // refresh — identical lessons must not republish the Ledger screen.
         if lessons != minted { lessons = minted }
@@ -691,9 +1034,12 @@ public final class LedgerStore: ObservableObject {
     /// the pass is deterministic arithmetic over the warm index, not fake overnight
     /// cognition.
     public func dream(report: AuditReport, catalog: [Skill], settings: ClaudeSettings,
-                      sessionsScanned: Int, trigger: DreamTrigger, now: Date = Date()) {
+                      sessions: [SessionSummary] = [], sessionsScanned: Int,
+                      trigger: DreamTrigger, now: Date = Date()) {
         let t0 = Date()
-        let minted = remint(report: report, catalog: catalog, settings: settings, now: now)
+        let minted = remint(
+            report: report, catalog: catalog, settings: settings,
+            sessions: sessions, now: now)
         let result = DreamResult(ranAt: now, trigger: trigger, sessionsScanned: sessionsScanned,
                                  lessonsMinted: minted.count,
                                  durationMs: Int(Date().timeIntervalSince(t0) * 1000))

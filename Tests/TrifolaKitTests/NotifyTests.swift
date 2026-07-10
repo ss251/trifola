@@ -101,7 +101,8 @@ struct NotifyPlanTests {
     }
     private func waitingSig(ageSecs: TimeInterval) -> AttentionSignals {
         AttentionSignals(lastEventAt: t0.addingTimeInterval(-ageSecs), lastKind: .assistantText,
-                         lastStopReason: "end_turn")
+                         lastStopReason: "end_turn",
+                         lastAssistantText: "Do you want me to proceed? yes/no")
     }
 
     @Test func singleBlockedNamesProjectAndBlockingAction() {

@@ -57,7 +57,8 @@ struct ToolProbeEngineTests {
     @Test func fastProbePassesThroughAndGetsLatencyStamped() async {
         let out = await ToolProbeEngine.run(
             [FakeProbe(id: "fast", result: ProbeResult(status: .up, detail: "ok",
-                                                       metrics: [("k", "v")]))])
+                                                       metrics: [("k", "v")]))],
+            coordinator: ProviderRefreshCoordinator())
         #expect(out["fast"]?.status == .up)
         #expect(out["fast"]?.detail == "ok")
         #expect(out["fast"]?.metrics.first?.label == "k")
@@ -70,7 +71,8 @@ struct ToolProbeEngineTests {
             [FakeProbe(id: "fast", result: ProbeResult(status: .up, detail: "ok")),
              FakeProbe(id: "hung", delay: .seconds(30),
                        result: ProbeResult(status: .up, detail: "never seen"))],
-            timeout: .milliseconds(200))
+            timeout: .milliseconds(200),
+            coordinator: ProviderRefreshCoordinator())
         let elapsed = clock.duration(to: .now)
         #expect(out["fast"]?.status == .up)
         #expect(out["hung"]?.status == .unknown)
@@ -83,7 +85,7 @@ struct ToolProbeEngineTests {
         let probes: [any ToolProbe] = (0..<8).map {
             FakeProbe(id: "p\($0)", result: ProbeResult(status: .up, detail: "\($0)"))
         }
-        let out = await ToolProbeEngine.run(probes)
+        let out = await ToolProbeEngine.run(probes, coordinator: ProviderRefreshCoordinator())
         #expect(out.count == 8)
     }
 

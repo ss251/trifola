@@ -147,13 +147,15 @@ struct AttentionClassifyTests {
 
     @Test func waitingWhenTurnEndedOnAssistantText() {
         let sig = AttentionSignals(lastEventAt: at(0), lastKind: .assistantText,
-                                   lastStopReason: "end_turn")
+                                   lastStopReason: "end_turn",
+                                   lastAssistantText: "Do you want me to proceed? yes/no")
         #expect(AttentionState.classify(sig, now: at(120)) == .waiting)
     }
 
     @Test func assistantTextWithoutEndTurnIsNotWaiting() {
         let sig = AttentionSignals(lastEventAt: at(0), lastKind: .assistantText,
-                                   lastStopReason: "tool_use")
+                                   lastStopReason: "tool_use",
+                                   lastAssistantText: "Do you want me to proceed? yes/no")
         // 2m old, not end_turn, not dangling → still mid-flight → RUNNING.
         #expect(AttentionState.classify(sig, now: at(120)) == .running)
     }
@@ -172,7 +174,8 @@ struct AttentionClassifyTests {
     @Test func idleWinsOverWaitingOnceStale() {
         // A turn that ended 20 minutes ago has gone quiet — IDLE, not WAITING.
         let sig = AttentionSignals(lastEventAt: at(0), lastKind: .assistantText,
-                                   lastStopReason: "end_turn")
+                                   lastStopReason: "end_turn",
+                                   lastAssistantText: "Do you want me to proceed? yes/no")
         #expect(AttentionState.classify(sig, now: at(20 * 60)) == .idle)
     }
 
@@ -228,7 +231,8 @@ struct AttentionBoardTests {
                                           lastKind: .toolUse, hasDanglingToolUse: true,
                                           danglingToolUseAt: at(0).addingTimeInterval(-45))
         let waitingSig = AttentionSignals(lastEventAt: at(0).addingTimeInterval(-120),
-                                          lastKind: .assistantText, lastStopReason: "end_turn")
+                                          lastKind: .assistantText, lastStopReason: "end_turn",
+                                          lastAssistantText: "Do you want me to proceed? yes/no")
         let runningSig = AttentionSignals(lastEventAt: at(0).addingTimeInterval(-5),
                                           lastKind: .toolResult, lastToolActivityAt: at(0))
         let sessions = [

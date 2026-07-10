@@ -260,7 +260,32 @@ public enum MachineReachability {
 
     /// Probe `host:port` with a hard `timeoutMs` deadline. Returns within
     /// ~timeoutMs+250ms no matter what (a hung getaddrinfo yields `.unknown`).
-    public static func probe(host: String, port: Int32 = 22, timeoutMs: Int = 2000) -> Status {
+    public static func probe(
+        host: String,
+        port: Int32 = 22,
+        timeoutMs: Int = 2000,
+        coordinator: ProviderRefreshCoordinator = .shared
+    ) -> Status {
+        let done = DispatchSemaphore(value: 0)
+        let outcome = Locked<Status>(.unknown)
+        Task.detached(priority: .utility) {
+            let refreshProbe = ProviderRefreshProbe(id: "machine.\(host):\(port)") {
+                let status = directProbe(host: host, port: port, timeoutMs: timeoutMs)
+                outcome.withLock { $0 = status }
+            }
+            _ = await coordinator.refresh([refreshProbe])
+            done.signal()
+        }
+        // The public synchronous seam remains hard-bounded for existing callers.
+        // If another provider batch owns the flight, this returns UNKNOWN instead
+        // of waiting on or overlapping it.
+        guard done.wait(timeout: .now() + .milliseconds(timeoutMs + 250)) == .success else {
+            return .unknown
+        }
+        return outcome.withLock { $0 }
+    }
+
+    private static func directProbe(host: String, port: Int32, timeoutMs: Int) -> Status {
         let sem = DispatchSemaphore(value: 0)
         let box = Locked<Status>(.unknown)
         DispatchQueue.global(qos: .userInitiated).async {

@@ -214,7 +214,9 @@ struct CrossMachineGracefulTests {
         // A closed local port refuses immediately — the probe returns a bounded,
         // non-reachable verdict and never hangs (the graceful-degradation guarantee).
         let start = Date()
-        let status = MachineReachability.probe(host: "127.0.0.1", port: 1, timeoutMs: 800)
+        let status = MachineReachability.probe(
+            host: "127.0.0.1", port: 1, timeoutMs: 800,
+            coordinator: ProviderRefreshCoordinator())
         #expect(status != .reachable)
         #expect(Date().timeIntervalSince(start) < 3)   // bounded — did not hang
     }
