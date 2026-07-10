@@ -10,14 +10,12 @@ struct OverviewScreen: View {
 
     private var subtitle: String {
         let progress = store.scanProgress
-        if progress.isInProgress {
-            if progress.totalEstimate > 0 {
-                return "Scanning — \(fmtGrouped(progress.scanned)) of ~\(fmtGrouped(progress.totalEstimate)) transcripts…"
-            }
-            return "Scanning transcripts…"
+        if store.scanPresentation.isProvisional {
+            return scanProgressSentence
         }
+        let refreshing = progress.isInProgress ? " · \(inlineRefreshSentence)" : ""
         if isLocalCorpusMissing && store.sessions.isEmpty {
-            return "Local, read-only session intelligence · refreshed \(fmtAgo(store.lastRefresh))"
+            return "Local, read-only session intelligence · refreshed \(fmtAgo(store.lastRefresh))\(refreshing)"
         }
         // Distinct-project COUNT only — `projectSpend` also prices every
         // session (a full cost rollup per body pass) just to be counted here.
@@ -25,7 +23,19 @@ struct OverviewScreen: View {
         let base = "\(store.sessions.count) sessions across \(projects) projects"
         let fleet = services.isCrossMachine && store.machineCount > 1
             ? "\(store.machineCount) machines · " : ""
-        return "\(fleet)\(base) · refreshed \(fmtAgo(store.lastRefresh)) · dollar values are API-rate estimates, not your bill"
+        return "\(fleet)\(base) · refreshed \(fmtAgo(store.lastRefresh))\(refreshing) · dollar values are API-rate estimates, not your bill"
+    }
+
+    private var scanProgressSentence: String {
+        let progress = store.scanProgress
+        guard progress.totalEstimate > 0 else { return "Scanning transcripts…" }
+        return "Scanning — \(fmtGrouped(progress.scanned)) of ~\(fmtGrouped(progress.totalEstimate)) transcripts…"
+    }
+
+    private var inlineRefreshSentence: String {
+        let progress = store.scanProgress
+        guard progress.totalEstimate > 0 else { return "refreshing" }
+        return "refreshing \(fmtGrouped(progress.scanned)) of ~\(fmtGrouped(progress.totalEstimate))"
     }
 
     private var isLocalCorpusMissing: Bool {
@@ -58,87 +68,98 @@ struct OverviewScreen: View {
                     }
                 }
             }
-            if store.scanProgress.isInProgress {
+            if store.scanPresentation.showsColdScanningPlaceholder {
                 statRow.opacity(0.52)
                 HStack(spacing: Theme.intraCell) {
                     ProgressView().controlSize(.small)
-                    Text("Still counting. Aggregate tables appear only after the scan settles, so a partial total never presents as final.")
+                    Text("Still counting. Populated views appear as soon as partial data is available; totals remain provisional until this first scan settles.")
                         .font(.footnote)
                         .foregroundStyle(Theme.muted)
                 }
             } else {
-                AttentionStrip()
-                if services.isCrossMachine {
-                    FleetMachinesSection()
-                    Divider()
+                if store.scanPresentation.isProvisional {
+                    HStack(spacing: Theme.intraCell) {
+                        ProgressView().controlSize(.small)
+                        Text("\(scanProgressSentence) Totals below are still counting.")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.muted)
+                    }
                 }
-                statRow
-            // "Show the math" (W3): the hero's whole-corpus receipt — per-model
-            // legs → Σ = the tile's number, same code path (built on expand).
-            ReceiptDisclosure(storageKey: "provenance.overview-hero") {
-                CostProvenance.corpusReceipt(sessions: store.sessions)
-            }
-            Divider()
-            BurnGovernorSection(governor: governor, receipt: {
-                CostProvenance.dayReceipt(
-                    sessions: store.sessions,
-                    dayKey: CostProvenance.dayKey(for: services.now),
-                    footnotes: [CostProvenance.projectionFootnote(governor)])
-            }, showsDisclaimer: false)
-            Divider()
-            // PLAN QUOTA (W7): the REAL rate-limit windows next to the estimate
-            // above — "what we think you burned" vs "what Anthropic says you
-            // have left". Makes the 'resets 10am' wall predictable in advance.
-            QuotaSection(snapshot: services.quota.snapshot,
-                         status: services.quota.status,
-                         source: services.quota.source,
-                         now: services.now,
-                         onRetry: {
-                             Task { await services.quota.refresh(minInterval: 0) }
-                         })
-            Divider()
-            // REROUTE RECEIPTS (spree #2): fleet trend row + orchestrator-hog
-            // alert. Both are evidence-gated — clean fleets render nothing.
-            let rerouteReport = Reroutes.build(sessions: store.sessions)
-            if !rerouteReport.days.isEmpty {
-                RerouteTrendRow(report: rerouteReport, now: services.now)
-                Divider()
-            }
-            if let hog = OrchestratorHog.alert(
-                sessions: store.sessions,
-                day: CostProvenance.dayKey(for: services.now)) {
-                OrchestratorHogRow(alert: hog)
-                Divider()
-            }
-            HStack(alignment: .top, spacing: Theme.gutter) {
-                VStack(alignment: .leading, spacing: 16) {
-                    TierSpendSection(stats: store.tierStats, total: store.totalCost)
-                    Divider()
-                    ActivitySection(sessions: store.sessions, now: services.now)
-                }
-                .frame(maxWidth: .infinity)
-                Divider()
-                VStack(alignment: .leading, spacing: 16) {
-                    LiveNowSection()
-                    Divider()
-                    ContextOffendersSection()
-                }
-                .frame(maxWidth: .infinity)
-            }
-            Divider()
-                RoutingSection(audit: services.audit)
+                populatedContent(governor: governor)
+                    .opacity(store.scanPresentation.isProvisional ? 0.62 : 1)
             }
         }
     }
 
+    @ViewBuilder
+    private func populatedContent(governor: BurnGovernor) -> some View {
+        AttentionStrip()
+        if services.isCrossMachine {
+            FleetMachinesSection()
+            Divider()
+        }
+        statRow
+        // "Show the math" (W3): the hero's whole-corpus receipt — per-model
+        // legs → Σ = the tile's number, same code path (built on expand).
+        ReceiptDisclosure(storageKey: "provenance.overview-hero") {
+            CostProvenance.corpusReceipt(sessions: store.sessions)
+        }
+        Divider()
+        BurnGovernorSection(governor: governor, receipt: {
+            CostProvenance.dayReceipt(
+                sessions: store.sessions,
+                dayKey: CostProvenance.dayKey(for: services.now),
+                footnotes: [CostProvenance.projectionFootnote(governor)])
+        }, showsDisclaimer: false)
+        Divider()
+        // PLAN QUOTA (W7): the REAL rate-limit windows next to the estimate
+        // above — "what we think you burned" vs "what Anthropic says you
+        // have left". Makes the 'resets 10am' wall predictable in advance.
+        QuotaSection(snapshot: services.quota.snapshot,
+                     status: services.quota.status,
+                     source: services.quota.source,
+                     now: services.now,
+                     onRetry: {
+                         Task { await services.quota.refresh(minInterval: 0) }
+                     })
+        Divider()
+        // REROUTE RECEIPTS (spree #2): fleet trend row + orchestrator-hog
+        // alert. Both are evidence-gated — clean fleets render nothing.
+        let rerouteReport = Reroutes.build(sessions: store.sessions)
+        if !rerouteReport.days.isEmpty {
+            RerouteTrendRow(report: rerouteReport, now: services.now)
+            Divider()
+        }
+        if let hog = OrchestratorHog.alert(
+            sessions: store.sessions,
+            day: CostProvenance.dayKey(for: services.now)) {
+            OrchestratorHogRow(alert: hog)
+            Divider()
+        }
+        HStack(alignment: .top, spacing: Theme.gutter) {
+            VStack(alignment: .leading, spacing: 16) {
+                TierSpendSection(stats: store.tierStats, total: store.totalCost)
+                Divider()
+                ActivitySection(sessions: store.sessions, now: services.now)
+            }
+            .frame(maxWidth: .infinity)
+            Divider()
+            VStack(alignment: .leading, spacing: 16) {
+                LiveNowSection()
+                Divider()
+                ContextOffendersSection()
+            }
+            .frame(maxWidth: .infinity)
+        }
+        Divider()
+        RoutingSection(audit: services.audit)
+    }
+
     private func verdictLine(governor: BurnGovernor) -> some View {
         let board = services.alertingAttentionBoard(now: services.now)
-        let progress = store.scanProgress
         let sentence: String
-        if progress.isInProgress {
-            sentence = progress.totalEstimate > 0
-                ? "Scanning — \(fmtGrouped(progress.scanned)) of ~\(fmtGrouped(progress.totalEstimate)) transcripts…"
-                : "Scanning transcripts…"
+        if store.scanPresentation.isProvisional {
+            sentence = scanProgressSentence
         } else {
             sentence = VerdictSentenceBuilder.sentence(
                 board: board,
@@ -174,18 +195,18 @@ struct OverviewScreen: View {
         StatRow {
             StatTile(label: "Usage at API rates",
                      value: fmtUSD(store.totalCost),
-                     sub: store.scanProgress.isInProgress ? "still counting" : "estimate from recorded usage — not your bill")
+                     sub: store.scanPresentation.isProvisional ? "still counting" : "estimate from recorded usage — not your bill")
             Divider()
             StatTile(label: "Active now",
                      value: "\(store.activeSessions.count)",
-                     sub: store.scanProgress.isInProgress
+                     sub: store.scanPresentation.isProvisional
                         ? "still counting"
                         : (store.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m"),
                      live: !store.activeSessions.isEmpty)
             Divider()
             StatTile(label: "Cache savings — net of write premiums",
                      value: fmtUSD(store.totalCacheSavings),
-                     sub: store.scanProgress.isInProgress ? "still counting" : "vs. uncached input at API rates")
+                     sub: store.scanPresentation.isProvisional ? "still counting" : "vs. uncached input at API rates")
         }
     }
 }

@@ -479,6 +479,46 @@ struct AccumulatorTests {
 
 @Suite("Session index (incremental scan)")
 struct IndexTests {
+    @Test func scanPresentationReducerCoversEveryTransition() {
+        typealias State = SessionScanPresentationState
+        typealias Event = SessionScanPresentationEvent
+        let cases: [(State, Event, State)] = [
+            (.coldScanning, .scanStarted, .coldScanning),
+            (.coldScanning, .aggregateAvailable, .settling),
+            (.coldScanning, .scanSettled, .liveRefreshing),
+            (.settling, .scanStarted, .settling),
+            (.settling, .aggregateAvailable, .settling),
+            (.settling, .scanSettled, .liveRefreshing),
+            (.liveRefreshing, .scanStarted, .liveRefreshing),
+            (.liveRefreshing, .aggregateAvailable, .liveRefreshing),
+            (.liveRefreshing, .scanSettled, .liveRefreshing),
+        ]
+
+        for (state, event, expected) in cases {
+            #expect(SessionScanPresentationReducer.reduce(state, event: event) == expected)
+        }
+    }
+
+    @Test func settledAggregateStaysMountedAcrossFiveMinutesOfRescans() {
+        var state = SessionScanPresentationReducer.reduce(
+            .coldScanning, event: .aggregateAvailable)
+        state = SessionScanPresentationReducer.reduce(state, event: .scanSettled)
+        #expect(state == .liveRefreshing)
+
+        // Thirty 10-second heartbeat passes model the owner-reported five-minute
+        // warm-corpus window. No engine edge may regain the cold-screen license.
+        for _ in 0..<30 {
+            for event in [SessionScanPresentationEvent.scanStarted,
+                          .aggregateAvailable, .scanSettled] {
+                state = SessionScanPresentationReducer.reduce(state, event: event)
+                #expect(state == .liveRefreshing)
+                #expect(state.rendersPopulatedContent)
+                #expect(!state.isProvisional)
+                #expect(!state.showsColdScanningPlaceholder)
+            }
+        }
+    }
+
     @Test func coldProgressIsInitialFinalMonotonicAndCountsFailures() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -231,7 +231,7 @@ public struct AttentionRecoveryState: Equatable, Sendable {
 /// Stateful-as-data transition reducer. Call once per attention-board refresh.
 /// A blocked→running edge replaces the current acknowledgment; no queue exists.
 public enum AttentionRecoveryReducer {
-    public static let defaultDuration: TimeInterval = 10
+    public static let defaultDuration: TimeInterval = 8
 
     public static func reduce(_ state: AttentionRecoveryState,
                               board: AttentionBoard,

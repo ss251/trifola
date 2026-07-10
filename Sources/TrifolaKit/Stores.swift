@@ -520,6 +520,46 @@ public struct SessionAccumulator: Sendable, Codable {
 
 // MARK: - Session index (incremental scan cache)
 
+/// Launch-lifetime presentation stage for the session aggregate. Engine scan
+/// progress intentionally starts on every refresh; presentation may only return
+/// to the cold placeholder before this launch has ever produced a settled
+/// aggregate. `liveRefreshing` is therefore an irreversible stage for the life
+/// of a store, whether the engine is currently idle or refreshing in place.
+public enum SessionScanPresentationState: Sendable, Equatable {
+    case coldScanning
+    case settling
+    case liveRefreshing
+
+    /// Populated aggregate views are mounted as soon as partial cold-scan data
+    /// exists, and remain mounted for every later incremental refresh.
+    public var rendersPopulatedContent: Bool { self != .coldScanning }
+    public var showsColdScanningPlaceholder: Bool { self == .coldScanning }
+    public var isProvisional: Bool { self != .liveRefreshing }
+}
+
+public enum SessionScanPresentationEvent: Sendable, Equatable {
+    case scanStarted
+    case aggregateAvailable
+    case scanSettled
+}
+
+/// Pure transition reducer so the warm-rescan regression is exhaustively tested.
+public enum SessionScanPresentationReducer {
+    public static func reduce(_ state: SessionScanPresentationState,
+                              event: SessionScanPresentationEvent) -> SessionScanPresentationState {
+        switch (state, event) {
+        case (.coldScanning, .aggregateAvailable):
+            return .settling
+        case (.coldScanning, .scanSettled), (.settling, .scanSettled):
+            return .liveRefreshing
+        case (.liveRefreshing, _):
+            return .liveRefreshing
+        default:
+            return state
+        }
+    }
+}
+
 /// Public scan state consumed by the UI. `totalEstimate` is the number of
 /// transcript-shaped paths found during enumeration; files can still disappear
 /// while they are being parsed, so the denominator is deliberately labeled an
@@ -680,6 +720,7 @@ public final class SessionStore: ObservableObject {
     @Published public private(set) var lastRefresh: Date = Date()
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var scanProgress: SessionScanProgress = .idle
+    @Published public private(set) var scanPresentation: SessionScanPresentationState = .coldScanning
     /// Monotonic stamp, bumped on every real `sessions` assignment — lets
     /// derived-value caches (the attention-board memo) detect change with one
     /// Int compare instead of an array walk. Not @Published: it rides the
@@ -720,6 +761,8 @@ public final class SessionStore: ObservableObject {
         if isRefreshing { refreshQueued = true; return }
         isRefreshing = true
         appliedScanCount = 0
+        scanPresentation = SessionScanPresentationReducer.reduce(
+            scanPresentation, event: .scanStarted)
         scanProgress = SessionScanProgress(scanned: 0,
                                            totalEstimate: index.entries.count,
                                            isInProgress: true)
@@ -776,6 +819,8 @@ public final class SessionStore: ObservableObject {
             scanned: completed.scanned,
             totalEstimate: completed.totalEstimate,
             isInProgress: false)
+        scanPresentation = SessionScanPresentationReducer.reduce(
+            scanPresentation, event: .scanSettled)
         isRefreshing = false
         Task.detached(priority: .utility) { Self.saveIndexCache(result) }
         if refreshQueued { refreshQueued = false; await refreshNow() }
@@ -825,6 +870,8 @@ public final class SessionStore: ObservableObject {
     private func apply(_ partial: SessionIndex, gen: Int) {
         guard gen == refreshGen, partial.entries.count > appliedCount else { return }
         appliedCount = partial.entries.count
+        scanPresentation = SessionScanPresentationReducer.reduce(
+            scanPresentation, event: .aggregateAvailable)
         sessions = Self.applyNames(Self.sorted(partial.summaries), names: nameResolver.names())
         revision += 1
     }

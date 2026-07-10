@@ -62,8 +62,7 @@ struct SessionsScreen: View {
             inspector
                 .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: ScreenScaffoldMetrics.maxWidth, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .centeredContentColumn()
     }
 
     // MARK: List column

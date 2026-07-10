@@ -149,24 +149,24 @@ struct AttentionRecoveryTests {
             state, board: running, now: agencyNow.addingTimeInterval(1))
         let first = try! #require(state.acknowledgement)
         #expect(first.message == "webapp is moving again")
-        #expect(first.expiresAt == agencyNow.addingTimeInterval(11))
+        #expect(first.expiresAt == agencyNow.addingTimeInterval(9))
 
         state = AttentionRecoveryReducer.reduce(
             state, board: running, now: agencyNow.addingTimeInterval(2))
         #expect(state.acknowledgement == first) // running→running did not fire again
     }
 
-    @Test func acknowledgmentExpiresAtTenSeconds() {
+    @Test func acknowledgmentExpiresAtEightSeconds() {
         let existing = UnblockedAcknowledgement(
             sessionID: "s", project: "webapp", startedAt: agencyNow,
-            expiresAt: agencyNow.addingTimeInterval(10))
+            expiresAt: agencyNow.addingTimeInterval(8))
         let state = AttentionRecoveryState(
             previousStatesBySessionID: ["s": .running], acknowledgement: existing)
         let running = agencyBoard([agencyItem("s", project: "webapp", state: .running)])
 
-        #expect(state.activeAcknowledgement(at: agencyNow.addingTimeInterval(9.999)) != nil)
+        #expect(state.activeAcknowledgement(at: agencyNow.addingTimeInterval(7.999)) != nil)
         let expired = AttentionRecoveryReducer.reduce(
-            state, board: running, now: agencyNow.addingTimeInterval(10))
+            state, board: running, now: agencyNow.addingTimeInterval(8))
         #expect(expired.acknowledgement == nil)
     }
 

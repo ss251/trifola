@@ -1125,12 +1125,16 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
 }
 
 extension View {
+    func centeredContentColumn(maxWidth: CGFloat = ScreenScaffoldMetrics.maxWidth) -> some View {
+        frame(maxWidth: maxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+    }
+
     func screenScaffoldFrame() -> some View {
         padding(.horizontal, Theme.gutter)
             .padding(.bottom, ScreenScaffoldMetrics.bottomInset)
             .padding(.top, ScreenScaffoldMetrics.topInset)
-            .frame(maxWidth: ScreenScaffoldMetrics.maxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .centeredContentColumn()
     }
 }
 

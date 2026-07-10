@@ -29,7 +29,9 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
         didSet {
             guard enabled != oldValue else { return }
             prefsStore.save(NotifyPreferences(enabled: enabled))
-            if enabled { requestAuthorizationIfNeeded() }
+            if let notificationCenter {
+                optIn.activateIfEnabled(enabled, on: notificationCenter)
+            }
         }
     }
 
@@ -38,7 +40,8 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
     /// that were already blocked, and so an unblock clears / a reblock re-notifies.
     private var previouslyBlocked: Set<String> = []
     private let prefsStore: NotifyPreferencesStore
-    private var authRequested = false
+    private let optIn = BlockedNotificationOptIn()
+    private var notificationCenter: NotificationAuthorizationCenter?
     /// Whether we can safely touch UNUserNotificationCenter: it requires a real app
     /// bundle. Run via `swift run` / `--selfcheck` there is no bundle identifier, so
     /// every UN call is skipped (degrade silently — the dock badge carries the signal).
@@ -60,8 +63,9 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
         if bundled {
             let center = UNUserNotificationCenter.current()
             center.delegate = self
-            BlockedNotificationCategory.register(on: UNCategoryCenterAdapter(center: center))
-            if enabled { requestAuthorizationIfNeeded() }
+            let adapter = UNCategoryCenterAdapter(center: center)
+            notificationCenter = adapter
+            optIn.activateIfEnabled(enabled, on: adapter)
         }
     }
 
@@ -79,16 +83,6 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
         previouslyBlocked = decision.newState
         guard enabled, bundled, let note = decision.notification else { return }
         post(note)
-    }
-
-    // MARK: Authorization (requested once; silent on denial/undetermined)
-
-    private func requestAuthorizationIfNeeded() {
-        guard bundled, !authRequested else { return }
-        authRequested = true
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
-            // Degrade silently: the dock badge already carries the signal. Never error.
-        }
     }
 
     // MARK: Posting
@@ -148,7 +142,7 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
 
 /// The sole translation point from the tested, platform-neutral category contract
 /// to UserNotifications.
-private final class UNCategoryCenterAdapter: NotificationCategoryCenter {
+private final class UNCategoryCenterAdapter: NotificationAuthorizationCenter {
     private let center: UNUserNotificationCenter
 
     init(center: UNUserNotificationCenter) { self.center = center }
@@ -166,6 +160,12 @@ private final class UNCategoryCenterAdapter: NotificationCategoryCenter {
                                           options: [])
         })
         center.setNotificationCategories(native)
+    }
+
+    func requestAuthorization() {
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in
+            // Degrade silently: the dock badge already carries the signal. Never error.
+        }
     }
 }
 

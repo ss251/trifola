@@ -18,7 +18,7 @@ struct RootView: View {
     var body: some View {
         HStack(spacing: 0) {
             Sidebar()
-                .frame(width: 240)
+                .frame(width: 248)
                 .background {
                     Theme.surfaceSidebar.ignoresSafeArea()
                     VisualEffectBackground(material: .sidebar).opacity(0.30).ignoresSafeArea()
@@ -111,8 +111,8 @@ private struct Sidebar: View {
         VStack(alignment: .leading, spacing: 0) {
             Wordmark()
                 .padding(.horizontal, Theme.gutter)
-                // The rail uses `.headline`, so this optical offset aligns its
-                // baseline with the 28pt page title sharing the same header row.
+                // The rail header uses body-scale semibold, so this optical offset
+                // aligns its baseline with the 28pt title in the shared header row.
                 .padding(.top, Theme.codePadding)
                 .frame(height: ScreenScaffoldMetrics.headerHeight, alignment: .top)
                 .padding(.top, ScreenScaffoldMetrics.topInset)
@@ -140,10 +140,10 @@ private struct Wordmark: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.micro / 2) {
             Text("Fleet console")
-                .font(.headline)
+                .font(.body.weight(.semibold))
                 .foregroundStyle(Theme.ink)
             Text("local · read-only")
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(Theme.muted)
         }
     }
@@ -175,13 +175,13 @@ private struct SidebarItem: View {
             services.section = section
             if section != .sessions { services.selectedSessionID = nil }
         }) {
-            HStack(spacing: 8) {
+            HStack(spacing: Theme.codePadding) {
                 Image(systemName: section.icon)
-                    .font(.footnote.weight(.medium))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
-                    .frame(width: 18)
+                    .frame(width: 20)
                 Text(section.title)
-                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                    .font(.body.weight(isSelected ? .semibold : .medium))
                     .foregroundStyle(isSelected ? Theme.selectionText : Theme.ink)
                 Spacer()
                 if let badge {
@@ -191,7 +191,7 @@ private struct SidebarItem: View {
                 }
             }
             .padding(.horizontal, Theme.intraCell)
-            .padding(.vertical, Theme.rhythm)
+            .frame(height: 32)
             .contentShape(Rectangle())
         }
         .background {
@@ -217,24 +217,37 @@ private struct SidebarFooter: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
-                        .font(.caption2.weight(.medium))
+                        .font(.footnote.weight(.medium))
                         .foregroundStyle(Theme.muted)
                     Text("today \(fmtUSD(burn.today.cost)) · ≈\(fmtUSD(burn.monthProjection))/mo")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(Theme.muted)
                 }
                 Text("public API rates — not your bill")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(Theme.faint)
             }
 
-            Text("updated \(fmtAgo(services.sessions.lastRefresh))")
-                .font(.caption2)
-                .foregroundStyle(Theme.faint)
+            HStack(spacing: Theme.rhythm) {
+                Text("updated \(fmtAgo(services.sessions.lastRefresh))")
+                if services.sessions.scanPresentation == .liveRefreshing,
+                   services.sessions.scanProgress.isInProgress {
+                    ProgressView().controlSize(.mini)
+                    Text(inlineRefreshLabel)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(Theme.faint)
 
             Divider()
 
-            AppLockup(size: 14, ring: services.alertingAttentionBoard(now: services.now).worst?.color ?? Theme.faint)
+            AppLockup(size: 16, ring: services.alertingAttentionBoard(now: services.now).worst?.color ?? Theme.faint)
         }
+    }
+
+    private var inlineRefreshLabel: String {
+        let progress = services.sessions.scanProgress
+        guard progress.totalEstimate > 0 else { return "refreshing" }
+        return "refreshing \(fmtGrouped(progress.scanned))/~\(fmtGrouped(progress.totalEstimate))"
     }
 }

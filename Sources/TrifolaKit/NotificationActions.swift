@@ -29,6 +29,10 @@ public protocol NotificationCategoryCenter: AnyObject {
     func install(categories: Set<NotificationCategoryDescriptor>)
 }
 
+public protocol NotificationAuthorizationCenter: NotificationCategoryCenter {
+    func requestAuthorization()
+}
+
 public enum BlockedNotificationCategory {
     public static let identifier = "blocked"
     public static let showAction = "blocked.show"
@@ -61,5 +65,22 @@ public enum BlockedNotificationCategory {
         case snoozeAction: return .snoozeOneHour
         default: return .dismiss
         }
+    }
+}
+
+/// One-way opt-in gate for every notification-center side effect. A fresh launch
+/// with the persisted toggle off neither registers categories nor requests system
+/// authorization; the first explicit opt-in performs both exactly once.
+public final class BlockedNotificationOptIn {
+    private var activated = false
+
+    public init() {}
+
+    public func activateIfEnabled(_ enabled: Bool,
+                                  on center: NotificationAuthorizationCenter) {
+        guard enabled, !activated else { return }
+        activated = true
+        BlockedNotificationCategory.register(on: center)
+        center.requestAuthorization()
     }
 }
