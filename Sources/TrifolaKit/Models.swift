@@ -109,7 +109,22 @@ public enum BrandAssetManifest {
     public static let bannerHeight = 360
 }
 
-// MARK: - Model tiers
+// MARK: - Providers + model tiers
+
+/// The local assistant runtime that produced a session. Provider identity is
+/// orthogonal to machine identity: a Codex session mirrored from another Mac is
+/// still `.codex`, with that machine carried separately by `machineID`.
+public enum Provider: String, Sendable, Hashable, Codable, CaseIterable {
+    case claude
+    case codex
+
+    public var label: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex: return "Codex"
+        }
+    }
+}
 
 public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
     case opus, sonnet, haiku, user, other
@@ -359,6 +374,9 @@ public struct SubagentInvocation: Sendable, Hashable, Codable {
 
 public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     public let id: String
+    /// The local assistant runtime that produced this session. Defaults to
+    /// Claude so every pre-provider fixture and serialized summary is stable.
+    public let provider: Provider
     public let project: String
     public let cwd: String
     public let model: String?
@@ -481,7 +499,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     /// numerically unchanged. Stamped with the pricing-catalog generation.
     public let costBundle: SessionCostBundle?
 
-    public init(id: String, project: String, cwd: String, model: String?,
+    public init(id: String, provider: Provider = .claude,
+                project: String, cwd: String, model: String?,
                 lastActivity: Date?, messageCount: Int, usage: SessionUsage,
                 contextWeight: Int, filePath: String = "", lastUserMessage: String? = nil,
                 name: String? = nil, handle: String? = nil,
@@ -502,6 +521,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                 machineID: String = Machine.localID,
                 costBundle: SessionCostBundle? = nil) {
         self.id = id
+        self.provider = provider
         self.project = project
         self.cwd = cwd
         self.model = model
@@ -540,6 +560,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
+        provider = try c.decodeIfPresent(Provider.self, forKey: .provider) ?? .claude
         project = try c.decode(String.self, forKey: .project)
         cwd = try c.decode(String.self, forKey: .cwd)
         model = try c.decodeIfPresent(String.self, forKey: .model)
@@ -580,7 +601,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     /// verbatim; only the machine tag changes (a re-tag never changes what the
     /// session cost, so the bundle rides along).
     public func taggedWith(_ machineID: String) -> SessionSummary {
-        SessionSummary(id: id, project: project, cwd: cwd, model: model,
+        SessionSummary(id: id, provider: provider,
+                       project: project, cwd: cwd, model: model,
                        lastActivity: lastActivity, messageCount: messageCount, usage: usage,
                        contextWeight: contextWeight, filePath: filePath,
                        lastUserMessage: lastUserMessage, name: name, handle: handle,
@@ -649,7 +671,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
             generation: PricingCatalog.generation, cost: total, perTierCost: perTier,
             costByDay: costByDay, tierCostByDay: tierByDay,
             cacheSavings: savings, cacheLeak: leak, firstTouch: firstTouch)
-        return SessionSummary(id: id, project: project, cwd: cwd, model: model,
+        return SessionSummary(id: id, provider: provider,
+                              project: project, cwd: cwd, model: model,
                               lastActivity: lastActivity, messageCount: messageCount, usage: usage,
                               contextWeight: contextWeight, filePath: filePath,
                               lastUserMessage: lastUserMessage, name: name, handle: handle,

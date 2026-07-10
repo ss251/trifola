@@ -25,10 +25,12 @@ private func succeeded<Success, Failure: Error>(_ result: Result<Success, Failur
 // `cost` drives the usage so `.cost` equals it exactly (fresh Opus input, no output/
 // cache), keeping the roll-up arithmetic clean and self-checking.
 private func summary(_ id: String, project: String, machine: String = Machine.localID,
+                     provider: Provider = .claude,
                      cost: Double = 3, ageSecs: TimeInterval = 60, active: Bool = false) -> SessionSummary {
     let last = active ? Date() : t0.addingTimeInterval(-ageSecs)
     let inp = Int((cost / ModelTier.opus.rates.inp) * 1_000_000)   // fresh input → .cost == cost
-    return SessionSummary(id: id, project: project, cwd: "/repo/\(project)",
+    return SessionSummary(id: id, provider: provider,
+                          project: project, cwd: "/repo/\(project)",
                           model: "claude-opus-4-8", lastActivity: last, messageCount: 5,
                           usage: SessionUsage(inputTokens: inp),
                           contextWeight: 1000, filePath: "/repo/\(project)/\(id).jsonl",
@@ -138,6 +140,15 @@ struct CrossMachineMergeTests {
         let merged = FleetMerge.merge(local: [l], remotes: [(workstation, [r])])
         #expect(merged.count == 2)
         #expect(Set(merged.map(\.machineID)) == ["local", "workstation"])
+    }
+
+    @Test func sameIdOnSameMachineButDifferentProvidersAreDistinct() {
+        let claude = summary("shared-provider-id", project: "webapp")
+        let codex = summary(
+            "shared-provider-id", project: "webapp", provider: .codex)
+        let merged = FleetMerge.merge(local: [claude, codex], remotes: [])
+        #expect(merged.count == 2)
+        #expect(Set(merged.map(\.provider)) == [.claude, .codex])
     }
 
     @Test func machineCountsMapIsPerMachine() {

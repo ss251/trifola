@@ -82,7 +82,7 @@ public struct ModelPricing: Sendable, Hashable, Codable {
     }
 }
 
-/// The per-model-id pricing catalog: bundled Anthropic-authoritative seed plus an
+/// The per-model-id pricing catalog: bundled provider-authoritative seed plus an
 /// optional models.dev overlay (ADD-only) cached on disk by the refresh action.
 public struct PricingCatalog: Sendable {
     /// Normalized model id → pricing (possibly multi-era).
@@ -114,6 +114,7 @@ public struct PricingCatalog: Sendable {
         if let at = m.firstIndex(of: "@") { m = String(m[..<at]) }      // @default / @20250805
         if let br = m.firstIndex(of: "[") { m = String(m[..<br]) }      // [1m] long-context tag
         if let r = m.range(of: "claude-") { m = String(m[r.lowerBound...]) } // strips us.anthropic. etc.
+        if m.hasPrefix("openai/") { m.removeFirst("openai/".count) }
         let tail = m.suffix(9)                                           // trailing -YYYYMMDD stamp
         if tail.count == 9, tail.first == "-", tail.dropFirst().allSatisfy(\.isNumber) {
             m = String(m.dropLast(9))
@@ -174,6 +175,19 @@ public struct PricingCatalog: Sendable {
         put(["claude-3-7-sonnet", "claude-3-5-sonnet", "claude-3-sonnet"], 3, 15)
         put(["claude-3-opus"], 15, 75)
         put(["claude-3-haiku"], 0.25, 1.25)
+        // OpenAI GPT-5 family. Cached input is 10% of fresh input, which the
+        // two-argument ModelRate initializer derives. Codex rollout parsing
+        // converts inclusive input into fresh + cache-read slices before cost.
+        put(["gpt-5.6-sol"], 5, 30)
+        put(["gpt-5.6-terra"], 2.5, 15)
+        put(["gpt-5.6-luna"], 1, 6)
+        put(["gpt-5.5"], 5, 30)
+        put(["gpt-5.5-pro"], 30, 180)
+        put(["gpt-5.4"], 2.5, 15)
+        put(["gpt-5.4-mini"], 0.75, 4.5)
+        put(["gpt-5.4-nano"], 0.20, 1.25)
+        put(["gpt-5.4-pro"], 30, 180)
+        put(["gpt-5.3-codex"], 1.75, 14)
         return PricingCatalog(models: m)
     }()
 
@@ -236,31 +250,33 @@ public struct PricingCatalog: Sendable {
         return PricingCatalog(models: models, refreshedAt: file.fetchedAt, refreshedAdded: added)
     }
 
-    /// Parse models.dev's Anthropic block out of an api.json payload. Handles
-    /// both the live shape (root["anthropic"]["models"]) and CodexBar's cached
-    /// wrapper (root["catalog"]["providers"]["anthropic"]["models"]). Rates the
-    /// payload doesn't carry (the 1h write) derive from the standard multipliers.
+    /// Parse models.dev's Anthropic and OpenAI blocks out of an api.json payload.
+    /// Handles both the live shape (root[provider]["models"]) and CodexBar's
+    /// cached wrapper (root["catalog"]["providers"][provider]["models"]). Rates
+    /// the payload doesn't carry (the 1h write) derive from standard multipliers.
     public static func parseModelsDev(_ data: Data) -> [String: ModelRate] {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return [:] }
         let providers = ((root["catalog"] as? [String: Any])?["providers"] as? [String: Any]) ?? root
-        guard let anthropic = providers["anthropic"] as? [String: Any],
-              let models = anthropic["models"] as? [String: Any] else { return [:] }
         var out: [String: ModelRate] = [:]
-        for (id, value) in models {
-            guard let model = value as? [String: Any],
-                  let cost = model["cost"] as? [String: Any],
-                  let input = (cost["input"] as? NSNumber)?.doubleValue,
-                  let output = (cost["output"] as? NSNumber)?.doubleValue else { continue }
-            let cacheRead = (cost["cache_read"] as? NSNumber)?.doubleValue ?? input * 0.10
-            let cw5m = (cost["cache_write"] as? NSNumber)?.doubleValue ?? input * 1.25
-            let key = normalize(id)
-            out[key] = ModelRate(input: input, output: output, cacheRead: cacheRead,
-                                 cacheWrite5m: cw5m, cacheWrite1h: input * 2)
+        for providerID in ["anthropic", "openai"] {
+            guard let provider = providers[providerID] as? [String: Any],
+                  let models = provider["models"] as? [String: Any] else { continue }
+            for (id, value) in models {
+                guard let model = value as? [String: Any],
+                      let cost = model["cost"] as? [String: Any],
+                      let input = (cost["input"] as? NSNumber)?.doubleValue,
+                      let output = (cost["output"] as? NSNumber)?.doubleValue else { continue }
+                let cacheRead = (cost["cache_read"] as? NSNumber)?.doubleValue ?? input * 0.10
+                let cw5m = (cost["cache_write"] as? NSNumber)?.doubleValue ?? input * 1.25
+                let key = normalize(id)
+                out[key] = ModelRate(input: input, output: output, cacheRead: cacheRead,
+                                     cacheWrite5m: cw5m, cacheWrite1h: input * 2)
+            }
         }
         return out
     }
 
-    /// The OPTIONAL refresh: fetch models.dev, cache the parsed Anthropic rates
+    /// The OPTIONAL refresh: fetch models.dev, cache the parsed provider rates
     /// to `overlayURL`, and swap `current` to the merged catalog. Never required —
     /// offline/unfetched, the bundled seed is authoritative and nothing breaks.
     @discardableResult
@@ -270,7 +286,7 @@ public struct PricingCatalog: Sendable {
         let rates = parseModelsDev(data)
         guard !rates.isEmpty else {
             throw NSError(domain: "PricingCatalog", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "models.dev payload had no Anthropic rates"])
+                NSLocalizedDescriptionKey: "models.dev payload had no supported provider rates"])
         }
         let file = OverlayFile(fetchedAt: Date(), models: rates)
         let out = try JSONEncoder().encode(file)

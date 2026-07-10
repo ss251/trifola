@@ -441,7 +441,9 @@ public enum ClaudeQuotaResolver {
 /// its own — refreshAll drives it (plan 04 out-of-scope: polling).
 @MainActor
 public final class QuotaStore: ObservableObject {
-    @Published public private(set) var snapshot: QuotaSnapshot?
+    @Published public private(set) var snapshots: [Provider: QuotaSnapshot] = [:]
+    /// Source-compatible Claude view for the existing UI and MCP surface.
+    public var snapshot: QuotaSnapshot? { snapshots[.claude] }
     @Published public private(set) var status: String = "not fetched yet"
     @Published public private(set) var source: ClaudeCredentialSource?
 
@@ -449,11 +451,14 @@ public final class QuotaStore: ObservableObject {
     private var inFlight = false
     private let refreshCoordinator: ProviderRefreshCoordinator
     private let configDirectory: URL
+    private let codexProvider: CodexQuotaProvider
 
     public init(refreshCoordinator: ProviderRefreshCoordinator = .shared,
-                configDirectory: URL = ClaudePaths.process.root) {
+                configDirectory: URL = ClaudePaths.process.root,
+                codexProvider: CodexQuotaProvider = CodexQuotaProvider()) {
         self.refreshCoordinator = refreshCoordinator
         self.configDirectory = configDirectory
+        self.codexProvider = codexProvider
     }
 
     public convenience init(paths: ClaudePaths,
@@ -474,22 +479,33 @@ public final class QuotaStore: ObservableObject {
         // network work execute inside the coordinator's task group, off-main;
         // overlapping stack/machine/future-provider triggers coalesce here.
         let resolved = Locked<Result<ResolvedQuota, ClaudeQuotaError>?>(nil)
+        let codexResolved = Locked<Result<QuotaSnapshot, QuotaProviderFailure>?>(nil)
         let configDirectory = configDirectory
+        let codexProvider = codexProvider
         let probe = ProviderRefreshProbe(id: "claude.quota") {
             let candidates = ClaudeCredentialReader.loadCandidates(
                 configDirectory: configDirectory)
             let result = await ClaudeQuotaResolver.resolve(candidates: candidates)
             resolved.withLock { $0 = result }
         }
-        _ = await refreshCoordinator.refresh([probe])
+        let codexProbe = ProviderRefreshProbe(id: "codex.quota") {
+            let result = await codexProvider.snapshot()
+            codexResolved.withLock { $0 = result }
+        }
+        _ = await refreshCoordinator.refresh([probe, codexProbe])
         // A different provider batch may have won the single flight. Its work is
         // authoritative for this trigger; the next cadence tick can try quota.
         guard let result = resolved.withLock({ $0 }) else { return }
 
+        if let codexResult = codexResolved.withLock({ $0 }),
+           case .success(let codexSnapshot) = codexResult {
+            snapshots[.codex] = codexSnapshot
+        }
+
         switch result {
         case .success(let resolved):
             source = resolved.source
-            snapshot = resolved.snapshot
+            snapshots[.claude] = resolved.snapshot
             status = resolved.snapshot.isEmpty
                 ? "endpoint returned no windows (schema drift?)"
                 : "ok · \(resolved.source.rawValue)"

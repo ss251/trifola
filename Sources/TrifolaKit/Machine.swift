@@ -639,7 +639,8 @@ public struct RemoteSource: Sendable, Equatable {
 public enum FleetMerge {
 
     /// Merge `local` (already tagged "local") with each remote's summaries, tagging
-    /// the remotes with their machine id. De-duplicates by (machine, session id),
+    /// the remotes with their machine id. De-duplicates by
+    /// (provider, machine, session id),
     /// keeping the freshest — so no session is ever double-counted. Ordering is
     /// recency-first across the whole fleet.
     public static func merge(local: [SessionSummary],
@@ -651,7 +652,7 @@ public enum FleetMerge {
             // \u{1} can't occur in a machine id or a session id, so it is a safe
             // composite key — a subagent id already contains "/", the machine id
             // does not, so the two never collide.
-            let key = "\(machineID)\u{1}\(s.id)"
+            let key = "\(s.provider.rawValue)\u{1}\(machineID)\u{1}\(s.id)"
             if let existing = byKey[key] {
                 let a = existing.lastActivity ?? .distantPast
                 let b = tagged.lastActivity ?? .distantPast

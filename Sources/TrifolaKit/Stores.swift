@@ -574,6 +574,135 @@ public struct SessionAccumulator: Sendable, Codable {
     var resumeOffset: UInt64 { bytesIngested - UInt64(pending.count) }
 }
 
+// MARK: - Session sources + parser state
+
+/// One explicitly bounded transcript source. Provider-specific acceptance and
+/// parsing live at this seam; the index's stat/reuse/progress machinery stays
+/// shared. Codex sources point at the sessions directory, never its parent.
+public struct SessionSource: Sendable, Equatable {
+    public let root: URL
+    public let provider: Provider
+    public let machineID: String
+    let importManifestURL: URL?
+
+    public init(root: URL, provider: Provider,
+                machineID: String = Machine.localID,
+                importManifestURL: URL? = nil) {
+        self.root = root.standardizedFileURL
+        self.provider = provider
+        self.machineID = machineID
+        self.importManifestURL = importManifestURL?.standardizedFileURL
+    }
+
+    public static func claude(root: URL,
+                              machineID: String = Machine.localID) -> SessionSource {
+        SessionSource(root: root, provider: .claude, machineID: machineID)
+    }
+
+    public static func codex(root: URL,
+                             machineID: String = Machine.localID,
+                             importManifestURL: URL? = nil) -> SessionSource {
+        let manifest = importManifestURL
+            ?? root.deletingLastPathComponent()
+                .appendingPathComponent("external_agent_session_imports.json")
+        return SessionSource(root: root, provider: .codex,
+                             machineID: machineID,
+                             importManifestURL: manifest)
+    }
+
+    func accepts(_ relativePath: String) -> Bool {
+        switch provider {
+        case .claude:
+            return relativePath.hasSuffix(".jsonl")
+        case .codex:
+            let name = (relativePath as NSString).lastPathComponent
+            return name.hasPrefix("rollout-")
+                && (name.hasSuffix(".jsonl") || name.hasSuffix(".jsonl.zst"))
+        }
+    }
+}
+
+struct PreparedSessionSource: Sendable {
+    let source: SessionSource
+    let imports: CodexImportManifest
+
+    init(_ source: SessionSource) {
+        self.source = source
+        imports = source.provider == .codex
+            ? CodexImportManifest.load(from: source.importManifestURL)
+            : CodexImportManifest()
+    }
+}
+
+enum SessionParserState: Sendable, Codable {
+    case claude(SessionAccumulator)
+    case codex(CodexRolloutAccumulator)
+
+    var resumeOffset: UInt64 {
+        switch self {
+        case .claude(let accumulator): return accumulator.resumeOffset
+        case .codex(let accumulator): return accumulator.resumeOffset
+        }
+    }
+
+    var codexImportIdentity: (
+        sessionID: String,
+        markedImported: Bool,
+        contentHash: String?,
+        sourcePath: String?
+    )? {
+        guard case .codex(let accumulator) = self else { return nil }
+        return (
+            accumulator.sid,
+            accumulator.markedImported,
+            accumulator.importedContentHash,
+            accumulator.importedSourcePath)
+    }
+
+    var claudeUsageByKey: [String: SessionAccumulator.KeyedUsage]? {
+        guard case .claude(let accumulator) = self else { return nil }
+        return accumulator.usageByKey
+    }
+
+    mutating func resetPendingForTail(at offset: UInt64) {
+        switch self {
+        case .claude(var accumulator):
+            accumulator.pending = Data()
+            accumulator.bytesIngested = offset
+            self = .claude(accumulator)
+        case .codex(var accumulator):
+            accumulator.pending = Data()
+            accumulator.bytesIngested = offset
+            self = .codex(accumulator)
+        }
+    }
+
+    mutating func ingest(_ data: Data) {
+        switch self {
+        case .claude(var accumulator):
+            accumulator.ingest(data)
+            self = .claude(accumulator)
+        case .codex(var accumulator):
+            accumulator.ingest(data)
+            self = .codex(accumulator)
+        }
+    }
+
+    func summary(filePath: String, machineID: String,
+                 excludingClaudeUsageKeys: Set<String> = []) -> SessionSummary {
+        switch self {
+        case .claude(let accumulator):
+            let summary = accumulator.summary(
+                filePath: filePath,
+                excludingUsageKeys: excludingClaudeUsageKeys)
+            return summary.machineID == machineID
+                ? summary : summary.taggedWith(machineID)
+        case .codex(let accumulator):
+            return accumulator.summary(filePath: filePath, machineID: machineID)
+        }
+    }
+}
+
 // MARK: - Session index (incremental scan cache)
 
 /// Launch-lifetime presentation stage for the session aggregate. Engine scan
@@ -639,7 +768,9 @@ public struct SessionIndex: Sendable {
     struct Entry: Sendable {
         var size: UInt64
         var mtime: Date
-        var acc: SessionAccumulator
+        var acc: SessionParserState
+        var provider: Provider
+        var machineID: String
         var summary: SessionSummary
     }
     var entries: [String: Entry] = [:]   // absolute path → entry
@@ -654,6 +785,7 @@ public struct SessionIndex: Sendable {
         let size: UInt64
         let mtime: Date
         let old: Entry?
+        let source: PreparedSessionSource
     }
 
     /// Rescan `dir`, reusing cached results for unchanged files and parsing only
@@ -668,8 +800,29 @@ public struct SessionIndex: Sendable {
     /// for an empty/unreadable directory or when individual files fail to parse.
     public static func update(_ previous: SessionIndex, dir: URL,
                               onProgress: (@Sendable (SessionIndex, SessionScanProgress) -> Void)? = nil) -> SessionIndex {
+        update(previous, sources: [.claude(root: dir)], onProgress: onProgress)
+    }
+
+    /// Rescan one provider source while preserving the legacy one-directory API
+    /// above for fixtures and callers that intentionally scan Claude only.
+    public static func update(
+        _ previous: SessionIndex,
+        source: SessionSource,
+        onProgress: (@Sendable (SessionIndex, SessionScanProgress) -> Void)? = nil
+    ) -> SessionIndex {
+        update(previous, sources: [source], onProgress: onProgress)
+    }
+
+    /// Rescan all declared sources as one index. Each source is enumerated only
+    /// beneath its explicit root and carries its parser/provider/machine tags.
+    public static func update(
+        _ previous: SessionIndex,
+        sources: [SessionSource],
+        onProgress: (@Sendable (SessionIndex, SessionScanProgress) -> Void)? = nil
+    ) -> SessionIndex {
         let fm = FileManager.default
-        guard let files = try? fm.subpathsOfDirectory(atPath: dir.path) else {
+        let prepared = sources.map(PreparedSessionSource.init)
+        guard !prepared.isEmpty else {
             let empty = SessionIndex()
             onProgress?(empty, SessionScanProgress(scanned: 0, totalEstimate: 0,
                                                     isInProgress: true))
@@ -681,22 +834,42 @@ public struct SessionIndex: Sendable {
         // Pass 1 — stat everything; unchanged files carry over for free.
         var reused = SessionIndex()
         var work: [WorkItem] = []
-        for rel in files where rel.hasSuffix(".jsonl") {
-            let path = dir.appendingPathComponent(rel).path
-            guard let attrs = try? fm.attributesOfItem(atPath: path) else {
-                // It existed during enumeration but vanished before stat. Keep it
-                // in the work plan so attempted progress still reaches N of ~N.
-                work.append(WorkItem(path: path, rel: rel, size: 0,
-                                     mtime: .distantPast, old: nil))
+        for preparedSource in prepared {
+            let source = preparedSource.source
+            guard let files = try? fm.subpathsOfDirectory(atPath: source.root.path) else {
                 continue
             }
-            let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
-            let mtime = (attrs[.modificationDate] as? Date) ?? .distantPast
-            if let old = previous.entries[path], old.size == size, old.mtime == mtime {
-                reused.entries[path] = old                    // untouched — free
-            } else {
-                work.append(WorkItem(path: path, rel: rel, size: size, mtime: mtime,
-                                     old: previous.entries[path]))
+            for rel in files where source.accepts(rel) {
+                let url = source.root.appendingPathComponent(rel)
+                if source.provider == .codex,
+                   !isSafeCodexRollout(url, beneath: source.root) {
+                    continue
+                }
+                let path = url.path
+                guard let attrs = try? fm.attributesOfItem(atPath: path) else {
+                    // Preserve Claude's attempted-progress semantics when a file
+                    // disappears between enumeration and stat. Codex paths are
+                    // validated above and therefore simply disappear safely.
+                    if source.provider == .claude {
+                        work.append(WorkItem(path: path, rel: rel, size: 0,
+                                             mtime: .distantPast, old: nil,
+                                             source: preparedSource))
+                    }
+                    continue
+                }
+                let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
+                let mtime = (attrs[.modificationDate] as? Date) ?? .distantPast
+                let old = previous.entries[path]
+                let sameSource = old?.provider == source.provider
+                    && old?.machineID == source.machineID
+                if let old, sameSource, old.size == size, old.mtime == mtime,
+                   !isExcludedImport(old.acc, by: preparedSource.imports) {
+                    reused.entries[path] = old                // untouched — free
+                } else {
+                    work.append(WorkItem(path: path, rel: rel, size: size,
+                                         mtime: mtime, old: sameSource ? old : nil,
+                                         source: preparedSource))
+                }
             }
         }
         let total = reused.entries.count + work.count
@@ -739,6 +912,30 @@ public struct SessionIndex: Sendable {
         return result
     }
 
+    /// Codex enumeration is stricter than the legacy Claude scanner: regular
+    /// files only, no symlinks, and the fully resolved path must remain under
+    /// the explicitly approved sessions root.
+    private static func isSafeCodexRollout(_ url: URL, beneath root: URL) -> Bool {
+        guard let values = try? url.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true,
+              values.isSymbolicLink != true else { return false }
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolvedPath = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return resolvedPath.hasPrefix(resolvedRoot + "/")
+    }
+
+    private static func isExcludedImport(
+        _ state: SessionParserState,
+        by manifest: CodexImportManifest
+    ) -> Bool {
+        guard let identity = state.codexImportIdentity else { return false }
+        return manifest.excludes(sessionID: identity.sessionID,
+                                 markedImported: identity.markedImported,
+                                 contentHash: identity.contentHash,
+                                 sourcePath: identity.sourcePath)
+    }
+
     /// Claude can copy a prior conversation into another top-level transcript.
     /// The same stable message.id/requestId then exists in more than one file;
     /// per-file streaming dedup alone counts it twice. Match CodexBar's canonical
@@ -760,20 +957,24 @@ public struct SessionIndex: Sendable {
         var winners: [String: Candidate] = [:]
         for path in entries.keys.sorted() {
             guard let entry = entries[path] else { continue }
-            for (key, usage) in entry.acc.usageByKey where !key.hasPrefix("#") {
+            guard let usageByKey = entry.acc.claudeUsageByKey else { continue }
+            for (key, usage) in usageByKey where !key.hasPrefix("#") {
+                let namespacedKey = "\(entry.provider.rawValue)\u{1}\(entry.machineID)\u{1}\(key)"
                 let candidate = Candidate(path: path, isSidechain: usage.isSidechain)
-                if let current = winners[key] {
-                    if candidate.rank < current.rank { winners[key] = candidate }
+                if let current = winners[namespacedKey] {
+                    if candidate.rank < current.rank { winners[namespacedKey] = candidate }
                 } else {
-                    winners[key] = candidate
+                    winners[namespacedKey] = candidate
                 }
             }
         }
 
         var exclusions: [String: Set<String>] = [:]
         for (path, entry) in entries {
-            for key in entry.acc.usageByKey.keys where !key.hasPrefix("#") {
-                if winners[key]?.path != path {
+            guard let usageByKey = entry.acc.claudeUsageByKey else { continue }
+            for key in usageByKey.keys where !key.hasPrefix("#") {
+                let namespacedKey = "\(entry.provider.rawValue)\u{1}\(entry.machineID)\u{1}\(key)"
+                if winners[namespacedKey]?.path != path {
                     exclusions[path, default: []].insert(key)
                 }
             }
@@ -781,8 +982,8 @@ public struct SessionIndex: Sendable {
         for path in entries.keys {
             guard var entry = entries[path] else { continue }
             entry.summary = entry.acc.summary(
-                filePath: path,
-                excludingUsageKeys: exclusions[path] ?? [])
+                filePath: path, machineID: entry.machineID,
+                excludingClaudeUsageKeys: exclusions[path] ?? [])
             entries[path] = entry
         }
     }
@@ -790,30 +991,66 @@ public struct SessionIndex: Sendable {
     /// Parse a single changed/new file: incremental tail-read when it only grew,
     /// full reparse otherwise. Exactly the per-file logic the serial scan had.
     private static func parseOne(_ w: WorkItem) -> Entry? {
-        if let old = w.old, w.size > old.size,
+        let source = w.source.source
+        let canTail = !w.path.hasSuffix(".jsonl.zst")
+        if canTail, let old = w.old, w.size > old.size,
            old.acc.resumeOffset <= w.size,
            let fh = FileHandle(forReadingAtPath: w.path) {    // grew — parse the tail only
             var acc = old.acc
             do {
                 try fh.seek(toOffset: acc.resumeOffset)
-                acc.pending = Data()
-                acc.bytesIngested = acc.resumeOffset
+                acc.resetPendingForTail(at: acc.resumeOffset)
                 let appended = try fh.readToEnd() ?? Data()
                 try fh.close()
                 acc.ingest(appended)
-                return Entry(size: w.size, mtime: w.mtime, acc: acc,
-                             summary: acc.summary(filePath: w.path))
+                guard !isExcludedImport(acc, by: w.source.imports) else { return nil }
+                return Entry(
+                    size: w.size, mtime: w.mtime, acc: acc,
+                    provider: source.provider, machineID: source.machineID,
+                    summary: acc.summary(filePath: w.path,
+                                         machineID: source.machineID))
             } catch {
                 try? fh.close()                               // fall through to full parse
             }
         }
         // new / shrunk / unreadable-incrementally — full parse
-        guard let data = FileManager.default.contents(atPath: w.path) else { return nil }
-        let name = (w.rel as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
-        var acc = SessionAccumulator(defaultID: name)
-        acc.ingest(data)
-        return Entry(size: w.size, mtime: w.mtime, acc: acc,
-                     summary: acc.summary(filePath: w.path))
+        let url = URL(fileURLWithPath: w.path)
+        let data: Data?
+        switch source.provider {
+        case .claude:
+            data = FileManager.default.contents(atPath: w.path)
+        case .codex:
+            data = CodexRolloutFile.data(at: url)
+        }
+        guard let data else { return nil }
+        let name = defaultID(relativePath: w.rel)
+        var acc: SessionParserState
+        switch source.provider {
+        case .claude:
+            var claude = SessionAccumulator(defaultID: name)
+            claude.ingest(data)
+            acc = .claude(claude)
+        case .codex:
+            var codex = CodexRolloutAccumulator(defaultID: name)
+            codex.ingest(data)
+            acc = .codex(codex)
+        }
+        guard !isExcludedImport(acc, by: w.source.imports) else { return nil }
+        return Entry(
+            size: w.size, mtime: w.mtime, acc: acc,
+            provider: source.provider, machineID: source.machineID,
+            summary: acc.summary(filePath: w.path, machineID: source.machineID))
+    }
+
+    private static func defaultID(relativePath: String) -> String {
+        let filename = (relativePath as NSString).lastPathComponent
+        if filename.hasSuffix(".jsonl.zst") {
+            return String(filename.dropLast(".jsonl.zst".count))
+        }
+        if filename.hasSuffix(".jsonl") {
+            return String(filename.dropLast(".jsonl".count))
+        }
+        return filename
     }
 }
 
@@ -852,9 +1089,19 @@ public final class SessionStore: ObservableObject {
     /// exactly the same parser over a dir that looks like a second `~/.claude/projects`.
     public var remoteSources: [RemoteSource] = []
 
-    public init(paths: ClaudePaths = .process) {
+    /// Local provider sources scanned into the shared incremental index. Tests
+    /// and alternate frontends may replace this list with explicit fixtures.
+    public var sources: [SessionSource]
+
+    public init(paths: ClaudePaths = .process,
+                codexPaths: CodexPaths = .process) {
         self.paths = paths
         self.nameResolver = SessionNameResolver(claudeDir: paths.root.path)
+        self.sources = [
+            .claude(root: paths.projects),
+            .codex(root: codexPaths.sessions,
+                   importManifestURL: codexPaths.externalAgentImportsJSON),
+        ]
     }
 
     public var projectsDir: URL {
@@ -890,11 +1137,11 @@ public final class SessionStore: ObservableObject {
             }
         }
 
-        let dir = projectsDir
+        let localSources = sources
         let snapshot = index
         let latestProgress = Locked(scanProgress)
         let result = await Task.detached(priority: .userInitiated) { [weak self] in
-            SessionIndex.update(snapshot, dir: dir) { [weak self] partial, progress in
+            SessionIndex.update(snapshot, sources: localSources) { [weak self] partial, progress in
                 latestProgress.withLock { $0 = progress }
                 Task { @MainActor [weak self] in
                     self?.apply(partial, progress: progress, gen: gen)
@@ -1011,9 +1258,11 @@ public final class SessionStore: ObservableObject {
                                        names: [String: String]) -> [SessionSummary] {
         guard !names.isEmpty else { return list }
         return list.map { s in
-            guard let better = names[s.id], better != s.name else { return s }
+            guard s.provider == .claude,
+                  let better = names[s.id], better != s.name else { return s }
             var copy = s
-            copy = SessionSummary(id: s.id, project: s.project, cwd: s.cwd, model: s.model,
+            copy = SessionSummary(id: s.id, provider: s.provider,
+                                  project: s.project, cwd: s.cwd, model: s.model,
                                   lastActivity: s.lastActivity, messageCount: s.messageCount,
                                   usage: s.usage, contextWeight: s.contextWeight,
                                   filePath: s.filePath, lastUserMessage: s.lastUserMessage,
@@ -1051,13 +1300,20 @@ public final class SessionStore: ObservableObject {
     /// re-primes the same on-disk index the GUI warm-starts from.
     public nonisolated static func cachedScan(
         _ dir: URL,
-        cacheURL: URL = ClaudePaths.process.sessionIndexCacheURL
+        cacheURL: URL = ClaudePaths.process.sessionIndexCacheURL,
+        codexPaths: CodexPaths = .process
     ) -> [SessionSummary] {
         let paths = ClaudePaths.process
         let resolved = resolvedProjectsDirectory(dir, paths: paths)
+        var sources: [SessionSource] = [.claude(root: resolved)]
+        if resolved.standardizedFileURL == paths.projects.standardizedFileURL {
+            sources.append(.codex(
+                root: codexPaths.sessions,
+                importManifestURL: codexPaths.externalAgentImportsJSON))
+        }
         let idx = SessionIndex.update(
             loadIndexCache(from: cacheURL) ?? SessionIndex(),
-            dir: resolved)
+            sources: sources)
         saveIndexCache(idx, to: cacheURL)
         return idx.summaries
     }
@@ -1085,7 +1341,9 @@ public final class SessionStore: ObservableObject {
         var path: String
         var size: UInt64
         var mtime: Date
-        var acc: SessionAccumulator
+        var acc: SessionParserState
+        var provider: Provider
+        var machineID: String
     }
     private struct CacheFile: Codable {
         var version: Int
@@ -1150,7 +1408,9 @@ public final class SessionStore: ObservableObject {
     // v17: keyed usage retains `isSidechain`, and final indexes reconcile the
     // same message.id/requestId copied across transcript files to one canonical
     // row. Old caches cannot choose that winner without a one-time reparse.
-    private nonisolated static let cacheVersion = 17
+    // v18: SessionSummary gained `provider`; cached entries now retain their
+    // provider/parser/machine source so Claude and Codex can share one index.
+    private nonisolated static let cacheVersion = 18
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1170,7 +1430,9 @@ public final class SessionStore: ObservableObject {
         for e in file.entries {
             idx.entries[e.path] = SessionIndex.Entry(
                 size: e.size, mtime: e.mtime, acc: e.acc,
-                summary: e.acc.summary(filePath: e.path))
+                provider: e.provider, machineID: e.machineID,
+                summary: e.acc.summary(filePath: e.path,
+                                       machineID: e.machineID))
         }
         idx.reconcileCrossFileUsage()
         return idx
@@ -1183,7 +1445,9 @@ public final class SessionStore: ObservableObject {
     ) {
         let file = CacheFile(version: cacheVersion, timeZoneIdentifier: timeZone.identifier,
                              entries: index.entries.map {
-            CacheEntry(path: $0.key, size: $0.value.size, mtime: $0.value.mtime, acc: $0.value.acc)
+            CacheEntry(path: $0.key, size: $0.value.size, mtime: $0.value.mtime,
+                       acc: $0.value.acc, provider: $0.value.provider,
+                       machineID: $0.value.machineID)
         })
         guard let data = try? JSONEncoder().encode(file) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),

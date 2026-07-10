@@ -46,6 +46,15 @@ struct PricingCatalogTests {
         #expect(haiku.input == 1 && haiku.output == 5)
     }
 
+    @Test func gpt56SolUsesBundledCodexRate() throws {
+        let rate = try #require(
+            PricingCatalog.bundled.rate(model: "gpt-5.6-sol"))
+        #expect(rate.input == 5)
+        #expect(rate.output == 30)
+        #expect(rate.cacheRead == 0.5)
+        #expect(PricingCatalog.normalize("openai/GPT-5.6-SOL") == "gpt-5.6-sol")
+    }
+
     @Test func fable5AndHaiku35ConstantsAndDatedIDsArePinned() throws {
         let cat = PricingCatalog.bundled
         let fableRate = try #require(cat.rate(model: "claude-fable-5-20260301"))
@@ -154,6 +163,13 @@ struct PricingCatalogTests {
         let parsed2 = PricingCatalog.parseModelsDev(Data(wrapped.utf8))
         // Keyed NORMALIZED (date stamp stripped).
         #expect(parsed2["claude-opus-4-1"]?.input == 15)
+        // OpenAI is parsed from the same provider map, not discarded.
+        let mixed = #"{"anthropic":{"models":{"claude-haiku-4-5":{"cost":{"input":1,"output":5}}}},"openai":{"models":{"gpt-5.6-sol":{"cost":{"input":5,"output":30,"cache_read":0.5}}}}}"#
+        let parsed3 = PricingCatalog.parseModelsDev(Data(mixed.utf8))
+        #expect(parsed3["claude-haiku-4-5"]?.input == 1)
+        #expect(parsed3["gpt-5.6-sol"]?.input == 5)
+        #expect(parsed3["gpt-5.6-sol"]?.output == 30)
+        #expect(parsed3["gpt-5.6-sol"]?.cacheRead == 0.5)
         // Garbage → empty, never a crash.
         #expect(PricingCatalog.parseModelsDev(Data("not json".utf8)).isEmpty)
     }
