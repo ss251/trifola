@@ -25,12 +25,39 @@ jobs:
         run: swift build -c release
 
       - name: Test
-        timeout-minutes: 10
-        # --disable-sandbox: SwiftPM's build sandbox exists to contain untrusted
-        # package plugins/build tools, not our own first-party test suite. Under
-        # it, the runner silently SIGKILLs the test process during L-001's
-        # ancestor filesystem walk (a message-less ~16ms death that never
-        # reproduced under a dev machine's looser profile). This is the exact
-        # command that passes locally; the secret-scan + build steps above are
-        # the real supply-chain gate.
-        run: swift test --disable-sandbox
+        timeout-minutes: 12
+        # Serial + full Swift runtime backtracing so that if the process dies,
+        # the log names the exact crashing frame and signal instead of a
+        # message-less "exit code 1". `interactive=no` keeps the crash handler
+        # from ever blocking on input under CI's non-TTY. Output is teed so the
+        # always()-diagnostics step below can read the tail even if the final
+        # flush is lost to the crash. --disable-sandbox is kept only to remove
+        # it as a variable (enabling it did not change the failure).
+        env:
+          SWIFT_BACKTRACE: enable=yes,symbolicate=full,interactive=no
+        run: |
+          set -o pipefail
+          swift test --no-parallel --disable-sandbox 2>&1 | tee test-output.log
+
+      # Turns a non-reproducible runner-only death into a real diagnosis:
+      # runner resources (disk/limits/cpu-mem), the tail of the test stream,
+      # any crash/OOM markers, and the full crash reports macOS writes on a
+      # hard signal. Runs even when the test step fails.
+      - name: Crash diagnostics
+        if: always()
+        run: |
+          echo "===== runner resources ====="
+          echo "-- disk --";   df -h /
+          echo "-- ulimit --"; ulimit -a
+          echo "-- cpu/mem --"; sysctl hw.ncpu hw.memsize hw.physmem 2>/dev/null || true
+          echo "===== last 100 lines of the test stream ====="
+          tail -100 test-output.log 2>/dev/null || echo "(no test-output.log captured)"
+          echo "===== crash / resource markers in the stream ====="
+          grep -nE 'Fatal error|Precondition|Crashed|crashed|received signal|SIG[A-Z]+|Program crashed|No space left|Killed|abort|Trace/BPT' test-output.log 2>/dev/null | tail -60 || true
+          echo "===== macOS crash reports (full symbolicated backtraces) ====="
+          ls -la ~/Library/Logs/DiagnosticReports/ 2>/dev/null || echo "(DiagnosticReports empty or absent)"
+          for f in ~/Library/Logs/DiagnosticReports/*.ips ~/Library/Logs/DiagnosticReports/*.crash; do
+            [ -e "$f" ] || continue
+            echo "----- $f -----"
+            cat "$f"
+          done

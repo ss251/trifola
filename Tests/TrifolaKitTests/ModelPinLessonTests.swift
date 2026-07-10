@@ -3,14 +3,21 @@ import Testing
 @testable import TrifolaKit
 
 private let modelPinDay = "2026-07-10"
+// A fixture root under the temp dir with a single agent definition the
+// declared-policy tests point at. Creation is best-effort and MUST NOT trap:
+// a `try!` here dies message-less and takes the whole test process down with
+// it (a lazy global initializes inside the first test that touches it, so a
+// filesystem quirk on one machine would look like that unrelated test
+// "crashing"). If the write ever fails, the dependent tests fail cleanly on
+// their own assertions instead — a named failure, never a silent SIGILL.
 private let modelPinRoot: URL = {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("trifola-model-pin-contract-\(UUID().uuidString)")
     let agents = root.appendingPathComponent(".claude/agents", isDirectory: true)
-    try! FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
-    try! "---\nname: Explore\n---\n".write(
+    try? FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+    try? "---\nname: Explore\n---\n".write(
         to: agents.appendingPathComponent("Explore.md"),
-        atomically: true, encoding: .utf8)
+        atomically: false, encoding: .utf8)
     return root
 }()
 
