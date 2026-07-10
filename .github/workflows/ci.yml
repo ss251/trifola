@@ -26,4 +26,9 @@ jobs:
 
       - name: Test
         timeout-minutes: 10
-        run: swift test
+        # swift-testing runs parallel by default; the standard runner has a
+        # fraction of a dev machine's RAM, and the parallel fixture load was
+        # dying with no verdict (~2min, no crash, no summary). Serial trades a
+        # little wall-time for a bounded memory footprint and a legible log
+        # where the last-started test is unambiguously any future culprit.
+        run: swift test --no-parallel
