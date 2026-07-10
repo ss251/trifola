@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/banner.png" alt="Trifola — the command center for your Claude Code fleet" width="680">
+
 # trifola
 
 **The command center for your whole Claude Code fleet.**
