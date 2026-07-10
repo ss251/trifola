@@ -205,7 +205,12 @@ struct ClaudeConfigLocationTests {
         #expect(paths.sessionIndexCacheURL.path == "/tmp/team-index.json")
     }
 
-    @Test func cliProcessReadsOnlyTheOverriddenCorpus() throws {
+    // Launches the real .build/debug/Trifola executable, which `swift test` does
+    // not build on CI (the test target depends on TrifolaKit, not the app product),
+    // and which links AppKit and can block headless. This is a developer-machine
+    // integration check, not a CI gate — it disables itself where CI is set.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CI"] == nil))
+    func cliProcessReadsOnlyTheOverriddenCorpus() throws {
         let fixture = FileManager.default.temporaryDirectory
             .appendingPathComponent("trifola-path-process-\(UUID().uuidString)",
                                     isDirectory: true)
@@ -237,6 +242,11 @@ struct ClaudeConfigLocationTests {
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
+        // Watchdog: a headless spend query must exit in well under a second. If it
+        // ever regresses into the GUI runloop, terminate rather than hang the suite.
+        let deadline = Date().addingTimeInterval(15)
+        while process.isRunning && Date() < deadline { usleep(20_000) }
+        if process.isRunning { process.terminate() }
         process.waitUntilExit()
         let output = String(
             data: stdout.fileHandleForReading.readDataToEndOfFile(),
