@@ -97,7 +97,7 @@ private struct PaletteRow: View {
                     if let m = entry.machineID { MachineChip(machineID: m, compact: true) }
                     if entry.warn {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption2).foregroundStyle(Theme.amber)
+                            .font(.caption2.weight(.medium)).foregroundStyle(Theme.amber)
                     }
                 }
                 entry.hint
@@ -159,12 +159,12 @@ struct PalettePanel<Field: View>: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 15))
+                    .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Theme.muted)
                 field()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
+            .padding(.horizontal, Theme.paneInset)
+            .padding(.vertical, Theme.paletteFieldVerticalInset)
 
             Divider()
 
@@ -188,25 +188,26 @@ struct PalettePanel<Field: View>: View {
         }
         .frame(width: 640)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .fill(Color(nsColor: .windowBackgroundColor))
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusOverlay, style: .continuous)
+                .fill(.regularMaterial)
+            RoundedRectangle(cornerRadius: Theme.radiusOverlay, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-        .shadow(color: .black.opacity(0.22), radius: 16, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusOverlay, style: .continuous))
+        .shadow(color: .black.opacity(0.28), radius: 24, x: 0, y: 8)
     }
 
     private var rows: some View {
         VStack(spacing: 2) {
             ForEach(Array(results.enumerated()), id: \.element.id) { i, e in
-                PaletteRow(entry: e, selected: i == selection)
+                TapButton(focusVisual: .row, action: { onInvoke(i) }) {
+                    PaletteRow(entry: e, selected: i == selection)
+                }
                     .id(e.id)
                     .onHover { if $0 { onHover(i) } }
-                    .onTapGesture { onInvoke(i) }
             }
         }
-        .padding(6)
+        .padding(Theme.rhythm)
     }
 
     private var emptyState: some View {
@@ -219,8 +220,8 @@ struct PalettePanel<Field: View>: View {
                 .foregroundStyle(Theme.muted)
             Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 18)
+        .padding(.horizontal, Theme.paneInset)
+        .padding(.vertical, Theme.overlayEmptyVerticalInset)
     }
 
     private var legend: some View {
@@ -240,8 +241,8 @@ struct PalettePanel<Field: View>: View {
                 .font(.caption2)
                 .foregroundStyle(Theme.faint)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Theme.paneInset)
+        .padding(.vertical, Theme.intraCell)
     }
 
     private func legendKey(_ key: String, _ label: String) -> some View {
@@ -278,10 +279,12 @@ struct CommandPalette: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.black.opacity(0.16)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { close() }
+            TapButton(focusVisual: .none, action: close) {
+                Color.black.opacity(0.16)
+                    .contentShape(Rectangle())
+            }
+            .ignoresSafeArea()
+            .accessibilityHidden(true)
 
             PalettePanel(query: query, results: results, selection: selection, field: {
                 TextField("Search sessions, skills, screens, recipes, actions…", text: $query)
@@ -291,7 +294,7 @@ struct CommandPalette: View {
                     .focused($focused)
                     .onSubmit { invoke(selection, alt: false) }
             }, onHover: { selection = $0 }, onInvoke: { invoke($0, alt: false) })
-            .padding(.top, 96)
+            .padding(.top, Theme.paletteTopInset)
         }
         .onAppear {
             query = ""
@@ -334,15 +337,24 @@ struct CommandPalette: View {
             let ch = event.charactersIgnoringModifiers
             let handled: Bool = MainActor.assumeIsolated {
                 let count = results.count
-                func move(_ delta: Int) { if count > 0 { selection = min(max(selection + delta, 0), count - 1) } }
                 switch keyCode {
-                case 125: move(1); return true                      // ↓
-                case 126: move(-1); return true                     // ↑
+                case 125:                                          // ↓
+                    if count > 0 { selection = min(selection + 1, count - 1) }
+                    return true
+                case 126:                                          // ↑
+                    if count > 0 { selection = max(selection - 1, 0) }
+                    return true
                 case 36, 76: invoke(selection, alt: cmd); return true // return / enter
                 case 53: close(); return true                       // escape
                 default:
-                    if ctrl, ch == "n" { move(1); return true }     // ⌃n
-                    if ctrl, ch == "p" { move(-1); return true }    // ⌃p
+                    if ctrl, ch == "n" {                            // ⌃n
+                        if count > 0 { selection = min(selection + 1, count - 1) }
+                        return true
+                    }
+                    if ctrl, ch == "p" {                            // ⌃p
+                        if count > 0 { selection = max(selection - 1, 0) }
+                        return true
+                    }
                     return false
                 }
             }
@@ -481,7 +493,7 @@ enum PaletteEntries {
                 + Text(" · \(s.tier.label) · \(fmtAgo(s.lastActivity))").font(.caption2)
             let sid = s.id, cwd = s.cwd
             return PaletteEntry(
-                id: id, kind: .session, title: s.displayTitle, hint: hint, icon: PaletteKind.session.icon,
+                id: id, kind: .session, title: "\(s.project) · \(s.displayTitle)", hint: hint, icon: PaletteKind.session.icon,
                 tier: s.tier, state: stateByID[s.id] ?? .idle,
                 machineID: crossMachine ? s.machineID : nil,
                 candidate: PaletteCandidate(

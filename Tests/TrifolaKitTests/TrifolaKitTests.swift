@@ -240,7 +240,7 @@ struct TierAttributionTests {
         // total = 23.3, correct opus-only spend = 20 (Int(20/23.3*100)=85%); the old
         // bug summed whole-session cost for every dominant-opus session (a + c = 20.3, 87%).
         let flags = RoutingAudit.computeFlags(defaultModel: "claude-sonnet-5", sessions: [a, b, c])
-        #expect(flags.contains { $0.title == "Opus is 85% of all-time spend" })
+        #expect(flags.contains { $0.title == "Opus is 85% of the all-time API-rate estimate" })
         #expect(!flags.contains { $0.title.contains("87%") })
     }
 }
@@ -479,6 +479,75 @@ struct AccumulatorTests {
 
 @Suite("Session index (incremental scan)")
 struct IndexTests {
+    @Test func coldProgressIsInitialFinalMonotonicAndCountsFailures() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try (userLine + "\n").write(to: dir.appendingPathComponent("one.jsonl"),
+                                      atomically: true, encoding: .utf8)
+        try (asst1 + "\n").write(to: dir.appendingPathComponent("two.jsonl"),
+                                   atomically: true, encoding: .utf8)
+        // A transcript-shaped path that cannot be parsed. It must still advance
+        // scanned progress so the UI can settle at N of ~N rather than hanging.
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("vanished.jsonl"),
+            withIntermediateDirectories: false)
+
+        let seen = Locked<[SessionScanProgress]>([])
+        let index = SessionIndex.update(SessionIndex(), dir: dir) { _, progress in
+            seen.withLock { $0.append(progress) }
+        }
+        let progress = seen.withLock { $0 }
+        #expect(progress.first == SessionScanProgress(
+            scanned: 0, totalEstimate: 3, isInProgress: true))
+        #expect(progress.last == SessionScanProgress(
+            scanned: 3, totalEstimate: 3, isInProgress: false))
+        #expect(zip(progress, progress.dropFirst()).allSatisfy {
+            $0.0.scanned <= $0.1.scanned
+        })
+        #expect(progress.allSatisfy { $0.totalEstimate == 3 })
+        #expect(index.summaries.count == 2)
+    }
+
+    @Test func warmProgressStartsWithReusedEntriesAndFinishesAtTotal() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let files = (0..<3).map { dir.appendingPathComponent("\($0).jsonl") }
+        for file in files {
+            try (userLine + "\n").write(to: file, atomically: true, encoding: .utf8)
+        }
+        let warm = SessionIndex.update(SessionIndex(), dir: dir)
+
+        let fh = try FileHandle(forWritingTo: files[2])
+        try fh.seekToEnd()
+        try fh.write(contentsOf: Data((asst1 + "\n").utf8))
+        try fh.close()
+
+        let seen = Locked<[SessionScanProgress]>([])
+        let updated = SessionIndex.update(warm, dir: dir) { _, progress in
+            seen.withLock { $0.append(progress) }
+        }
+        let progress = seen.withLock { $0 }
+        #expect(progress.first == SessionScanProgress(
+            scanned: 2, totalEstimate: 3, isInProgress: true))
+        #expect(progress.last == SessionScanProgress(
+            scanned: 3, totalEstimate: 3, isInProgress: false))
+        #expect(updated.summaries.count == 3)
+        #expect(updated.summaries.contains { $0.messageCount == 2 })
+    }
+
+    @Test func persistedIndexPreservesDerivedHandle() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let line = #"{"type":"user","message":{"content":"repair the launch parser"}}"#
+        try (line + "\n").write(to: dir.appendingPathComponent("session.jsonl"),
+                                  atomically: true, encoding: .utf8)
+        let index = SessionIndex.update(SessionIndex(), dir: dir)
+        let cache = dir.appendingPathComponent("session-index.json")
+        SessionStore.saveIndexCache(index, to: cache)
+        let loaded = try #require(SessionStore.loadIndexCache(from: cache))
+        #expect(loaded.summaries.first?.handle == "Repair the launch parser")
+    }
+
     @Test func timezoneIdentityChangesDayKeysAndInvalidatesPersistedIndex() throws {
         let utc = try #require(TimeZone(identifier: "UTC"))
         let kolkata = try #require(TimeZone(identifier: "Asia/Kolkata"))

@@ -195,11 +195,19 @@ struct MenuBarContent: View {
         let suppressedBlocked = rawMB.blocked.filter { suppressedIDs.contains($0.id) }
         let suppressedWaiting = rawMB.waiting.filter { suppressedIDs.contains($0.id) }
 
-        return VStack(alignment: .leading, spacing: 10) {
-            // The whole day in one line: counts · $-today.
-            Text(mb.fleetLine + suppression.legendSuffix)
-                .font(.caption)
-                .foregroundStyle(Theme.muted)
+        return VStack(alignment: .leading, spacing: Theme.intraCell) {
+            // One template mark + one sans status line: identity and judgment,
+            // without turning the dropdown into another dashboard.
+            HStack(spacing: Theme.intraCell) {
+                Image(nsImage: AppBrand.markImage(
+                    size: 15,
+                    state: markState(mb.glyph),
+                    template: true))
+                Text(mb.fleetLine + suppression.legendSuffix + " · API-rate estimate")
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(1)
+            }
 
             // WHO NEEDS ME — the strip's reason to exist.
             if mb.blocked.isEmpty && mb.waiting.isEmpty {
@@ -240,45 +248,30 @@ struct MenuBarContent: View {
                 signalRow(icon: "gauge.high", tint: Theme.amber, text: quotaLine)
             }
             Divider()
-            // Walk-Away Notify (frontier #2): the ONE allowed notification, opt-in.
-            // Off by default; on it posts a single banner when a session enters
-            // BLOCKED so you know away from the window.
-            TapToggle(isOn: Binding(get: { services.notifier.enabled },
-                                 set: { services.notifier.enabled = $0 }), mini: true) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Notify when blocked")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.ink)
-                    Text("a session needs you, away from the window")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.faint)
-                }
-            }
-
-            // The strip's own off switch (mirrored in View ▸ Menu-Bar Strip,
-            // which is how you get it back once hidden).
-            TapToggle(isOn: $menuPresence.enabled, mini: true) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Menu-bar strip")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.ink)
-                    Text("re-enable from the app's View menu")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.faint)
-                }
-            }
-
-            ProminentTapButton(size: .small, action: {
+            HoverRow(action: {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
             }) {
-                Text("Open Trifola")
-                    .frame(maxWidth: .infinity)
+                HStack {
+                    Text("open trifola").font(.footnote).foregroundStyle(Theme.muted)
+                    Spacer()
+                    Text("⌘O").font(.caption2).foregroundStyle(Theme.faint)
+                }
+                .frame(minHeight: Theme.compactRowHeight)
             }
         }
-        .padding(14)
-        .frame(width: 300)
+        .padding(Theme.cardPadding)
+        .frame(width: 320)
+        .background(.regularMaterial)
         .onAppear { services.start() }
+    }
+
+    private func markState(_ glyph: MenuBarGlyphState) -> AppBrand.MarkState {
+        switch glyph {
+        case .needsYou: return .needsYou
+        case .running: return .running
+        case .quiet: return .quiet
+        }
     }
 
     /// One attention row: door-light dot in the state's color, the session's
@@ -287,7 +280,7 @@ struct MenuBarContent: View {
     private func attentionRow(_ row: MenuBarModel.AttentionRow,
                               state: AttentionState,
                               suppressed: Bool = false) -> some View {
-        TapButton(action: {
+        HoverRow(action: {
             if let s = services.sessions.sessions.first(where: { $0.id == row.id }) {
                 services.openTerminal(s)
             }
@@ -296,7 +289,7 @@ struct MenuBarContent: View {
                 SeatMark(fill: state.color, size: 7, active: state.needsAttention)
                 if suppressed { SuppressionMark() }
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(row.title)
+                    Text("\(row.project) · \(row.title)")
                         .font(.subheadline.weight(state == .blocked ? .semibold : .regular))
                         .foregroundStyle(Theme.ink)
                         .lineLimit(1)
@@ -306,8 +299,9 @@ struct MenuBarContent: View {
                 }
                 Spacer()
             }
+            .frame(minHeight: Theme.compactRowHeight)
         }
-        .opacity(suppressed ? 0.5 : 1)
+        .opacity(suppressed ? 0.45 : 1)
         .contextMenu {
             if let session = services.sessions.sessions.first(where: { $0.id == row.id }) {
                 SessionAgencyMenu(session: session)
@@ -321,7 +315,7 @@ struct MenuBarContent: View {
     private func signalRow(icon: String, tint: Color, text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Image(systemName: icon)
-                .font(.caption)
+                .font(.caption.weight(.medium))
                 .foregroundStyle(tint)
             Text(text)
                 .font(.caption)
@@ -329,5 +323,6 @@ struct MenuBarContent: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
+        .frame(minHeight: Theme.compactRowHeight)
     }
 }

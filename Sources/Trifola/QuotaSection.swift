@@ -27,9 +27,7 @@ struct QuotaSection: View {
                         + Text(source.rawValue).font(.caption.monospaced()))
                         .foregroundStyle(Theme.faint)
                 } else {
-                    Button("Retry", action: onRetry)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                    QuietTapButton("Retry", action: onRetry)
                 }
             }
 
@@ -74,7 +72,7 @@ private struct QuotaWindowRow: View {
     private var fill: Color {
         if window.usedPercent >= 90 { return Theme.red }
         if window.usedPercent >= 75 { return Theme.amber }
-        return Theme.accent
+        return Theme.graphite
     }
 
     private var resetLabel: String {

@@ -29,13 +29,18 @@ struct LiveScreen: View {
     }
 
     var body: some View {
-        Group {
+        ScreenScaffold(
+            title: "Live Now",
+            subtitle: live.isEmpty
+                ? "No transcript has moved in the last 15 minutes"
+                : "\(live.count) active session\(live.count == 1 ? "" : "s") · transcript tails update in place · dollar values are API-rate estimates, not your bill") {
             if live.isEmpty {
                 EmptyState(
                     icon: "moon.stars",
                     title: "The fleet is quiet",
                     detail: "No sessions have been active in the last 15 minutes. Tiles appear here the moment a transcript moves — no refresh needed."
                 )
+                .frame(minHeight: 460)
             } else {
                 board
             }
@@ -52,43 +57,23 @@ struct LiveScreen: View {
     }
 
     private var board: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Text("Live Now")
-                                .font(.title2.weight(.semibold))
-                                .foregroundStyle(Theme.ink)
-                            SeatMark(fill: Theme.green, size: 7)
-                        }
-                        Text("\(live.count) active session\(live.count == 1 ? "" : "s") · tailing transcripts in real time")
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.muted)
-                    }
-                    Spacer()
-                }
-                .padding(.top, 4)
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
+            AttentionStrip()
 
-                AttentionStrip()
+            Divider()
 
-                Divider()
-
-                let columns = [GridItem(.adaptive(minimum: 460), spacing: 16)]
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(live.prefix(8)) { session in
-                        LiveTile(session: session)
-                    }
-                }
-                if live.count > 8 {
-                    Text("+ \(live.count - 8) more active — see Sessions")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.muted)
+            let columns = [GridItem(.adaptive(minimum: 460), spacing: Theme.blockGap)]
+            LazyVGrid(columns: columns, spacing: Theme.blockGap) {
+                ForEach(live.prefix(8)) { session in
+                    LiveTile(session: session)
                 }
             }
-            .screenScaffoldFrame()
+            if live.count > 8 {
+                Text("+ \(live.count - 8) more active — see Sessions")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
         }
-        .scrollIndicators(.never)
     }
 }
 
@@ -103,29 +88,29 @@ private struct LiveTile: View {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
-                        Text(session.displayTitle)
+                        Text("\(session.project) · \(session.displayTitle)")
                             .font(.headline)
                             .foregroundStyle(Theme.ink)
                             .lineLimit(1)
                         TierBadge(tier: session.tier)
                     }
-                    Text("\(session.project) · \(fmtAgo(session.lastActivity)) · \(fmtUSD(session.cost)) session-to-date")
+                    Text("\(fmtAgo(session.lastActivity)) · \(fmtUSD(session.cost)) at public API rates")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                 }
                 Spacer()
                 SessionActions(session: session, compact: true)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.horizontal, Theme.sectionGap)
+            .padding(.vertical, Theme.codePadding)
 
             // CONTEXT-TAX strip (spree #1): every tile on the live board shows
             // what its next message re-sends, warm/cold; the advisor line
             // appears only past the visible 200k threshold (live by definition).
             if session.contextWeight > 0 {
                 ContextTaxGaugeView(gauge: ContextTax.gauge(session), compact: true)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 9)
+                    .padding(.horizontal, Theme.sectionGap)
+                    .padding(.bottom, Theme.liveGaugeBottomInset)
             }
 
             Divider()
@@ -135,7 +120,9 @@ private struct LiveTile: View {
         }
         .background {
             RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+                .fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .contextMenu {

@@ -1,12 +1,13 @@
 import SwiftUI
+import AppKit
 import TrifolaKit
 
-/// Terminal-style live transcript feed. Owns a TranscriptStore, tails the
+/// Live transcript feed. Owns a TranscriptStore, tails the
 /// session's .jsonl via DispatchSource and auto-follows the bottom unless the
 /// user scrolls up (a "jump to live" pill appears).
 ///
-/// Log content is the one place monospaced is allowed — it's content, not
-/// chrome (Console.app precedent). Colors stay monochrome except error red.
+/// Human narration is proportional; only commands, paths and tool output use
+/// monospaced type. Colors stay monochrome except error red.
 struct TranscriptView: View {
     let filePath: String
     var tailBytes: UInt64 = 2_000_000
@@ -34,14 +35,14 @@ struct TranscriptView: View {
             feed
         }
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.5))
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .fill(Theme.cardFill)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
         .task(id: filePath) {
             pinnedToLive = true
             store.open(path: filePath, tailBytes: tailBytes)
@@ -60,18 +61,23 @@ struct TranscriptView: View {
                 Text("Opening").font(.caption).foregroundStyle(Theme.muted)
             case .error(let why):
                 SeatMark(fill: Theme.red, size: 6, active: false)
-                Text(why).font(.caption).foregroundStyle(Theme.red).lineLimit(1)
+                Text(why).font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
             }
             if store.startedMidFile || store.droppedHead {
                 Text("· tail of file")
                     .font(.caption2).foregroundStyle(Theme.faint)
             }
             Spacer()
+            if !filePath.isEmpty {
+                ArtifactPill(icon: "doc.text", name: "Transcript", help: filePath) {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: filePath)])
+                }
+            }
             Text("\(store.events.count) events")
                 .font(.caption2).foregroundStyle(Theme.faint)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, Theme.codePadding)
+        .padding(.vertical, Theme.rhythm)
     }
 
     private var feed: some View {
@@ -83,7 +89,7 @@ struct TranscriptView: View {
                     }
                     Color.clear.frame(height: 1).id("live-bottom")
                 }
-                .padding(10)
+                .padding(Theme.codePadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.never)
@@ -118,7 +124,7 @@ struct TranscriptView: View {
                     }) {
                         Label("Jump to live", systemImage: "arrow.down.to.line")
                     }
-                    .padding(.bottom, 12)
+                    .padding(.bottom, Theme.sectionGap)
                     .motionTransition(edge: .bottom)
                 }
             }
@@ -151,11 +157,11 @@ private struct TranscriptRow: View {
     private var gutter: some View {
         VStack(alignment: .trailing, spacing: 2) {
             Text(roleTag)
-                .font(Self.mono(9, .semibold))
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(roleColor)
             if let ts = event.timestamp {
                 Text(ts.formatted(date: .omitted, time: .standard))
-                    .font(Self.mono(8))
+                    .font(.caption2)
                     .foregroundStyle(Theme.faint)
             }
         }
@@ -189,35 +195,35 @@ private struct TranscriptRow: View {
     private var body_: some View {
         switch event.kind {
         case .userPrompt(let text):
-            Text(text)
-                .font(Self.mono(11, .medium))
-                .foregroundStyle(Theme.ink)
+            Text("“\(text)”")
+                .font(.footnote)
+                .foregroundStyle(Theme.muted)
                 .lineLimit(6)
                 .textSelection(.enabled)
         case .assistantText(let text):
             Text(text)
-                .font(Self.mono(11))
+                .font(.footnote)
                 .foregroundStyle(Theme.ink)
                 .lineLimit(8)
                 .textSelection(.enabled)
         case .thinking(let text):
             Text(text)
-                .font(Self.mono(10.5))
+                .font(.footnote)
                 .italic()
                 .foregroundStyle(Theme.faint)
                 .lineLimit(3)
         case .toolUse(let name, let detail):
             (Text(name).font(Self.mono(11, .semibold)).foregroundStyle(Theme.ink)
              + Text(detail.isEmpty ? "" : "  \(detail)")
-                .font(Self.mono(10.5)).foregroundStyle(Theme.muted))
+                .font(.caption).foregroundStyle(Theme.muted))
                 .lineLimit(3)
                 .textSelection(.enabled)
         case .toolResult(let preview, let isError):
             Text(preview)
-                .font(Self.mono(10.5))
-                .foregroundStyle(isError ? Theme.red : Theme.muted)
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
                 .lineLimit(4)
-                .padding(.leading, 8)
+                .padding(.leading, Theme.intraCell)
                 .overlay(alignment: .leading) {
                     Rectangle()
                         .fill(isError ? Theme.red.opacity(0.5) : Theme.hairline)
@@ -225,7 +231,7 @@ private struct TranscriptRow: View {
                 }
         case .system(_, let text):
             Text(text)
-                .font(Self.mono(10))
+                .font(.caption)
                 .foregroundStyle(Theme.faint)
                 .lineLimit(2)
         case .summary(let text):

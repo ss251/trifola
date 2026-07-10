@@ -21,7 +21,7 @@ enum TerminalLauncher {
             }
             if let ownerPID = target.ownerProcessID,
                let app = NSRunningApplication(processIdentifier: pid_t(ownerPID)),
-               app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) {
+               app.activate(options: [.activateAllWindows]) {
                 return
             }
             fallback()

@@ -1,6 +1,89 @@
 import SwiftUI
 import TrifolaKit
 
+// MARK: - Elevation primitives
+
+/// The only raised content surface. Open tables and prose deliberately do not
+/// use this; instruments, settings groups and compact evidence objects do.
+struct Card<Content: View>: View {
+    var padding: CGFloat = Theme.cardPadding
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .padding(padding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
+            }
+    }
+}
+
+/// Code/config/command ground: quieter than a card and intentionally borderless.
+struct CodeBlockSurface<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .padding(Theme.codePadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.codeFill,
+                        in: RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous))
+    }
+}
+
+/// A destination-shaped inline citation. The artifact name is the invitation;
+/// the action must land on that exact file, screen, terminal, or URL.
+struct ArtifactPill: View {
+    let icon: String
+    let name: String
+    var help: String? = nil
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        TapButton(focusVisual: .capsule, action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon).font(.caption.weight(.medium))
+                Text(name).font(.caption)
+            }
+            .foregroundStyle(Theme.ink)
+            .padding(.horizontal, Theme.intraCell)
+            .padding(.vertical, Theme.micro)
+            .background {
+                Capsule().fill(hovering ? Theme.cardStroke : Theme.cardFill)
+                Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+            }
+        }
+        .onHover { hovering = $0 }
+        .help(help ?? name)
+    }
+}
+
+/// The exact two-slot attention status treatment: Attention chips and attention
+/// Sessions rows. Running/idle never receive this filled shape.
+struct AttentionStatusPill: View {
+    let state: AttentionState
+
+    private var fill: Color { state == .blocked ? Theme.blockedFill : Theme.waitingFill }
+    private var text: Color { state == .blocked ? Theme.blockedText : Theme.waitingText }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(state.color).frame(width: 6, height: 6)
+            Text(state == .blocked ? "Blocked" : "Waiting")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .foregroundStyle(text)
+        .padding(.horizontal, Theme.intraCell)
+        .frame(height: 20)
+        .background(Capsule().fill(fill))
+    }
+}
+
 // MARK: - Section header
 // CodexBar-style: system body weight-medium, primary label. No uppercase, no
 // tracking, no color.
@@ -70,10 +153,13 @@ struct SeatMark: View {
                 ZStack {
                     if let ring, effectiveRingWidth > 0 {
                         Circle().strokeBorder(ring, lineWidth: effectiveRingWidth)
+                            .frame(width: size * (1 - 2 * AppBrand.Geometry.ringInsetRatio),
+                                   height: size * (1 - 2 * AppBrand.Geometry.ringInsetRatio))
                     }
                     if filled {
                         Circle().fill(fill)
-                            .frame(width: size * 0.42, height: size * 0.42)
+                            .frame(width: size * AppBrand.Geometry.needsDotRatio,
+                                   height: size * AppBrand.Geometry.needsDotRatio)
                     }
                 }
                 .frame(width: size, height: size)
@@ -89,6 +175,28 @@ struct SeatMark: View {
             }
         }
         .opacity(active ? 1 : 0.45)
+    }
+}
+
+/// One brand lockup at every distance; only the size and state-ring change.
+struct AppLockup: View {
+    var size: CGFloat = 14
+    var ring: Color = Theme.faint
+    var machine: String = Host.current().localizedName ?? "this Mac"
+
+    var body: some View {
+        HStack(spacing: size >= 48 ? Theme.sectionGap : Theme.intraCell) {
+            SeatMark(fill: Theme.ink, ring: ring, size: size,
+                     ringWidth: max(1, size * AppBrand.Geometry.ringWidthRatio), gapped: true)
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                Text("trifola")
+                    .font(size >= 48 ? .system(size: 28, weight: .semibold) : .footnote.weight(.medium))
+                    .foregroundStyle(Theme.ink)
+                Text(machine)
+                    .font(size >= 48 ? .subheadline : .caption2)
+                    .foregroundStyle(Theme.faint)
+            }
+        }
     }
 }
 
@@ -128,7 +236,7 @@ struct MachineChip: View {
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: symbol)
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(tone)
             if !compact {
                 Text(label)
@@ -136,10 +244,11 @@ struct MachineChip: View {
                     .foregroundStyle(tone)
             }
         }
-        .padding(.horizontal, compact ? 4 : 5)
-        .padding(.vertical, 2)
+        .padding(.horizontal, compact ? Theme.micro : Theme.rowVerticalInset)
+        .padding(.vertical, Theme.micro / 2)
         .background {
-            Capsule().strokeBorder(Theme.hairline, lineWidth: 1)
+            Capsule().fill(Theme.cardFill)
+            Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
         .help(isLocal ? "This Mac" : "Mirrored read-only from \(machineID) over Tailscale")
     }
@@ -156,7 +265,7 @@ struct RemoteStatusLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: status.isOnline ? "desktopcomputer" : "desktopcomputer.trianglebadge.exclamationmark")
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(status.isOnline ? Theme.muted : Theme.faint)
             Text(status.indicator)
                 .font(.caption2)
@@ -187,7 +296,7 @@ struct StatTile: View {
                     .foregroundStyle(Theme.muted)
             }
             Text(value)
-                .font(.title3.weight(.semibold))
+                .font(.system(.title, design: .rounded).weight(.semibold))
                 .foregroundStyle(valueColor)
                 .contentTransition(.numericText())
                 .lineLimit(1)
@@ -209,8 +318,10 @@ struct StatRow<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        HStack(alignment: .top, spacing: Theme.sectionGap) {
-            content()
+        Card {
+            HStack(alignment: .top, spacing: Theme.sectionGap) {
+                content()
+            }
         }
     }
 }
@@ -220,7 +331,7 @@ struct StatRow<Content: View>: View {
 
 struct CapsuleBar: View {
     let fraction: Double        // 0…1
-    var tint: Color = Theme.accent
+    var tint: Color = Theme.graphite
     var height: CGFloat = Theme.barHeight
 
     var body: some View {
@@ -253,7 +364,7 @@ struct ContextBar: View {
                 .foregroundStyle(Theme.muted)
             // One accent, like every other gauge — the ≈$/msg caption carries
             // the warning; a wall of red bars is decoration, not information.
-            CapsuleBar(fraction: fraction, tint: Theme.accent)
+            CapsuleBar(fraction: fraction, tint: Theme.graphite)
                 .frame(width: width)
         }
     }
@@ -286,16 +397,24 @@ struct TierSplitBar: View {
 
 struct BarStrip: View {
     let values: [Double]   // 0…1 normalized
-    var color: Color = Theme.accent
+    var color: Color = Theme.graphite
     var height: CGFloat = 34
+    var currentIndex: Int? = nil
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 2.5) {
-            ForEach(Array(values.enumerated()), id: \.offset) { _, v in
-                Capsule()
-                    .fill(v > 0.02 ? color.opacity(0.85) : Theme.progressTrack)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: max(2, height * v))
+            ForEach(Array(values.enumerated()), id: \.offset) { index, v in
+                ZStack(alignment: .bottom) {
+                    Capsule()
+                        .fill(v > 0.02 ? color.opacity(0.85) : Theme.progressTrack)
+                    if index == currentIndex {
+                        Capsule()
+                            .fill(Theme.accent)
+                            .frame(width: 2)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: max(2, height * v))
             }
         }
         .frame(height: height, alignment: .bottom)
@@ -316,17 +435,23 @@ struct BarStrip: View {
 /// so no glass control backdrop to oscillate. Accessibility still reads it as a
 /// button. An optional keyboard shortcut is carried by a hidden zero-size
 /// `.link`-styled Button (verified immune) so ⌘-shortcuts keep working.
+enum TapFocusVisual { case row, card, capsule, none }
+
 struct TapButton<Label: View>: View {
     var shortcut: KeyboardShortcut? = nil
+    var focusVisual: TapFocusVisual = .row
     let action: () -> Void
     @ViewBuilder let label: () -> Label
     @Environment(\.isEnabled) private var isEnabled
     @GestureState private var isPressed = false
+    @FocusState private var isFocused: Bool
 
     init(shortcut: KeyboardShortcut? = nil,
+         focusVisual: TapFocusVisual = .row,
          action: @escaping () -> Void,
          @ViewBuilder label: @escaping () -> Label) {
         self.shortcut = shortcut
+        self.focusVisual = focusVisual
         self.action = action
         self.label = label
     }
@@ -344,6 +469,23 @@ struct TapButton<Label: View>: View {
                     }
             )
             .focusable()
+            .focused($isFocused)
+            .focusEffectDisabled()
+            .background {
+                if isFocused && isEnabled {
+                    let wash = Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.5)
+                    switch focusVisual {
+                    case .row:
+                        RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous).fill(wash)
+                    case .card:
+                        RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(wash)
+                    case .capsule:
+                        Capsule().fill(wash)
+                    case .none:
+                        Color.clear
+                    }
+                }
+            }
             .onKeyPress(.return) {
                 guard isEnabled else { return .ignored }
                 action()
@@ -370,6 +512,52 @@ extension TapButton where Label == Text {
     }
 }
 
+/// The quiet bordered action used for secondary verbs. It has the visual weight
+/// of a native small bordered button but is built on `TapButton`, so it never
+/// opts back into system glass chrome or a stacked focus ring.
+struct QuietTapButton<Label: View>: View {
+    enum Size { case small, regular }
+
+    var size: Size = .small
+    var shortcut: KeyboardShortcut? = nil
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+    @Environment(\.isEnabled) private var isEnabled
+
+    init(size: Size = .small,
+         shortcut: KeyboardShortcut? = nil,
+         action: @escaping () -> Void,
+         @ViewBuilder label: @escaping () -> Label) {
+        self.size = size
+        self.shortcut = shortcut
+        self.action = action
+        self.label = label
+    }
+
+    var body: some View {
+        TapButton(shortcut: shortcut, focusVisual: .capsule, action: action) {
+            label()
+                .font(size == .small ? .caption.weight(.medium) : .body.weight(.medium))
+                .foregroundStyle(Theme.ink)
+                .padding(.horizontal, size == .small ? Theme.intraCell : Theme.codePadding)
+                .padding(.vertical, size == .small ? Theme.micro : Theme.rhythm)
+                .background {
+                    Capsule().fill(Theme.cardFill)
+                    Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+                }
+        }
+        .opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
+extension QuietTapButton where Label == Text {
+    init(_ title: String, size: Size = .small,
+         shortcut: KeyboardShortcut? = nil,
+         action: @escaping () -> Void) {
+        self.init(size: size, shortcut: shortcut, action: action) { Text(title) }
+    }
+}
+
 /// The `.borderedProminent` replacement: the accent-filled capsule, white
 /// label, hover brightening — drawn with shapes, no Button primitive.
 struct ProminentTapButton<Label: View>: View {
@@ -381,6 +569,7 @@ struct ProminentTapButton<Label: View>: View {
     @ViewBuilder let label: () -> Label
     @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
+    @FocusState private var isFocused: Bool
 
     init(size: Size = .regular, tint: Color = .accentColor,
          shortcut: KeyboardShortcut? = nil,
@@ -400,8 +589,14 @@ struct ProminentTapButton<Label: View>: View {
         case .large: return .body.weight(.semibold)
         }
     }
-    private var hPad: CGFloat { size == .small ? 8 : (size == .large ? 16 : 11) }
-    private var vPad: CGFloat { size == .small ? 3 : (size == .large ? 8 : 5) }
+    private var hPad: CGFloat {
+        size == .small ? Theme.intraCell
+            : (size == .large ? Theme.paneInset : Theme.controlHorizontalInset)
+    }
+    private var vPad: CGFloat {
+        size == .small ? Theme.compactControlVerticalInset
+            : (size == .large ? Theme.intraCell : Theme.rowVerticalInset)
+    }
 
     var body: some View {
         label()
@@ -410,11 +605,19 @@ struct ProminentTapButton<Label: View>: View {
             .padding(.horizontal, hPad)
             .padding(.vertical, vPad)
             .background(Capsule().fill(tint))
-            .brightness(hovering && isEnabled ? 0.06 : 0)
+            .brightness((hovering || isFocused) && isEnabled ? 0.06 : 0)
             .opacity(isEnabled ? 1 : 0.45)
             .contentShape(Capsule())
             .onTapGesture { if isEnabled { action() } }
             .onHover { h in hovering = h }
+            .focusable()
+            .focused($isFocused)
+            .focusEffectDisabled()
+            .onKeyPress(.return) {
+                guard isEnabled else { return .ignored }
+                action()
+                return .handled
+            }
             .background {
                 if let shortcut {
                     Button("", action: action)
@@ -444,6 +647,7 @@ struct TapToggle<L: View>: View {
     var mini = false
     @ViewBuilder let label: () -> L
     @Environment(\.isEnabled) private var isEnabled
+    @FocusState private var isFocused: Bool
 
     init(isOn: Binding<Bool>, mini: Bool = false,
          @ViewBuilder label: @escaping () -> L) {
@@ -464,18 +668,26 @@ struct TapToggle<L: View>: View {
             label()
             ZStack(alignment: isOn ? .trailing : .leading) {
                 Capsule()
-                    .fill(isOn ? Color.accentColor
+                    .fill(isOn ? Theme.graphite
                                : Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
                 Circle()
                     .fill(.white)
-                    .shadow(color: .black.opacity(0.2), radius: 0.5, y: 0.5)
-                    .padding(1.5)
+                    .padding(Theme.toggleKnobInset)
             }
             .frame(width: trackW, height: trackH)
         }
         .opacity(isEnabled ? 1 : 0.5)
         .contentShape(Rectangle())
         .onTapGesture { if isEnabled { flip() } }
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .brightness(isFocused && isEnabled ? 0.06 : 0)
+        .onKeyPress(.return) {
+            guard isEnabled else { return .ignored }
+            flip()
+            return .handled
+        }
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isOn ? "on" : "off")
     }
@@ -494,8 +706,8 @@ extension TapToggle where L == Text {
 }
 
 // MARK: - Filter chip
-// On: system selection color + selection text (CodexBar highlight cascade).
-// Off: hairline capsule, secondary text.
+// Multi-select filters use the quiet selection cascade; a screen may have many
+// active facets, so spending accent on each would recreate a saturation wall.
 
 struct FilterChip: View {
     let label: String
@@ -503,17 +715,18 @@ struct FilterChip: View {
     let action: () -> Void
 
     var body: some View {
-        TapButton(action: action) {
+        TapButton(focusVisual: .capsule, action: action) {
             Text(label)
                 .font(.caption.weight(isOn ? .semibold : .regular))
                 .foregroundStyle(isOn ? Theme.selectionText : Theme.muted)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
+                .padding(.horizontal, Theme.codePadding)
+                .padding(.vertical, Theme.micro)
                 .background {
                     if isOn {
                         Capsule().fill(Theme.selectionBG)
                     } else {
-                        Capsule().strokeBorder(Theme.hairline, lineWidth: 1)
+                        Capsule().fill(Theme.cardFill)
+                        Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
                     }
                 }
         }
@@ -558,7 +771,7 @@ struct HoverRow<Content: View>: View {
 /// native selection-hover feel; no hairline (the hover wash is the boundary).
 struct EvidenceRow<Leading: View, Trailing: View>: View {
     let barFraction: Double            // 0…1 against the table's top value
-    var barTint: Color = Theme.accent
+    var barTint: Color = Theme.graphite
     var navGlyph: String? = nil
     /// Reserve the 14pt nav gutter even when this row has no glyph — sibling rows
     /// carry one and the columns must line up. The gutter stays EMPTY: an em-dash
@@ -578,9 +791,9 @@ struct EvidenceRow<Leading: View, Trailing: View>: View {
                 trailing()
                 if let navGlyph {
                     Image(systemName: navGlyph)
-                        .font(.caption2).foregroundStyle(Theme.faint).frame(width: 14)
+                        .font(.caption2.weight(.medium)).foregroundStyle(Theme.faint).frame(width: Theme.iconGutter)
                 } else if reservesNavGutter {
-                    Color.clear.frame(width: 14, height: 1)
+                    Color.clear.frame(width: Theme.iconGutter, height: 1)
                 }
             }
             .padding(Theme.rowInsets)
@@ -603,9 +816,9 @@ struct EvidenceColumns: View {
             ForEach(Array(columns.enumerated()), id: \.offset) { _, c in
                 Eyebrow(c.title).frame(width: c.width, alignment: c.align)
             }
-            if hasNavGlyph { Color.clear.frame(width: 14) }
+            if hasNavGlyph { Color.clear.frame(width: Theme.iconGutter) }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, Theme.intraCell)
     }
 }
 
@@ -645,8 +858,8 @@ struct IdentityCell: View {
 
     private var captionText: Text {
         if let id {
-            return Text(id).font(.system(.caption2, design: .monospaced)).foregroundStyle(Theme.faint)
-                + Text(" · \(caption)").font(.caption2).foregroundStyle(Theme.faint)
+            return Text(caption).font(.caption2).foregroundStyle(Theme.faint)
+                + Text(" · \(id)").font(.system(.caption2, design: .monospaced)).foregroundStyle(Theme.faint)
         }
         return Text(caption).font(.caption2).foregroundStyle(Theme.faint)
     }
@@ -666,15 +879,70 @@ struct LeanRow: View {
                 .font(.subheadline)
                 .foregroundStyle(Theme.muted)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, Theme.micro / 2)
     }
 }
 
-// MARK: - Callout panel (POLISH C5) — one component, two tones, nothing else
-// The ONLY licensed tinted box: fill tone@6%, border tone@30% 1pt, radius 8. Two
-// tones exhaustively: `.accent` = a candidate fix you can act on; `.amber` = a
-// real warning with evidence. Green "verification ok" is a plain line, not a
-// panel (green already means ok without a swatch behind it).
+/// The single disclosure grammar used for hidden subagents, snoozed attention,
+/// and low-priority audit overflow.
+struct MutedDisclosureRow: View {
+    let label: String
+    let isExpanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        TapButton(action: action) {
+            HStack(spacing: Theme.intraCell) {
+                Text(label)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.faint)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, Theme.micro)
+        }
+        .reorderMotion(value: isExpanded)
+    }
+}
+
+/// Compact disclosure for suppressed attention. Unlike the open disclosure row
+/// used beneath tables, this must remain a findable chip in the attention flow.
+struct MutedDisclosurePill: View {
+    let label: String
+    let isExpanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        TapButton(focusVisual: .capsule, action: action) {
+            HStack(spacing: Theme.intraCell) {
+                Image(systemName: "bell.slash")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.faint)
+                Text(label)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.faint)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+            .padding(.horizontal, Theme.codePadding)
+            .padding(.vertical, Theme.micro)
+            .background {
+                Capsule().fill(Theme.cardFill)
+                Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+            }
+        }
+        .reorderMotion(value: isExpanded)
+    }
+}
+
+// MARK: - Callout panel
+// The container stays neutral. Its contents may spend `tone` on a compact icon
+// or action, but a large wash would turn evidence into a decorative status wall.
 
 struct CalloutPanel<Content: View>: View {
     let tone: Color
@@ -682,13 +950,13 @@ struct CalloutPanel<Content: View>: View {
 
     var body: some View {
         content()
-            .padding(10)
+            .padding(Theme.cardPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .fill(tone.opacity(0.06))
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .strokeBorder(tone.opacity(0.30), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
     }
 }
@@ -758,7 +1026,7 @@ struct EmptyState: View {
                 .frame(maxWidth: maxWidth)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
+        .padding(Theme.gutter)
     }
 }
 
@@ -788,7 +1056,7 @@ struct FlagRow: View {
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(color)
                 .frame(width: 16)
-                .padding(.top, 1)
+                .padding(.top, Theme.hairlineWidth)
             VStack(alignment: .leading, spacing: 2) {
                 Text(flag.title)
                     .font(.subheadline.weight(.medium))
@@ -807,9 +1075,11 @@ struct FlagRow: View {
 // 20pt gutters, headline-scale title, hairline under the header.
 
 enum ScreenScaffoldMetrics {
-    static let topInset: CGFloat = 14
+    static let topInset: CGFloat = 18
     static let bottomInset: CGFloat = 28
-    static let maxWidth: CGFloat = 1240
+    static let maxWidth: CGFloat = 1040
+    static let proseMaxWidth: CGFloat = 720
+    static let headerHeight: CGFloat = 70
 }
 
 struct ScreenScaffold<Content: View, Trailing: View>: View {
@@ -828,7 +1098,8 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Text(title)
-                                .font(.title2.weight(.semibold))
+                                .font(.system(size: 28, weight: .bold))
+                                .tracking(-0.4)
                                 .foregroundStyle(Theme.ink)
                             if let epithet {
                                 Text(epithet)
@@ -843,7 +1114,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
                     Spacer()
                     trailing()
                 }
-                .padding(.top, 4)
+                .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
                 Divider()
                 content()
             }
@@ -859,7 +1130,7 @@ extension View {
             .padding(.bottom, ScreenScaffoldMetrics.bottomInset)
             .padding(.top, ScreenScaffoldMetrics.topInset)
             .frame(maxWidth: ScreenScaffoldMetrics.maxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -878,13 +1149,14 @@ struct Toast: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "checkmark.circle.fill")
+                .font(.footnote.weight(.medium))
                 .foregroundStyle(Theme.green)
             Text(text)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(Theme.ink)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
+        .padding(.horizontal, Theme.sectionGap)
+        .padding(.vertical, Theme.toastVerticalInset)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
         .motionTransition(edge: .bottom)

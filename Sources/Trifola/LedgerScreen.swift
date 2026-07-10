@@ -21,7 +21,7 @@ struct LedgerScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Dreaming Ledger",
-            subtitle: "Each lesson is minted deterministically from the audit — evidence, then the exact copy-able edit you approve. Lessons flow to the clipboard; the app never writes ~/.claude.",
+            subtitle: "Each lesson is built deterministically from audit evidence, then offers an exact copy-able edit you approve. Dollar values are estimates at public API rates, not your bill. Lessons flow to the clipboard; the app never writes ~/.claude.",
             epithet: "findings become fixes",
             trailing: { dreamButton }
         ) {
@@ -38,7 +38,7 @@ struct LedgerScreen: View {
             )
         }
         .overlay(alignment: .top) {
-            if let feedback { Toast(text: feedback).padding(.top, 8) }
+            if let feedback { Toast(text: feedback).padding(.top, Theme.intraCell) }
         }
         .animation(.snappy(duration: 0.25), value: feedback)
         .task {
@@ -219,15 +219,15 @@ struct LessonCard: View {
             CandidateFixBlock(fix: lesson.candidate, onReveal: onReveal)
             actions
         }
-        .padding(14)
+        .padding(Theme.cardPadding)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.28))
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .fill(Theme.cardFill)
             // The applied card's pride is carried by the capsule + the "−2 since —
             // the edit is taking" line — evidence, not chrome. A green border is a
             // colored panel by another name (POLISH C5 / UI_GRIND LDG-3).
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 
@@ -235,9 +235,9 @@ struct LessonCard: View {
         HStack(spacing: 8) {
             Text(lesson.kind.code)
                 .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .foregroundStyle(Theme.accent)
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(Capsule().fill(Theme.accent.opacity(0.12)))
+                .foregroundStyle(Theme.muted)
+                .padding(.horizontal, Theme.rhythm).padding(.vertical, Theme.micro / 2)
+                .background(Capsule().fill(Theme.codeFill))
             Text(lesson.kind.title)
                 .font(.headline).foregroundStyle(Theme.ink)
             StatusPill(status: adj.status)
@@ -265,21 +265,17 @@ struct LessonCard: View {
             // Quiet verbs (POLISH C9 / UI_GRIND LDG-1): the screen's one prominent
             // verb is the header's Dream now — five filled Copy buttons were the
             // screen shouting five times while whispering its name.
-            Button { onCopy(lesson) } label: {
+            QuietTapButton(action: { onCopy(lesson) }) {
                 Label(lesson.candidate.copyLabel, systemImage: "doc.on.doc")
             }
-            .buttonStyle(.bordered).controlSize(.small)
             if let first = lesson.candidate.revealTargets.first {
-                Button { onReveal(first.path) } label: {
+                QuietTapButton(action: { onReveal(first.path) }) {
                     Label("Reveal target", systemImage: "folder")
                 }
-                .buttonStyle(.bordered).controlSize(.small)
             }
             Spacer()
-            Button { onKeep(lesson) } label: { Text("Keep") }
-                .buttonStyle(.bordered).controlSize(.small)
-            Button { onDismiss(lesson) } label: { Text("Dismiss") }
-                .buttonStyle(.bordered).controlSize(.small)
+            QuietTapButton("Keep") { onKeep(lesson) }
+            QuietTapButton("Dismiss") { onDismiss(lesson) }
         }
     }
 }
@@ -291,9 +287,12 @@ private struct StatusPill: View {
     var body: some View {
         if status == .pending { EmptyView() } else {
             Text(text).font(.caption2.weight(.medium))
-                .foregroundStyle(color)
-                .padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Capsule().strokeBorder(color.opacity(0.5), lineWidth: 1))
+                .foregroundStyle(Theme.muted)
+                .padding(.horizontal, Theme.rhythm).padding(.vertical, Theme.hairlineWidth)
+                .background {
+                    Capsule().fill(Theme.cardFill)
+                    Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+                }
         }
     }
     private var text: String {
@@ -302,13 +301,6 @@ private struct StatusPill: View {
         case .dismissed: return "dismissed"
         case .applied: return "applied"
         case .pending: return ""
-        }
-    }
-    private var color: Color {
-        switch status {
-        case .applied: return Theme.green
-        case .kept: return Theme.accent
-        default: return Theme.muted
         }
     }
 }
@@ -371,13 +363,13 @@ private struct CandidateFixBlock: View {
     let onReveal: (String) -> Void
 
     var body: some View {
-        // The candidate fix is a thing you can act on → the accent CalloutPanel
-        // (POLISH C5), the one licensed accent tint.
-        CalloutPanel(tone: Theme.accent) {
+        // Repeated proposal cards stay graphite; the one screen-level primary
+        // action owns the accent budget.
+        CalloutPanel(tone: Theme.graphite) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     Image(systemName: "wrench.and.screwdriver")
-                        .font(.caption).foregroundStyle(Theme.accent)
+                        .font(.caption.weight(.medium)).foregroundStyle(Theme.muted)
                     Text("Candidate fix")
                         .font(.caption.weight(.semibold)).foregroundStyle(Theme.ink)
                     Spacer()
@@ -392,13 +384,11 @@ private struct CandidateFixBlock: View {
                         DiffLine(sign: "-", text: before, color: Theme.red)
                         DiffLine(sign: "+", text: after, color: Theme.green)
                     }
-                    .padding(10)
+                    .padding(Theme.codePadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background {
                         RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                            .fill(Color(nsColor: .textBackgroundColor).opacity(0.5))
-                        RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                            .strokeBorder(Theme.hairline, lineWidth: 1)
+                            .fill(Theme.codeFill)
                     }
                 }
 
@@ -408,35 +398,29 @@ private struct CandidateFixBlock: View {
                     .foregroundStyle(Theme.ink)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(10)
+                    .padding(Theme.codePadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background {
                         RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                            .fill(Color(nsColor: .textBackgroundColor).opacity(0.35))
-                        RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                            .strokeBorder(Theme.hairline, lineWidth: 1)
+                            .fill(Theme.codeFill)
                     }
 
                 // Reveal targets — the app names them; you move them.
                 if !fix.revealTargets.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(fix.revealTargets.prefix(4)) { t in
-                            TapButton(action: { onReveal(t.path) }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "folder").font(.caption2).foregroundStyle(Theme.muted)
-                                    Text(t.label).font(.caption2).foregroundStyle(Theme.ink)
-                                    Text(t.detail).font(.caption2).foregroundStyle(Theme.faint)
-                                    Spacer()
-                                    Image(systemName: "arrow.up.right").font(.system(size: 8)).foregroundStyle(Theme.faint)
+                            HStack(spacing: Theme.intraCell) {
+                                ArtifactPill(icon: "folder", name: t.label, help: t.path) {
+                                    onReveal(t.path)
                                 }
-                                .contentShape(Rectangle())
+                                Text(t.detail).font(.caption2).foregroundStyle(Theme.faint)
                             }
                         }
                     }
                 }
 
                 HStack(spacing: 5) {
-                    Image(systemName: "info.circle").font(.system(size: 9)).foregroundStyle(Theme.faint)
+                    Image(systemName: "info.circle").font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.faint)
                     Text(fix.note)
                         .font(.caption2).foregroundStyle(Theme.faint)
                         .fixedSize(horizontal: false, vertical: true)
@@ -471,7 +455,9 @@ private struct AdjudicatedLedger: View {
         VStack(alignment: .leading, spacing: 8) {
             TapButton(action: { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }) {
                 HStack(spacing: 6) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.medium))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
                     SectionLabel("Adjudicated ledger")
                     Text("\(history.count)").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
@@ -494,7 +480,7 @@ private struct AdjudicatedLedger: View {
                         Text(adj.lesson.detectorVersion)
                             .font(.caption2).foregroundStyle(Theme.faint)
                     }
-                    .padding(.vertical, 3)
+                    .padding(.vertical, Theme.rhythm / 2)
                     .overlay(alignment: .top) { Divider() }
                 }
             }

@@ -176,7 +176,7 @@ public enum MenuBarReducer {
         // The hog flag reuses the alert's own numbers (same cost machinery as
         // cost_today) — evidence with the share in the copy, never a bare nag.
         let hogLine = hog.map {
-            "\($0.project) (\($0.shortID)) is \(fmtPct($0.share)) of \(fmtUSD($0.dayTotal)) today — delegate to cheaper subagents"
+            "\($0.project) · \($0.handle) is \(fmtPct($0.share)) of \(fmtUSD($0.dayTotal)) today — delegate to cheaper subagents"
         }
 
         return MenuBarModel(glyph: glyph(board: board),

@@ -37,12 +37,14 @@ struct ReceiptDisclosure: View {
                 if let storageKey { UserDefaults.standard.set(expanded, forKey: storageKey) }
             }) {
                 HStack(spacing: 4) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.faint)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
                     Text(expanded ? "hide the math" : "show the math")
                         .font(.caption)
                 }
-                .foregroundStyle(Theme.accent)
+                .foregroundStyle(Theme.muted)
             }
             if expanded {
                 ReceiptView(receipt: build())
@@ -51,7 +53,7 @@ struct ReceiptDisclosure: View {
     }
 }
 
-/// The mono receipt: the `plainText` verbatim (what you see is exactly what
+/// The receipt: the `plainText` verbatim (what you see is exactly what
 /// "Copy" puts on the pasteboard), in a hairline container. Calm — the ink is
 /// the only color; the math is the drama.
 struct ReceiptView: View {
@@ -81,16 +83,17 @@ struct ReceiptView: View {
                 }
             }
             Text(receipt.plainText)
-                .font(.system(.caption, design: .monospaced))
+                .font(.caption)
+                .monospacedDigit()
                 .foregroundStyle(Theme.ink)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(10)
+        .padding(Theme.codePadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+                .fill(Theme.codeFill)
         }
     }
 }
@@ -128,12 +131,14 @@ struct ReconcilePanel: View {
                         .foregroundStyle(Theme.faint)
                 }
             }
-            (Text("CodexBar computes the same per-model-day spend independently from the same transcripts (")
-                + Text("~/Library/Caches/CodexBar/cost-usage/claude-v4.json").font(.system(.caption2, design: .monospaced))
-                + Text(", read-only). Green = |Δ| ≤ max($0.01, 0.5%). Today accrues on both sides until each next scan."))
+            Text("CodexBar computes the same per-model-day API-rate estimate independently from the same transcripts. Green = |Δ| ≤ max($0.01, 0.5%). Today accrues on both sides until each next scan.")
                 .font(.caption2)
                 .foregroundStyle(Theme.faint)
                 .fixedSize(horizontal: false, vertical: true)
+            ArtifactPill(icon: "externaldrive", name: "CodexBar cache", help: "Read-only comparison file") {
+                let path = ("~/Library/Caches/CodexBar/cost-usage/claude-v4.json" as NSString).expandingTildeInPath
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            }
 
             switch state {
             case nil:
@@ -143,7 +148,7 @@ struct ReconcilePanel: View {
             case .missing:
                 HStack(spacing: 8) {
                     Image(systemName: "info.circle")
-                        .font(.footnote)
+                        .font(.footnote.weight(.medium))
                         .foregroundStyle(Theme.faint)
                     Text("CodexBar cache not found — is CodexBar installed? Everything here works without it; there is just no second opinion to reconcile against.")
                         .font(.subheadline)
@@ -153,7 +158,7 @@ struct ReconcilePanel: View {
             case .unreadable(let why):
                 HStack(spacing: 8) {
                     Image(systemName: "info.circle")
-                        .font(.footnote)
+                        .font(.footnote.weight(.medium))
                         .foregroundStyle(Theme.faint)
                     Text("CodexBar cache present but unreadable (\(why)) — skipping the reconcile; the app's own numbers are unaffected.")
                         .font(.subheadline)
@@ -194,7 +199,7 @@ struct ReconcilePanel: View {
             HStack(spacing: Theme.sectionGap) {
                 HStack(spacing: 6) {
                     Text(row.day)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.caption)
                         .foregroundStyle(Theme.ink)
                     if isToday {
                         Text("today · accruing")
@@ -216,14 +221,14 @@ struct ReconcilePanel: View {
                 Group {
                     if row.matches {
                         Image(systemName: "checkmark.circle")
-                            .font(.caption)
+                            .font(.caption.weight(.medium))
                             .foregroundStyle(Theme.green)
                     } else {
                         TapButton(action: {
                             expandedDay = expandedDay == row.day ? nil : row.day
                         }) {
                             Image(systemName: expandedDay == row.day ? "chevron.down.circle" : "chevron.right.circle")
-                                .font(.caption)
+                                .font(.caption.weight(.medium))
                                 .foregroundStyle(Theme.muted)
                         }
                         .help("Per-model drill-in")
@@ -238,13 +243,13 @@ struct ReconcilePanel: View {
                     .font(.caption2)
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 8)
-                    .padding(.bottom, 4)
+                    .padding(.leading, Theme.intraCell)
+                    .padding(.bottom, Theme.micro)
             }
             if expandedDay == row.day {
                 modelDrillIn(row)
-                    .padding(.leading, 8)
-                    .padding(.bottom, 6)
+                    .padding(.leading, Theme.intraCell)
+                    .padding(.bottom, Theme.rhythm)
             }
         }
     }

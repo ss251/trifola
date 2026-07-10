@@ -83,10 +83,10 @@ public enum LessonKind: String, Sendable, Codable, CaseIterable {
 
     public var title: String {
         switch self {
-        case .deadSkillArchive: return "Dead skills — archive candidates"
+        case .deadSkillArchive: return "Unused skills — archive candidates"
         case .cacheMissDiscipline: return "Cache-miss discipline"
         case .rightSizing: return "Model right-sizing"
-        case .effortFurnace: return "Effort furnace"
+        case .effortFurnace: return "High-effort default"
         }
     }
 
@@ -309,28 +309,28 @@ public enum LessonMiner {
             let p = pathByName[e.name] ?? ""
             return LessonEvidence(
                 label: e.name,
-                detail: "never explicit-fired",
-                value: "≈\(fmtTokens(e.descriptionTokens)) tok",
+                detail: "never explicitly invoked",
+                value: "≈\(fmtTokens(e.descriptionTokens)) prompt tokens",
                 barFraction: Double(e.descriptionTokens) / Double(maxTax),
                 navPath: p,
                 nav: p.isEmpty ? .none : .reveal)
         }
 
         let listLines = topDead.map {
-            "  \($0.name.padding(toLength: 26, withPad: " ", startingAt: 0)) ≈\(fmtTokens($0.descriptionTokens)) tok"
+            "  \($0.name.padding(toLength: 26, withPad: " ", startingAt: 0)) ≈\(fmtTokens($0.descriptionTokens)) prompt tokens"
         }.joined(separator: "\n")
         let copyText = """
-        Archive candidates — catalog skills never explicit-fired, most expensive first.
+        Archive candidates — catalog skills never explicitly invoked, largest prompt footprint first.
         The app NAMES them; you move the folders (it never edits ~/.claude).
 
         \(listLines)
 
-        Prompt tax reclaimed if archived: ≈\(fmtTokens(ledger.deadPromptTaxTokens)) tok of description \
+        Prompt tokens removed if archived: ≈\(fmtTokens(ledger.deadPromptTaxTokens)) description tokens \
         that rides every one of ~\(ledger.sessionCount) sessions' system prompt.
         """
         let revealTargets = topDead.prefix(8).compactMap { e -> RevealTarget? in
             guard let p = pathByName[e.name], !p.isEmpty else { return nil }
-            return RevealTarget(label: e.name, detail: "≈\(fmtTokens(e.descriptionTokens)) tok tax", path: p)
+            return RevealTarget(label: e.name, detail: "≈\(fmtTokens(e.descriptionTokens)) prompt tokens", path: p)
         }
         let candidate = CandidateFix(
             action: .copyEdit,
@@ -352,7 +352,7 @@ public enum LessonMiner {
             kind: .deadSkillArchive,
             metricValue: Double(ledger.deadCount),
             metricLabel: "\(ledger.deadCount)/\(ledger.catalogCount) skills",
-            why: "\(ledger.deadCount) of \(ledger.catalogCount) catalog skills never explicit-fired, yet their descriptions ride every session's prompt (≈\(fmtTokens(ledger.deadPromptTaxTokens)) tok tax).",
+            why: "\(ledger.deadCount) of \(ledger.catalogCount) catalog skills were never explicitly invoked, yet their descriptions ride every session's prompt (≈\(fmtTokens(ledger.deadPromptTaxTokens)) prompt tokens).",
             evidence: Array(evidence),
             candidate: candidate,
             impact: taxDollars)
@@ -368,7 +368,7 @@ public enum LessonMiner {
         let evidence = leaders.map { f in
             LessonEvidence(
                 label: f.project,
-                detail: "\(f.shortID) · \(fmtPct(f.cacheHitRate)) cached · \(fmtTokens(f.billedInput)) billed",
+                detail: "\(f.handle) · \(fmtPct(f.cacheHitRate)) cached · \(fmtTokens(f.billedInput)) billed input tokens",
                 value: fmtUSD(f.leakDollars),
                 barFraction: f.leakDollars / top,
                 navPath: f.filePath,
@@ -379,8 +379,8 @@ public enum LessonMiner {
             .joined(separator: ", ")
         let copyText = """
         Context-hygiene habit: these sessions re-sent the most context as fresh \
-        input above the warm-cache floor (\(fmtUSD(total)) total — first-touch cache \
-        creation excluded; building cache is not a leak). Before a long idle or a \
+        input above the warm-cache price (\(fmtUSD(total)) at public API rates; \
+        necessary cache setup is excluded). Before a long idle or a \
         task switch, /compact the heavy ones so the next message bills at the ~10% \
         cache-read rate, not fresh input.
 
@@ -399,7 +399,7 @@ public enum LessonMiner {
             kind: .cacheMissDiscipline,
             metricValue: total,
             metricLabel: fmtUSD(total),
-            why: "\(fmtUSD(total)) of input spend was context re-sent as fresh input above the warm-cache floor; a warm cache would bill it at ~10%. First-touch cache creation is excluded — building cache is not a leak.",
+            why: "\(fmtUSD(total)) is the API-rate difference for context re-sent as fresh input above the warm-cache price; it is not your bill. A warm cache costs about 10% of fresh input, and necessary cache setup is excluded.",
             evidence: evidence,
             candidate: candidate,
             impact: total)
@@ -414,14 +414,14 @@ public enum LessonMiner {
         let evidence = cands.map { c in
             LessonEvidence(
                 label: c.project,
-                detail: "\(c.shortID) · \(c.tier.label) · \(c.messageCount) msgs · \(c.fileEdits) edits · 0 agents",
+                detail: "\(c.handle) · \(c.tier.label) · \(c.messageCount) msgs · \(c.fileEdits) edits · 0 agents",
                 value: "≈\(fmtUSD(c.estOverspend))",
                 barFraction: c.estOverspend / top,
                 navPath: c.filePath,
                 nav: c.filePath.isEmpty ? .none : .inspect)
         }
         let list = cands.prefix(3)
-            .map { "\($0.project) (\(fmtUSD($0.cost)) → ≈\(fmtUSD($0.estOverspend)) over)" }
+            .map { "\($0.project) (\(fmtUSD($0.cost)) API estimate; ≈\(fmtUSD($0.estOverspend)) price difference)" }
             .joined(separator: ", ")
         let copyText = """
         Right-sizing review (heuristic, NOT a verdict): these frontier sessions have a \
@@ -431,7 +431,7 @@ public enum LessonMiner {
 
         Candidates: \(list).
 
-        Est. overspend = billed cost minus the same tokens repriced at Sonnet. \
+        Price difference = API-rate cost minus the same tokens repriced at Sonnet. \
         Right-sizing is a per-task judgment — this is evidence to review, not a rule.
         """
         let candidate = CandidateFix(
@@ -444,7 +444,7 @@ public enum LessonMiner {
             kind: .rightSizing,
             metricValue: Double(report.mismatchCount),
             metricLabel: "\(report.mismatchCount) candidates",
-            why: "\(report.mismatchCount) frontier sessions look like cheaper-model work (few turns, no fan-out) — ≈\(fmtUSD(report.totalMismatchOverspend)) est. overspend.",
+            why: "\(report.mismatchCount) frontier sessions look like cheaper-model work (few turns, no fan-out) — ≈\(fmtUSD(report.totalMismatchOverspend)) price difference at API rates.",
             evidence: evidence,
             candidate: candidate,
             impact: report.totalMismatchOverspend)
@@ -457,8 +457,8 @@ public enum LessonMiner {
         let before = "\"effortLevel\": \"\(settings.effortRaw)\""
         let after  = "\"effortLevel\": \"\(EffortLevel.doctrineDefault.rawValue)\""
         let copyText = """
-        Effort furnace: settings.json persists effortLevel = "\(settings.effortRaw)" — above the \
-        High doctrine default ("xhigh/max is a furnace; reserve for the truly hard"). \
+        High-effort default: settings.json persists effortLevel = "\(settings.effortRaw)" — above the \
+        recommended High default. xhigh/max asks the model to spend more compute on every session. \
         Reconsider the persisted default. The app never writes settings — apply via /config \
         or edit settings.json yourself.
 
@@ -467,17 +467,17 @@ public enum LessonMiner {
         """
         let candidate = CandidateFix(
             action: .copySettings,
-            summary: "Lower the persisted effort default from a furnace level to High — applied by you via /config.",
+            summary: "Lower the persisted effort default to High so routine sessions do not request extra compute.",
             copyText: copyText,
             copyLabel: "Copy settings",
             beforeText: before,
             afterText: after,
-            note: "The app never writes settings.json — apply this via /config. A furnace default burns tokens on work that didn't need it.")
+            note: "The app never writes settings.json — apply this via /config. xhigh/max requests extra compute on every session.")
         return Lesson(
             kind: .effortFurnace,
             metricValue: 1,
             metricLabel: settings.effort.label,
-            why: "settings.json persists effortLevel = \(settings.effortRaw) — above the High doctrine default; every session pays the furnace by default.",
+            why: "settings.json persists effortLevel = \(settings.effortRaw), above the recommended High default, so every session requests extra compute.",
             evidence: [LessonEvidence(
                 label: "~/.claude/settings.json",
                 detail: "persisted default · effortLevel = \(settings.effortRaw)",

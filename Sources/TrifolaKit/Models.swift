@@ -244,8 +244,12 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     /// overlay) or the transcript's ai-title, nil when none exists. Rows lead
     /// with it; the project directory becomes the subtitle.
     public let name: String?
-    /// Row title per the display contract: session name, else the short id.
-    public var displayTitle: String { name ?? String(id.prefix(8)) }
+    /// Cached human fallback derived from transcript evidence: ai-title,
+    /// summary record, or the first meaningful user prompt. Never a UUID.
+    public let handle: String
+    /// Row title per the display contract: explicit/resolved name, else the
+    /// transcript-derived human handle. `shortID` remains transport-only.
+    public var displayTitle: String { name ?? handle }
     /// Usage attributed to the model that actually billed it, per message —
     /// NOT the whole session lumped onto whichever model happened to answer
     /// last. A long-running session that starts on Custom and gets bumped to
@@ -344,7 +348,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     public init(id: String, project: String, cwd: String, model: String?,
                 lastActivity: Date?, messageCount: Int, usage: SessionUsage,
                 contextWeight: Int, filePath: String = "", lastUserMessage: String? = nil,
-                name: String? = nil,
+                name: String? = nil, handle: String? = nil,
                 usageByTier: [ModelTier: SessionUsage] = [:],
                 usageByDay: [String: [ModelTier: SessionUsage]] = [:],
                 usageByModel: [String: SessionUsage] = [:],
@@ -371,6 +375,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         self.filePath = filePath
         self.lastUserMessage = lastUserMessage
         self.name = name
+        self.handle = handle ?? SessionHandles.derive(
+            autoName: name, summary: nil, firstUserMessage: lastUserMessage)
         self.usageByTier = usageByTier
         self.usageByDay = usageByDay
         self.usageByModel = usageByModel
@@ -406,6 +412,9 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         filePath = try c.decodeIfPresent(String.self, forKey: .filePath) ?? ""
         lastUserMessage = try c.decodeIfPresent(String.self, forKey: .lastUserMessage)
         name = try c.decodeIfPresent(String.self, forKey: .name)
+        handle = try c.decodeIfPresent(String.self, forKey: .handle)
+            ?? SessionHandles.derive(autoName: name, summary: nil,
+                                     firstUserMessage: lastUserMessage)
         usageByTier = try c.decodeIfPresent([ModelTier: SessionUsage].self, forKey: .usageByTier) ?? [:]
         usageByDay = try c.decodeIfPresent([String: [ModelTier: SessionUsage]].self, forKey: .usageByDay) ?? [:]
         usageByModel = try c.decodeIfPresent([String: SessionUsage].self, forKey: .usageByModel) ?? [:]
@@ -434,7 +443,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         SessionSummary(id: id, project: project, cwd: cwd, model: model,
                        lastActivity: lastActivity, messageCount: messageCount, usage: usage,
                        contextWeight: contextWeight, filePath: filePath,
-                       lastUserMessage: lastUserMessage, name: name, usageByTier: usageByTier,
+                       lastUserMessage: lastUserMessage, name: name, handle: handle,
+                       usageByTier: usageByTier,
                        usageByDay: usageByDay,
                        usageByModel: usageByModel, usageByModelDay: usageByModelDay,
                        messagesByModelDay: messagesByModelDay, rawUsageBlocks: rawUsageBlocks,
@@ -502,7 +512,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         return SessionSummary(id: id, project: project, cwd: cwd, model: model,
                               lastActivity: lastActivity, messageCount: messageCount, usage: usage,
                               contextWeight: contextWeight, filePath: filePath,
-                              lastUserMessage: lastUserMessage, name: name, usageByTier: usageByTier,
+                              lastUserMessage: lastUserMessage, name: name, handle: handle,
+                              usageByTier: usageByTier,
                               usageByDay: usageByDay,
                               usageByModel: usageByModel, usageByModelDay: usageByModelDay,
                               messagesByModelDay: messagesByModelDay, rawUsageBlocks: rawUsageBlocks,

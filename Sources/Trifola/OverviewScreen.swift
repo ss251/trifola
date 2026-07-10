@@ -9,6 +9,13 @@ struct OverviewScreen: View {
     private var store: SessionStore { services.sessions }
 
     private var subtitle: String {
+        let progress = store.scanProgress
+        if progress.isInProgress {
+            if progress.totalEstimate > 0 {
+                return "Scanning — \(fmtGrouped(progress.scanned)) of ~\(fmtGrouped(progress.totalEstimate)) transcripts…"
+            }
+            return "Scanning transcripts…"
+        }
         if isLocalCorpusMissing && store.sessions.isEmpty {
             return "Local, read-only session intelligence · refreshed \(fmtAgo(store.lastRefresh))"
         }
@@ -18,7 +25,7 @@ struct OverviewScreen: View {
         let base = "\(store.sessions.count) sessions across \(projects) projects"
         let fleet = services.isCrossMachine && store.machineCount > 1
             ? "\(store.machineCount) machines · " : ""
-        return "\(fleet)\(base) · refreshed \(fmtAgo(store.lastRefresh))"
+        return "\(fleet)\(base) · refreshed \(fmtAgo(store.lastRefresh)) · dollar values are API-rate estimates, not your bill"
     }
 
     private var isLocalCorpusMissing: Bool {
@@ -30,19 +37,16 @@ struct OverviewScreen: View {
             title: "Overview",
             subtitle: subtitle
         ) {
-            Button {
+            QuietTapButton(shortcut: KeyboardShortcut("r", modifiers: .command), action: {
                 services.refreshAll()
-            } label: {
+            }) {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .keyboardShortcut("r", modifiers: .command)
         } content: {
             let governor = store.burnGovernor(now: services.now)
             verdictLine(governor: governor)
             if isLocalCorpusMissing {
-                CalloutPanel(tone: Theme.accent) {
+                CalloutPanel(tone: Theme.graphite) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Waiting on your first Claude Code session")
                             .font(.subheadline.weight(.medium))
@@ -54,12 +58,21 @@ struct OverviewScreen: View {
                     }
                 }
             }
-            AttentionStrip()
-            if services.isCrossMachine {
-                FleetMachinesSection()
-                Divider()
-            }
-            statRow
+            if store.scanProgress.isInProgress {
+                statRow.opacity(0.52)
+                HStack(spacing: Theme.intraCell) {
+                    ProgressView().controlSize(.small)
+                    Text("Still counting. Aggregate tables appear only after the scan settles, so a partial total never presents as final.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.muted)
+                }
+            } else {
+                AttentionStrip()
+                if services.isCrossMachine {
+                    FleetMachinesSection()
+                    Divider()
+                }
+                statRow
             // "Show the math" (W3): the hero's whole-corpus receipt — per-model
             // legs → Σ = the tile's number, same code path (built on expand).
             ReceiptDisclosure(storageKey: "provenance.overview-hero") {
@@ -113,44 +126,66 @@ struct OverviewScreen: View {
                 .frame(maxWidth: .infinity)
             }
             Divider()
-            RoutingSection(audit: services.audit)
+                RoutingSection(audit: services.audit)
+            }
         }
     }
 
     private func verdictLine(governor: BurnGovernor) -> some View {
         let board = services.alertingAttentionBoard(now: services.now)
-        let sentence = VerdictSentenceBuilder.sentence(
-            board: board,
-            todayCost: governor.today.cost,
-            sevenCompleteDayMean: governor.dailyRunRate)
+        let progress = store.scanProgress
+        let sentence: String
+        if progress.isInProgress {
+            sentence = progress.totalEstimate > 0
+                ? "Scanning — \(fmtGrouped(progress.scanned)) of ~\(fmtGrouped(progress.totalEstimate)) transcripts…"
+                : "Scanning transcripts…"
+        } else {
+            sentence = VerdictSentenceBuilder.sentence(
+                board: board,
+                todayCost: governor.today.cost,
+                sevenCompleteDayMean: governor.dailyRunRate)
+        }
         let parts = sentence.components(separatedBy: " · ")
         let first = parts.first ?? sentence
         let rest = parts.dropFirst().joined(separator: " · ")
-        return HStack(spacing: 0) {
-            Text(first)
-                .foregroundStyle(board.needsAttention.isEmpty ? Theme.muted : Theme.ink)
-            if !rest.isEmpty {
-                Text(" · \(rest)").foregroundStyle(Theme.muted)
+        return VStack(alignment: .leading, spacing: Theme.intraCell) {
+            HStack(spacing: 0) {
+                Text(first)
+                    .foregroundStyle(Theme.ink)
+                if !rest.isEmpty {
+                    Text(" · \(rest)").foregroundStyle(Theme.muted)
+                }
+            }
+            .font(.title3)
+            .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: Theme.intraCell) {
+                ArtifactPill(icon: "square.grid.3x3", name: "Fleet Board") {
+                    services.section = .fleet
+                }
+                ArtifactPill(icon: "doc.text.magnifyingglass", name: "Audit evidence") {
+                    services.section = .audit
+                }
             }
         }
-        .font(.headline)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: ScreenScaffoldMetrics.proseMaxWidth, alignment: .leading)
     }
 
     private var statRow: some View {
         StatRow {
             StatTile(label: "Usage at API rates",
                      value: fmtUSD(store.totalCost),
-                     sub: "at API rates")
+                     sub: store.scanProgress.isInProgress ? "still counting" : "estimate from recorded usage — not your bill")
             Divider()
             StatTile(label: "Active now",
                      value: "\(store.activeSessions.count)",
-                     sub: store.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m",
+                     sub: store.scanProgress.isInProgress
+                        ? "still counting"
+                        : (store.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m"),
                      live: !store.activeSessions.isEmpty)
             Divider()
             StatTile(label: "Cache savings — net of write premiums",
                      value: fmtUSD(store.totalCacheSavings),
-                     sub: "vs. uncached input at API rates")
+                     sub: store.scanProgress.isInProgress ? "still counting" : "vs. uncached input at API rates")
         }
     }
 }
@@ -164,7 +199,7 @@ private struct TierSpendSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             HStack(alignment: .firstTextBaseline) {
-                SectionLabel("Spend by model tier")
+                SectionLabel("API-rate estimate by model tier")
                 Spacer()
                 Text(fmtUSD(total))
                     .font(.subheadline)
@@ -178,7 +213,7 @@ private struct TierSpendSection: View {
                         Text(st.tier.label)
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink)
-                        Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tok (excl. cache reads)")
+                        Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tokens excluding cache reads")
                             .font(.footnote)
                             .foregroundStyle(Theme.faint)
                         Spacer()
@@ -223,7 +258,7 @@ private struct ActivitySection: View {
                     .font(.caption2)
                     .foregroundStyle(Theme.faint)
             }
-            BarStrip(values: buckets, color: Theme.muted, height: 40)
+            BarStrip(values: buckets, color: Theme.graphite, height: 40, currentIndex: 23)
             HStack {
                 Text("-24h").font(.caption2).foregroundStyle(Theme.faint)
                 Spacer()
@@ -244,9 +279,9 @@ private struct LiveNowSection: View {
                 SectionLabel("Live now")
                 if !services.sessions.activeSessions.isEmpty { SeatMark(size: 6) }
                 Spacer()
-                TapButton("Open board", action: { services.section = .live })
-                    .font(.footnote)
-                    .foregroundStyle(Theme.accent)
+                ArtifactPill(icon: "dot.radiowaves.left.and.right", name: "Live board") {
+                    services.section = .live
+                }
             }
             // Deterministic tiebreaker + the one reorder motion (W6 wave 4).
             let live = Array(services.sessions.activeSessions
@@ -267,7 +302,7 @@ private struct LiveNowSection: View {
                                 SeatMark(fill: Theme.green, size: 6)
                                 VStack(alignment: .leading, spacing: 1) {
                                     HStack(spacing: 6) {
-                                        Text(s.displayTitle)
+                                        Text("\(s.project) · \(s.displayTitle)")
                                             .font(.subheadline.weight(.medium))
                                             .foregroundStyle(Theme.ink)
                                             .lineLimit(1)
@@ -284,13 +319,13 @@ private struct LiveNowSection: View {
                                     Text(fmtUSD(s.cost))
                                         .font(.subheadline)
                                         .foregroundStyle(Theme.muted)
-                                    Text("session-to-date")
+                                    Text("API-rate estimate")
                                         .font(.caption2)
                                         .foregroundStyle(Theme.faint)
                                 }
                             }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 5)
+                            .padding(.horizontal, Theme.rhythm)
+                            .padding(.vertical, Theme.rowVerticalInset)
                         }
                     }
                 }
@@ -335,22 +370,22 @@ private struct ContextOffendersSection: View {
                         } content: {
                             HStack(spacing: 8) {
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(s.displayTitle)
+                                    Text("\(s.project) · \(s.displayTitle) · \(fmtAgo(s.lastActivity))")
                                         .font(.subheadline)
                                         .foregroundStyle(Theme.ink)
                                         .lineLimit(1)
                                     // Warm-cache estimate weighted by the session's observed
                                     // hit rate — NOT the flat fresh-input worst case, which
                                     // overstated warm sessions by up to 10×.
-                                    Text("≈\(fmtUSD(s.costPerMessage))/msg · \(fmtPct(s.usage.cacheHitRate)) cached")
+                                    Text("≈\(fmtUSD(s.costPerMessage))/message at API rates · \(fmtPct(s.usage.cacheHitRate)) cached")
                                         .font(.caption)
                                         .foregroundStyle(Theme.muted)
                                 }
                                 Spacer()
                                 ContextBar(weight: s.contextWeight)
                             }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 5)
+                            .padding(.horizontal, Theme.rhythm)
+                            .padding(.vertical, Theme.rowVerticalInset)
                         }
                     }
                 }
@@ -377,7 +412,7 @@ struct FleetMachinesSection: View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 SectionLabel("Fleet")
-                Text("\(machineCount) machine\(machineCount == 1 ? "" : "s") · \(totalSessions) sessions · \(fmtUSD(totalCost)) today")
+                Text("\(machineCount) machine\(machineCount == 1 ? "" : "s") · \(totalSessions) sessions · \(fmtUSD(totalCost)) API-rate estimate today")
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
                 Spacer()
@@ -400,7 +435,7 @@ struct FleetMachinesSection: View {
                                 .foregroundStyle(Theme.muted)
                         }
                         Spacer()
-                        Text("\(r.sessionCount) sessions · \(fmtTokens(r.tokens)) tok")
+                        Text("\(r.sessionCount) sessions · \(fmtTokens(r.tokens)) tokens")
                             .font(.caption)
                             .foregroundStyle(Theme.faint)
                         Text(fmtUSD(r.cost))
@@ -416,7 +451,7 @@ struct FleetMachinesSection: View {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(offline) { RemoteStatusLine(status: $0) }
                 }
-                .padding(.top, 2)
+                .padding(.top, Theme.micro / 2)
             }
         }
     }

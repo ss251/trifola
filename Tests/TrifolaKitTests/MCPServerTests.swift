@@ -206,6 +206,7 @@ struct MCPToolTests {
         #expect(json?["live"] as? Bool == true)
         #expect(json?["message_count"] as? Int == 7)
         #expect(json?["assistant_turns"] as? Int == 12)
+        #expect(json?["handle"] as? String == s.displayTitle)
         let total = json?["cost_total_usd"] as? Double ?? -1
         #expect(abs(total - s.cost) < 0.001)           // same cost machinery
         #expect((json?["transcript_path"] as? String)?.hasSuffix(".jsonl") == true)

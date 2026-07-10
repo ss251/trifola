@@ -63,8 +63,8 @@ func formatSnoozeDuration(_ minutes: Int) -> String {
 
 struct SuppressionMark: View {
     var body: some View {
-        Image(systemName: "bell.slash.fill")
-            .font(.caption2)
+        Image(systemName: "bell.slash")
+            .font(.caption2.weight(.medium))
             .foregroundStyle(Theme.faint)
             .help("Snoozed or muted — still visible, excluded from alerts")
     }

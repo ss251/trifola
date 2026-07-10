@@ -130,15 +130,65 @@ struct SessionNameTests {
         var acc = SessionAccumulator(defaultID: "fb")
         let line = #"{"type":"ai-title","aiTitle":"Build project with Ghost","sessionId":"abc"}"#
         acc.ingest(Data((line + "\n").utf8))
-        #expect(acc.summary(filePath: "").name == "Build project with Ghost")
+        let session = acc.summary(filePath: "")
+        #expect(session.name == "Build project with Ghost")
+        #expect(session.handle == "Build project with Ghost")
+        #expect(session.displayTitle == "Build project with Ghost")
+    }
+
+    @Test func summaryRecordOutranksFirstUserMessage() {
+        let user = #"{"type":"user","message":{"content":"debug the original parser"}}"#
+        let summary = #"{"type":"summary","summary":"Repair transcript indexing"}"#
+        var acc = SessionAccumulator(defaultID: "fb")
+        acc.ingest(Data((user + "\n" + summary + "\n").utf8))
+        #expect(acc.summary(filePath: "").handle == "Repair transcript indexing")
+    }
+
+    @Test func firstMeaningfulUserMessageBecomesCleanHandleWithoutSummary() {
+        let first = #"{"type":"user","message":{"content":"fix /Users/dev/Developer/trifola/Sources/Trifola/SessionsScreen.swift and polish the selection state"}}"#
+        let later = #"{"type":"user","message":{"content":"ship the report"}}"#
+        var acc = SessionAccumulator(defaultID: "fb")
+        acc.ingest(Data((first + "\n" + later + "\n").utf8))
+        let session = acc.summary(filePath: "")
+        #expect(session.handle == "Fix SessionsScreen.swift and polish the selection state")
+        #expect(session.handle.count <= SessionHandles.maxLength)
+        let clipped = SessionHandles.fromFirstUserMessage(
+            "explain " + String(repeating: "this deliberately long intent ", count: 5))
+        #expect((clipped?.count ?? 0) <= SessionHandles.maxLength)
+        #expect(clipped?.hasSuffix("…") == true)
+        // Transport matching still uses the MOST RECENT real prompt.
+        #expect(session.lastUserMessage == "ship the report")
+    }
+
+    @Test func commandOnlyFirstMessageIsSkippedForHandle() {
+        let command = #"{"type":"user","message":{"content":"<command-name>/model</command-name><command-args>opus</command-args>"}}"#
+        let intent = #"{"type":"user","message":{"content":"repair the sessions list"}}"#
+        var acc = SessionAccumulator(defaultID: "fb")
+        acc.ingest(Data((command + "\n" + intent + "\n").utf8))
+        #expect(acc.summary(filePath: "").handle == "Repair the sessions list")
+    }
+
+    @Test func emptySessionGetsStableNonUUIDHandle() {
+        var acc = SessionAccumulator(defaultID: "0ed7bc81-ab9b-4260-8079-f37099fa9944")
+        acc.ingest(Data(#"{"type":"system","content":"boot"}"#.utf8))
+        let session = acc.summary(filePath: "")
+        #expect(session.handle == SessionHandles.untitled)
+        #expect(session.displayTitle == "Untitled session")
+        #expect(session.displayTitle != session.shortID)
     }
 
     @Test func liveRegistryParsesNamePerSession() {
         let file = #"{"pid":40029,"sessionId":"0ed7bc81-x","name":"ghost-salvage","status":"busy"}"#
         let noName = #"{"pid":41,"sessionId":"dead-x","status":"idle"}"#
-        let names = SessionNames.parseLiveRegistry([Data(file.utf8), Data(noName.utf8)])
+        let longName = String(repeating: "long human session name ", count: 5)
+        let longData = try! JSONSerialization.data(withJSONObject: [
+            "pid": 42, "sessionId": "long-x", "name": longName, "status": "busy",
+        ])
+        let names = SessionNames.parseLiveRegistry([Data(file.utf8), Data(noName.utf8), longData])
         #expect(names["0ed7bc81-x"] == "ghost-salvage")
         #expect(names["dead-x"] == nil)
+        #expect((names["long-x"]?.count ?? .max) <= SessionHandles.maxLength)
+        #expect(names["long-x"]?.hasSuffix("…") == true)
     }
 
     @Test func historyRenamesLastWins() {
@@ -153,15 +203,29 @@ struct SessionNameTests {
         #expect(names["s2"] == "other")
     }
 
-    @Test func displayTitleIsNameElseShortID() {
+    @Test func renameHistoryNormalizesWhitespaceAndCapsDisplayNames() {
+        let raw = String(repeating: "very long renamed session ", count: 5)
+        let line = #"{"display":"/rename   \#(raw)  ","sessionId":"s-long"}"#
+        let names = SessionNames.parseRenames(Data(line.utf8))
+        #expect((names["s-long"]?.count ?? .max) <= SessionHandles.maxLength)
+        #expect(names["s-long"]?.hasSuffix("…") == true)
+        #expect(names["s-long"]?.contains("  ") == false)
+    }
+
+    @Test func displayTitleIsNameElseHumanHandle() {
         let named = SessionSummary(id: "0ed7bc81-ab9b-4260-8079-f37099fa9944", project: "dev",
                                    cwd: "/Users/dev/home", model: nil, lastActivity: nil, messageCount: 0,
-                                   usage: SessionUsage(), contextWeight: 0, name: "ghost-salvage")
+                                   usage: SessionUsage(), contextWeight: 0,
+                                   name: "ghost-salvage", handle: "Fallback handle")
         #expect(named.displayTitle == "ghost-salvage")
         let unnamed = SessionSummary(id: "0ed7bc81-ab9b-4260-8079-f37099fa9944", project: "dev",
                                      cwd: "/Users/dev/home", model: nil, lastActivity: nil, messageCount: 0,
-                                     usage: SessionUsage(), contextWeight: 0)
-        #expect(unnamed.displayTitle == "0ed7bc81")
+                                     usage: SessionUsage(), contextWeight: 0,
+                                     handle: "Repair login flow")
+        #expect(unnamed.displayTitle == "Repair login flow")
+        #expect(unnamed.shortID == "0ed7bc81")
+        #expect(unnamed.taggedWith("workstation").handle == "Repair login flow")
+        #expect(unnamed.computingCostBundle().handle == "Repair login flow")
     }
 
     @Test func overlayPrefersResolverOverAiTitle() {
@@ -170,6 +234,8 @@ struct SessionNameTests {
                                   name: "auto title")
         let out = SessionStore.applyNames([base], names: ["s1": "user-name"])
         #expect(out.first?.name == "user-name")
+        #expect(out.first?.handle == base.handle)
+        #expect(out.first?.displayTitle == "user-name")
         let untouched = SessionStore.applyNames([base], names: [:])
         #expect(untouched.first?.name == "auto title")
     }

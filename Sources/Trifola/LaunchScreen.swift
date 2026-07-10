@@ -84,7 +84,7 @@ struct LaunchScreen: View {
             }
         }
         .overlay(alignment: .top) {
-            if let feedback { Toast(text: feedback).padding(.top, 8) }
+            if let feedback { Toast(text: feedback).padding(.top, Theme.intraCell) }
         }
         .animation(.snappy(duration: 0.25), value: feedback)
         .task { await services.skills.refreshIfStale() }
@@ -103,10 +103,9 @@ struct LaunchScreen: View {
 
     private var headerActions: some View {
         HStack(spacing: 8) {
-            Button {
+            QuietTapButton(action: {
                 draft = Recipe.blank(); editingID = nil
-            } label: { Label("New", systemImage: "plus") }
-                .buttonStyle(.bordered).controlSize(.small)
+            }) { Label("New", systemImage: "plus") }
         }
     }
 
@@ -114,6 +113,7 @@ struct LaunchScreen: View {
 
     private var builder: some View {
         VStack(alignment: .leading, spacing: Theme.gutter) {
+            AppLockup(size: 64, ring: Theme.green)
             nameAndDir
             Divider()
             AgentsEditor(agents: $draft.agents)
@@ -137,8 +137,7 @@ struct LaunchScreen: View {
                 HStack(spacing: 6) {
                     TextField("~/Developer/project", text: $draft.cwd)
                         .textFieldStyle(.plain).font(.subheadline).foregroundStyle(Theme.ink)
-                    Button("Choose…") { chooseDir { draft.cwd = $0 } }
-                        .buttonStyle(.bordered).controlSize(.small)
+                    QuietTapButton("Choose…") { chooseDir { draft.cwd = $0 } }
                 }
             }
             DirListEditor(title: "Extra CLAUDE.md dirs (--add-dir)", dirs: $draft.addDirs)
@@ -156,9 +155,14 @@ struct LaunchScreen: View {
                     }
                     .labelsHidden().pickerStyle(.segmented).frame(width: 320)
                     if draft.effort.isFurnace {
-                        Label("xhigh/max is a furnace — reserve for the truly hard.",
-                              systemImage: "flame")
-                            .font(.caption2).foregroundStyle(Theme.amber)
+                        HStack(spacing: Theme.rhythm) {
+                            Image(systemName: "flame")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(Theme.amber)
+                            Text("xhigh/max asks the model to spend more compute; reserve it for unusually hard work.")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.muted)
+                        }
                     }
                 }
                 VStack(alignment: .leading, spacing: 5) {
@@ -168,8 +172,14 @@ struct LaunchScreen: View {
                     }
                     .labelsHidden().frame(width: 190)
                     if draft.permissionMode.isLoose {
-                        Label("Skips prompts — sandbox use.", systemImage: "exclamationmark.triangle")
-                            .font(.caption2).foregroundStyle(Theme.amber)
+                        HStack(spacing: Theme.rhythm) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(Theme.amber)
+                            Text("Skips permission prompts — use only in a sandbox.")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.muted)
+                        }
                     }
                 }
                 TapToggle(isOn: $draft.background, mini: true) {
@@ -210,13 +220,12 @@ struct LaunchScreen: View {
         VStack(alignment: .leading, spacing: 8) {
             LaunchVerb(enabled: !draft.cwd.isEmpty, action: launch)
             HStack(spacing: 8) {
-                Button {
+                QuietTapButton(action: {
                     save()
-                } label: {
+                }) {
                     Label(editingID == nil ? "Save recipe" : "Update recipe", systemImage: "square.and.arrow.down")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered).controlSize(.small)
                 .disabled(draft.name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             Text("The composed command is copied to your clipboard — paste it into any terminal to start the session. Skills are a prompt hint — they resolve at runtime via /skill-name.")
@@ -323,21 +332,23 @@ struct CommandPreview: View {
             }
             // The recipe's own caution (W5): shown wherever the command is.
             if let w = recipe.warning, !w.isEmpty {
-                Label(w, systemImage: "flame")
-                    .font(.caption2).foregroundStyle(Theme.amber)
+                HStack(spacing: Theme.rhythm) {
+                    Image(systemName: "flame")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.amber)
+                    Text(w).font(.caption2).foregroundStyle(Theme.muted)
+                }
             }
             Text(command.shellCommand)
                 .font(.system(.footnote, design: .monospaced))
                 .foregroundStyle(Theme.ink)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(10)
+                .padding(Theme.codePadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background {
-                    RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor).opacity(0.5))
-                    RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                        .fill(Theme.codeFill)
                 }
             if !command.systemPromptText.isEmpty {
                 DisclosureRow(label: "Skill hint (--append-system-prompt-file)",
@@ -355,7 +366,9 @@ private struct DisclosureRow: View {
         VStack(alignment: .leading, spacing: 4) {
             TapButton(action: { open.toggle() }) {
                 HStack(spacing: 4) {
-                    Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption2)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.medium))
+                        .rotationEffect(.degrees(open ? 90 : 0))
                     Text(label).font(.caption2)
                 }
                 .foregroundStyle(Theme.muted)
@@ -421,15 +434,17 @@ struct RecipeCardView: View {
                 }
             }
         }
-        .padding(10)
+        .padding(Theme.cardPadding)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 
     private func cardIcon(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
-        TapButton(action: action) { Image(systemName: symbol).font(.caption) }
+        TapButton(action: action) { Image(systemName: symbol).font(.caption.weight(.medium)) }
             .foregroundStyle(Theme.muted).frame(width: 20)
             .help(help)
     }
@@ -441,12 +456,15 @@ private struct MetaChip: View {
     var tint: Color = Theme.muted
     var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: icon).font(.system(size: 9))
+            Image(systemName: icon).font(.system(size: 9, weight: .medium))
             Text(text).font(.caption2)
         }
         .foregroundStyle(tint)
-        .padding(.horizontal, 6).padding(.vertical, 2)
-        .background(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+        .padding(.horizontal, Theme.rhythm).padding(.vertical, Theme.micro / 2)
+        .background {
+            Capsule().fill(Theme.cardFill)
+            Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+        }
     }
 }
 
@@ -462,10 +480,12 @@ private struct LabeledField<Content: View>: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.caption).foregroundStyle(Theme.muted)
             content()
-                .padding(.horizontal, 8).padding(.vertical, 6)
+                .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.rhythm)
                 .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                        .fill(Theme.codeFill)
+                    RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                        .strokeBorder(Theme.cardStroke, lineWidth: 1)
                 }
         }
     }
@@ -479,13 +499,12 @@ private struct PathField: View {
         HStack(spacing: 6) {
             TextField(placeholder, text: $path)
                 .textFieldStyle(.plain).font(.subheadline).foregroundStyle(Theme.ink)
-            Button("Choose…") {
+            QuietTapButton("Choose…") {
                 let panel = NSOpenPanel()
                 panel.canChooseFiles = chooseFile
                 panel.canChooseDirectories = !chooseFile
                 if panel.runModal() == .OK, let url = panel.url { path = url.path }
             }
-            .buttonStyle(.bordered).controlSize(.small)
         }
     }
 }
@@ -502,11 +521,14 @@ private struct DirListEditor: View {
                     ForEach(Array(dirs.enumerated()), id: \.offset) { i, d in
                         HStack(spacing: 4) {
                             Text((d as NSString).lastPathComponent).font(.caption2).foregroundStyle(Theme.muted)
-                            TapButton(action: { dirs.remove(at: i) }) { Image(systemName: "xmark").font(.system(size: 8)) }
+                            TapButton(action: { dirs.remove(at: i) }) { Image(systemName: "xmark").font(.system(size: 8, weight: .medium)) }
                                 .foregroundStyle(Theme.faint)
                         }
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                        .padding(.horizontal, Theme.rhythm).padding(.vertical, Theme.micro / 2)
+                        .background {
+                            Capsule().fill(Theme.cardFill)
+                            Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+                        }
                     }
                 }
             }
@@ -514,11 +536,14 @@ private struct DirListEditor: View {
                 TextField("add a dir…", text: $pending)
                     .textFieldStyle(.plain).font(.caption).foregroundStyle(Theme.ink)
                     .onSubmit(add)
-                Button("Add", action: add).buttonStyle(.bordered).controlSize(.small)
+                QuietTapButton("Add", action: add)
                     .disabled(pending.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background { RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1) }
+            .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.rowVerticalInset)
+            .background {
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous).fill(Theme.codeFill)
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1)
+            }
         }
     }
     private func add() {
@@ -538,11 +563,10 @@ private struct AgentsEditor: View {
             HStack {
                 SectionLabel("Agents (--agents)")
                 Spacer()
-                Button {
+                QuietTapButton(action: {
                     agents.append(RecipeAgent(name: "agent\(agents.count + 1)",
                                               description: "", prompt: ""))
-                } label: { Label("Add agent", systemImage: "plus") }
-                    .buttonStyle(.bordered).controlSize(.small)
+                }) { Label("Add agent", systemImage: "plus") }
             }
             Text("Each agent pins a model at composition time, so a subagent never silently inherits the main-loop model.")
                 .font(.caption2).foregroundStyle(Theme.faint).fixedSize(horizontal: false, vertical: true)
@@ -577,7 +601,7 @@ private struct AgentRow: View {
                 }
                 .labelsHidden().frame(width: 110)
                 Spacer()
-                TapButton(action: { onRemove() }) { Image(systemName: "trash") }
+                TapButton(action: { onRemove() }) { Image(systemName: "trash").font(.caption.weight(.medium)) }
                     .foregroundStyle(Theme.faint)
             }
             TextField("description", text: $agent.description)
@@ -585,9 +609,10 @@ private struct AgentRow: View {
             TextField("system prompt", text: $agent.prompt, axis: .vertical)
                 .textFieldStyle(.plain).font(.caption).foregroundStyle(Theme.muted).lineLimit(1...4)
         }
-        .padding(10)
+        .padding(Theme.cardPadding)
         .background {
-            RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 }
@@ -628,25 +653,28 @@ private struct SkillsEditor: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(Theme.muted)
+                    Image(systemName: "magnifyingglass").font(.caption.weight(.medium)).foregroundStyle(Theme.muted)
                     TextField("add a skill by name…", text: $query)
                         .textFieldStyle(.plain).font(.subheadline).foregroundStyle(Theme.ink)
                         .onSubmit { if let s = suggestions.first { addRef(s.id) } }
                 }
-                .padding(.horizontal, 8).padding(.vertical, 6)
+                .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.rhythm)
                 ForEach(suggestions) { s in
                     TapButton(action: { addRef(s.id) }) {
                         HStack(spacing: 6) {
                             Text(s.name).font(.caption).foregroundStyle(Theme.ink)
                             Text(s.source.lane.title).font(.caption2).foregroundStyle(Theme.faint)
                             Spacer()
-                            Image(systemName: "plus").font(.caption2).foregroundStyle(Theme.muted)
+                            Image(systemName: "plus").font(.caption2.weight(.medium)).foregroundStyle(Theme.muted)
                         }
-                        .padding(.horizontal, 8).padding(.vertical, 4).contentShape(Rectangle())
+                        .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.micro).contentShape(Rectangle())
                     }
                 }
             }
-            .background { RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1) }
+            .background {
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous).fill(Theme.codeFill)
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1)
+            }
         }
     }
 
@@ -666,15 +694,15 @@ struct SkillRefChip: View {
         HStack(spacing: 4) {
             TapButton(action: onLead) {
                 Image(systemName: isLead ? "star.fill" : "star")
-                    .font(.system(size: 9)).foregroundStyle(isLead ? Theme.accent : Theme.faint)
+                    .font(.system(size: 9, weight: .medium)).foregroundStyle(isLead ? Theme.ink : Theme.faint)
             }
             .help(isLead ? "Lead skill" : "Make lead skill")
             Text("/\(ref)").font(.caption2).foregroundStyle(Theme.ink)
-            TapButton(action: onRemove) { Image(systemName: "xmark").font(.system(size: 8)) }
+            TapButton(action: onRemove) { Image(systemName: "xmark").font(.system(size: 8, weight: .medium)) }
                 .foregroundStyle(Theme.faint)
         }
-        .padding(.horizontal, 7).padding(.vertical, 3)
-        .background(Capsule().fill(isLead ? Theme.accent.opacity(0.12) : .clear))
-        .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+        .padding(.horizontal, Theme.toastVerticalInset).padding(.vertical, Theme.rhythm / 2)
+        .background(Capsule().fill(isLead ? Theme.selectionBG : Theme.cardFill))
+        .overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1))
     }
 }

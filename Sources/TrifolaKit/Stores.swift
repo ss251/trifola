@@ -216,6 +216,11 @@ public struct SessionAccumulator: Sendable, Codable {
     /// The transcript's auto topic title (`type:"ai-title"` record) — the name
     /// fallback when no live-registry/rename name exists for the session.
     var aiTitle: String?
+    /// Cached human handle derived while streaming the transcript. Rank keeps
+    /// the precedence stable even when records arrive in the opposite order:
+    /// first meaningful user prompt (1) < summary (2) < ai-title (3).
+    var derivedHandle: String?
+    var handleSourceRank = 0
     /// Most recent human-typed prompt (tool-result/meta "user" lines don't count).
     var lastUserMessage: String?
     /// Total bytes fed into the accumulator (complete + pending partial line).
@@ -224,6 +229,18 @@ public struct SessionAccumulator: Sendable, Codable {
     var pending = Data()
 
     public init(defaultID: String) { self.sid = defaultID }
+
+    private mutating func considerHandle(_ raw: String?, rank: Int,
+                                         userMessage: Bool = false) {
+        let candidate = userMessage
+            ? SessionHandles.fromFirstUserMessage(raw)
+            : SessionHandles.record(raw)
+        guard let candidate,
+              rank > handleSourceRank || (rank >= 2 && rank == handleSourceRank)
+        else { return }
+        derivedHandle = candidate
+        handleSourceRank = rank
+    }
 
     /// "<command-name>/commit</command-name>…" → "commit"; nil when absent/empty.
     static func extractCommandName(_ text: String) -> String? {
@@ -256,7 +273,13 @@ public struct SessionAccumulator: Sendable, Codable {
         if let c = obj["cwd"] as? String, !c.isEmpty { cwd = c }
         if let s = obj["sessionId"] as? String, !s.isEmpty { sid = s }
         if obj["type"] as? String == "ai-title",
-           let title = obj["aiTitle"] as? String, !title.isEmpty { aiTitle = title }
+           let title = obj["aiTitle"] as? String, !title.isEmpty {
+            aiTitle = title
+            considerHandle(title, rank: 3)
+        }
+        if obj["type"] as? String == "summary" {
+            considerHandle(obj["summary"] as? String, rank: 2)
+        }
         if let d = parseDate(obj["timestamp"] as? String) { if last == nil || d > last! { last = d } }
         // Slash-command census, Shape B (task #41) — system lines whose top-level
         // `content` string carries a `<command-name>` tag (CLI built-ins like
@@ -280,6 +303,7 @@ public struct SessionAccumulator: Sendable, Codable {
            (obj["isVisibleInTranscriptOnly"] as? Bool) != true,
            let text = Self.extractUserText(obj) {
             lastUserMessage = text
+            considerHandle(text, rank: 1, userMessage: true)
         }
         // Slash-command census, Shape A (task #41) — user lines whose
         // message.content (a plain string, or the first `text` block when it's
@@ -468,6 +492,7 @@ public struct SessionAccumulator: Sendable, Codable {
                               contextWeight: snap.contextWeight, filePath: filePath,
                               lastUserMessage: snap.lastUserMessage,
                               name: snap.aiTitle,
+                              handle: snap.derivedHandle ?? SessionHandles.untitled,
                               usageByTier: snap.usageByTier,
                               usageByDay: snap.usageByDay,
                               usageByModel: snap.usageByModel,
@@ -495,6 +520,25 @@ public struct SessionAccumulator: Sendable, Codable {
 
 // MARK: - Session index (incremental scan cache)
 
+/// Public scan state consumed by the UI. `totalEstimate` is the number of
+/// transcript-shaped paths found during enumeration; files can still disappear
+/// while they are being parsed, so the denominator is deliberately labeled an
+/// estimate. `scanned` counts attempted work, including failures.
+public struct SessionScanProgress: Sendable, Equatable {
+    public let scanned: Int
+    public let totalEstimate: Int
+    public let isInProgress: Bool
+
+    public init(scanned: Int, totalEstimate: Int, isInProgress: Bool) {
+        self.totalEstimate = max(0, totalEstimate)
+        self.scanned = min(max(0, scanned), self.totalEstimate)
+        self.isInProgress = isInProgress
+    }
+
+    public static let idle = SessionScanProgress(
+        scanned: 0, totalEstimate: 0, isInProgress: false)
+}
+
 public struct SessionIndex: Sendable {
     struct Entry: Sendable {
         var size: UInt64
@@ -521,21 +565,35 @@ public struct SessionIndex: Sendable {
     ///
     /// Changed/new files are parsed **in parallel across all cores** — the corpus
     /// is embarrassingly parallel per-file — and `onProgress` (if given) receives
-    /// monotonically-growing partial indexes every ~200 parsed files, so a UI can
-    /// fill in while a cold scan of a multi-GB tree is still running. Progress
-    /// snapshots may arrive out of order under contention; consumers should keep
-    /// the largest (`entries.count`) until the final returned value.
+    /// monotonically-growing partial indexes every ~200 attempted files, so a UI
+    /// can fill in while a cold scan of a multi-GB tree is still running. The
+    /// callback is invoked serially in monotonic scanned-count order. It always
+    /// receives an initial in-progress state and a final completed state, even
+    /// for an empty/unreadable directory or when individual files fail to parse.
     public static func update(_ previous: SessionIndex, dir: URL,
-                              onProgress: (@Sendable (SessionIndex) -> Void)? = nil) -> SessionIndex {
+                              onProgress: (@Sendable (SessionIndex, SessionScanProgress) -> Void)? = nil) -> SessionIndex {
         let fm = FileManager.default
-        guard let files = try? fm.subpathsOfDirectory(atPath: dir.path) else { return SessionIndex() }
+        guard let files = try? fm.subpathsOfDirectory(atPath: dir.path) else {
+            let empty = SessionIndex()
+            onProgress?(empty, SessionScanProgress(scanned: 0, totalEstimate: 0,
+                                                    isInProgress: true))
+            onProgress?(empty, SessionScanProgress(scanned: 0, totalEstimate: 0,
+                                                    isInProgress: false))
+            return empty
+        }
 
         // Pass 1 — stat everything; unchanged files carry over for free.
         var reused = SessionIndex()
         var work: [WorkItem] = []
         for rel in files where rel.hasSuffix(".jsonl") {
             let path = dir.appendingPathComponent(rel).path
-            guard let attrs = try? fm.attributesOfItem(atPath: path) else { continue }
+            guard let attrs = try? fm.attributesOfItem(atPath: path) else {
+                // It existed during enumeration but vanished before stat. Keep it
+                // in the work plan so attempted progress still reaches N of ~N.
+                work.append(WorkItem(path: path, rel: rel, size: 0,
+                                     mtime: .distantPast, old: nil))
+                continue
+            }
             let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
             let mtime = (attrs[.modificationDate] as? Date) ?? .distantPast
             if let old = previous.entries[path], old.size == size, old.mtime == mtime {
@@ -545,26 +603,41 @@ public struct SessionIndex: Sendable {
                                      old: previous.entries[path]))
             }
         }
-        if work.isEmpty { return reused }
-        if !reused.entries.isEmpty { onProgress?(reused) }
+        let total = reused.entries.count + work.count
+        onProgress?(reused, SessionScanProgress(scanned: reused.entries.count,
+                                                totalEstimate: total,
+                                                isInProgress: true))
+        if work.isEmpty {
+            onProgress?(reused, SessionScanProgress(scanned: total,
+                                                    totalEstimate: total,
+                                                    isInProgress: false))
+            return reused
+        }
 
         // Pass 2 — parse the changed/new files across all cores.
         let items = work
-        let state = Locked((merged: reused, sinceEmit: 0))
+        let state = Locked((merged: reused, attempted: reused.entries.count, sinceEmit: 0))
         DispatchQueue.concurrentPerform(iterations: items.count) { i in
-            guard let entry = Self.parseOne(items[i]) else { return }
-            let snapshot: SessionIndex? = state.withLock { s in
-                s.merged.entries[items[i].path] = entry
+            let entry = Self.parseOne(items[i])
+            state.withLock { s in
+                if let entry { s.merged.entries[items[i].path] = entry }
+                s.attempted += 1
                 s.sinceEmit += 1
                 if onProgress != nil, s.sinceEmit >= 200 {
                     s.sinceEmit = 0
-                    return s.merged
+                    // Invoke under the scanner's tiny state lock so concurrently
+                    // finishing workers cannot deliver progress out of order.
+                    onProgress?(s.merged, SessionScanProgress(
+                        scanned: s.attempted, totalEstimate: total,
+                        isInProgress: true))
                 }
-                return nil
             }
-            if let snapshot { onProgress?(snapshot) }
         }
-        return state.withLock { $0.merged }
+        let result = state.withLock { $0.merged }
+        onProgress?(result, SessionScanProgress(scanned: total,
+                                                totalEstimate: total,
+                                                isInProgress: false))
+        return result
     }
 
     /// Parse a single changed/new file: incremental tail-read when it only grew,
@@ -606,6 +679,7 @@ public final class SessionStore: ObservableObject {
     private let nameResolver = SessionNameResolver()
     @Published public private(set) var lastRefresh: Date = Date()
     @Published public private(set) var isRefreshing = false
+    @Published public private(set) var scanProgress: SessionScanProgress = .idle
     /// Monotonic stamp, bumped on every real `sessions` assignment — lets
     /// derived-value caches (the attention-board memo) detect change with one
     /// Int compare instead of an array walk. Not @Published: it rides the
@@ -619,6 +693,8 @@ public final class SessionStore: ObservableObject {
     private var refreshGen = 0
     /// Entry count of the largest snapshot applied in the current generation.
     private var appliedCount = 0
+    /// Attempt count of the newest progress event in the current generation.
+    private var appliedScanCount = 0
 
     /// Read-only remote mirrors merged into the fleet (Cross-Machine Fleet). Empty ⇒
     /// LOCAL-ONLY (the graceful-degradation default). Set by `AppServices` from the
@@ -643,6 +719,10 @@ public final class SessionStore: ObservableObject {
     public func refreshNow() async {
         if isRefreshing { refreshQueued = true; return }
         isRefreshing = true
+        appliedScanCount = 0
+        scanProgress = SessionScanProgress(scanned: 0,
+                                           totalEstimate: index.entries.count,
+                                           isInProgress: true)
         refreshGen += 1
         let gen = refreshGen
 
@@ -658,9 +738,13 @@ public final class SessionStore: ObservableObject {
 
         let dir = projectsDir
         let snapshot = index
+        let latestProgress = Locked(scanProgress)
         let result = await Task.detached(priority: .userInitiated) { [weak self] in
-            SessionIndex.update(snapshot, dir: dir) { [weak self] partial in
-                Task { @MainActor [weak self] in self?.apply(partial, gen: gen) }
+            SessionIndex.update(snapshot, dir: dir) { [weak self] partial, progress in
+                latestProgress.withLock { $0 = progress }
+                Task { @MainActor [weak self] in
+                    self?.apply(partial, progress: progress, gen: gen)
+                }
             }
         }.value
 
@@ -687,6 +771,11 @@ public final class SessionStore: ObservableObject {
             revision += 1
         }
         lastRefresh = Date()
+        let completed = latestProgress.withLock { $0 }
+        scanProgress = SessionScanProgress(
+            scanned: completed.scanned,
+            totalEstimate: completed.totalEstimate,
+            isInProgress: false)
         isRefreshing = false
         Task.detached(priority: .utility) { Self.saveIndexCache(result) }
         if refreshQueued { refreshQueued = false; await refreshNow() }
@@ -740,6 +829,23 @@ public final class SessionStore: ObservableObject {
         revision += 1
     }
 
+    /// Apply scanner counts independently from partial-session publication. A
+    /// failed transcript still advances progress, and a changed file in a
+    /// same-sized warm index can advance N/~M even when `entries.count` does not.
+    private func apply(_ partial: SessionIndex, progress: SessionScanProgress,
+                       gen: Int) {
+        guard gen == refreshGen, isRefreshing,
+              progress.scanned >= appliedScanCount else { return }
+        appliedScanCount = progress.scanned
+        scanProgress = SessionScanProgress(
+            scanned: progress.scanned,
+            totalEstimate: progress.totalEstimate,
+            // The local index can finish before read-only remote mirrors merge;
+            // the store stays provisional through that final phase.
+            isInProgress: true)
+        apply(partial, gen: gen)
+    }
+
     /// Overlay the resolver's names (live registry / last rename) over each
     /// summary's transcript-sourced ai-title; nil-name summaries keep the base.
     nonisolated static func applyNames(_ list: [SessionSummary],
@@ -752,7 +858,7 @@ public final class SessionStore: ObservableObject {
                                   lastActivity: s.lastActivity, messageCount: s.messageCount,
                                   usage: s.usage, contextWeight: s.contextWeight,
                                   filePath: s.filePath, lastUserMessage: s.lastUserMessage,
-                                  name: better, usageByTier: s.usageByTier,
+                                  name: better, handle: s.handle, usageByTier: s.usageByTier,
                                   usageByDay: s.usageByDay, usageByModel: s.usageByModel,
                                   usageByModelDay: s.usageByModelDay,
                                   messagesByModelDay: s.messagesByModelDay,
@@ -854,7 +960,10 @@ public final class SessionStore: ObservableObject {
     // v14: usage entries retain unsupported speed/service-tier evidence, and
     // the file records the local time-zone identifier. A zone change invalidates
     // every materialized day key even when transcript size+mtime are unchanged.
-    private nonisolated static let cacheVersion = 14
+    // v15: SessionAccumulator caches the human session handle + its source rank.
+    // Old entries would otherwise fall back to a UUID, so every transcript gets
+    // one intentional reparse to derive its ai-title/summary/first-prompt handle.
+    private nonisolated static let cacheVersion = 15
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1017,15 +1126,15 @@ public final class RoutingAudit: ObservableObject {
     public nonisolated static func computeFlags(defaultModel def: String,
                                                 sessions: [SessionSummary]) -> [RoutingFlag] {
         var f: [RoutingFlag] = []
-        // Silent Opus routing — the #1 pain point from the research.
+        // Unexpected Opus routing — the #1 pain point from the research.
         // Per-tier attribution: a mixed-model session's non-Opus share must not
         // get counted as Opus spend just because Opus happens to be dominant.
         let total = sessions.reduce(0.0) { $0 + $1.cost }
         let opus = sessions.reduce(0.0) { $0 + ($1.perTierCostMap[.opus] ?? 0) }
         if total > 0, opus / total > 0.5 {
             f.append(RoutingFlag(level: .warn,
-                title: "Opus is \(Int(opus / total * 100))% of all-time spend",
-                detail: "Over half your estimated spend ran on Opus rates. Check /model defaults in long-lived sessions — 'silent Opus routing' is the classic $20-hey trap."))
+                title: "Opus is \(Int(opus / total * 100))% of the all-time API-rate estimate",
+                detail: "Over half of recorded usage was priced at public Opus API rates; this is not your bill. A long-lived session can keep using Opus after you expected another model, so review its /model default."))
         }
         return f
     }

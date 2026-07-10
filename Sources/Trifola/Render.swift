@@ -22,10 +22,20 @@ struct RenderCaption: View {
 enum AttentionRender {
 
     private static func demoSession(_ id: String, _ project: String, _ tier: ModelTier) -> SessionSummary {
-        SessionSummary(id: id, project: project, cwd: "/tmp/\(project)", model: tier.rawValue,
-                       lastActivity: Date(), messageCount: 7,
-                       usage: SessionUsage(inputTokens: 1000), contextWeight: 120_000,
-                       filePath: "/tmp/\(project)/s.jsonl")
+        let prompt = [
+            "webapp": "Seed the local database and run the app",
+            "mobile-app": "Fix the chat view layout",
+            "api-gateway": "Run the gateway test suite",
+            "ml-trainer": "Check the latest training run",
+            "my-app": "Build the fleet board",
+            "side-project": "Polish the onboarding flow",
+            "notes-app": "Update the docs index",
+            "toolbar-app": "Review the toolbar states",
+        ][project]
+        return SessionSummary(id: id, project: project, cwd: "/tmp/\(project)", model: tier.rawValue,
+                              lastActivity: Date(), messageCount: 7,
+                              usage: SessionUsage(inputTokens: 1000), contextWeight: 120_000,
+                              filePath: "/tmp/\(project)/s.jsonl", lastUserMessage: prompt)
     }
 
     private static func board(_ specs: [(String, ModelTier, AttentionState, TimeInterval)]) -> AttentionBoard {
@@ -76,7 +86,7 @@ enum AttentionRender {
             RenderCaption("Attention strip — all clear (no-nag doctrine)")
             AttentionStripView(board: clear) { _ in }
         }
-        .padding(28)
+        .padding(Theme.renderInset)
         .frame(width: 940, alignment: .leading)
         .background(Color(nsColor: .windowBackgroundColor))
         // ImageRenderer resolves SwiftUI `Color` against the environment scheme —
@@ -111,29 +121,34 @@ enum AttentionRender {
 enum AuditRender {
 
     static func seededReport() -> AuditReport {
+        let now = Date()
         // Re-sent-context leaders — descending LEAK (fresh input above the warm
         // floor), first-touch cache-build shown separately, mixed tiers, one
         // subagent.
         let cacheMiss: [CacheMissFinding] = [
             .init(id: "a", project: "webapp", shortID: "b1f0c2a9", filePath: "",
                   tier: .opus, leakDollars: 27.90, firstTouchDollars: 13.40, cacheHitRate: 0.34,
-                  billedInput: 3_050_000, cacheReadTokens: 1_600_000, contextWeight: 262_000, isSubagent: false),
+                  billedInput: 3_050_000, cacheReadTokens: 1_600_000, contextWeight: 262_000, isSubagent: false,
+                  handle: "Improve cache behavior", lastActivity: now.addingTimeInterval(-120)),
             .init(id: "b", project: "mobile-app", shortID: "77ad9e10", filePath: "",
                   tier: .opus, leakDollars: 15.10, firstTouchDollars: 7.70, cacheHitRate: 0.58,
-                  billedInput: 1_680_000, cacheReadTokens: 2_300_000, contextWeight: 198_000, isSubagent: false),
+                  billedInput: 1_680_000, cacheReadTokens: 2_300_000, contextWeight: 198_000, isSubagent: false,
+                  handle: "Fix the chat view layout", lastActivity: now.addingTimeInterval(-600)),
             .init(id: "c", project: "data-pipeline", shortID: "0c31aa4d", filePath: "",
                   tier: .sonnet, leakDollars: 9.60, firstTouchDollars: 4.50, cacheHitRate: 0.41,
-                  billedInput: 1_540_000, cacheReadTokens: 1_070_000, contextWeight: 141_000, isSubagent: false),
+                  billedInput: 1_540_000, cacheReadTokens: 1_070_000, contextWeight: 141_000, isSubagent: false,
+                  handle: "Rebuild the ingestion pipeline", lastActivity: now.addingTimeInterval(-1800)),
             .init(id: "d", project: "api-gateway", shortID: "e2290b7c", filePath: "",
                   tier: .sonnet, leakDollars: 5.70, firstTouchDollars: 2.90, cacheHitRate: 0.29,
-                  billedInput: 3_180_000, cacheReadTokens: 1_300_000, contextWeight: 96_000, isSubagent: false),
+                  billedInput: 3_180_000, cacheReadTokens: 1_300_000, contextWeight: 96_000, isSubagent: false,
+                  handle: "Run the gateway tests", lastActivity: now.addingTimeInterval(-3600)),
             .init(id: "e", project: "ml-trainer", shortID: "51c7f3b2", filePath: "",
                   tier: .opus, leakDollars: 3.40, firstTouchDollars: 1.80, cacheHitRate: 0.72,
-                  billedInput: 380_000, cacheReadTokens: 980_000, contextWeight: 62_000, isSubagent: true),
+                  billedInput: 380_000, cacheReadTokens: 980_000, contextWeight: 62_000, isSubagent: true,
+                  handle: "Inspect training metrics", lastActivity: now.addingTimeInterval(-7200)),
         ]
 
         // Skill ledger — the real 22 fired / 95 dead of 110, top invocations verbatim.
-        let now = Date()
         func fired(_ n: String, _ c: Int, _ ago: TimeInterval, _ sess: Int, cat: Bool = true) -> SkillLedgerEntry {
             SkillLedgerEntry(name: n, invocations: c, sessionsTouched: sess,
                              lastFired: now.addingTimeInterval(-ago), inCatalog: cat, descriptionTokens: 0)
@@ -167,13 +182,17 @@ enum AuditRender {
         // Model-mismatch review candidates.
         let mismatches: [MismatchCandidate] = [
             .init(id: "m1", project: "toolbar-app", shortID: "44c1e0a7", filePath: "",
-                  tier: .opus, cost: 12.40, estOverspend: 9.80, messageCount: 22, fileEdits: 1, agentCalls: 0),
+                  tier: .opus, cost: 12.40, estOverspend: 9.80, messageCount: 22, fileEdits: 1, agentCalls: 0,
+                  handle: "Polish the toolbar", lastActivity: now.addingTimeInterval(-800)),
             .init(id: "m2", project: "side-project", shortID: "9b30fa22", filePath: "",
-                  tier: .opus, cost: 9.10, estOverspend: 6.60, messageCount: 14, fileEdits: 0, agentCalls: 0),
+                  tier: .opus, cost: 9.10, estOverspend: 6.60, messageCount: 14, fileEdits: 0, agentCalls: 0,
+                  handle: "Outline the launch notes", lastActivity: now.addingTimeInterval(-1600)),
             .init(id: "m3", project: "notes-app", shortID: "71ccb904", filePath: "",
-                  tier: .opus, cost: 5.70, estOverspend: 4.30, messageCount: 31, fileEdits: 2, agentCalls: 0),
+                  tier: .opus, cost: 5.70, estOverspend: 4.30, messageCount: 31, fileEdits: 2, agentCalls: 0,
+                  handle: "Update search behavior", lastActivity: now.addingTimeInterval(-3200)),
             .init(id: "m4", project: "cli-tool", shortID: "e0a7712d", filePath: "",
-                  tier: .opus, cost: 3.20, estOverspend: 2.40, messageCount: 18, fileEdits: 1, agentCalls: 0),
+                  tier: .opus, cost: 3.20, estOverspend: 2.40, messageCount: 18, fileEdits: 1, agentCalls: 0,
+                  handle: "Add command completion", lastActivity: now.addingTimeInterval(-6400)),
         ]
 
         return AuditReport(
@@ -191,7 +210,7 @@ enum AuditRender {
             RenderCaption("Audit · evidence, not nags — the real AuditContent over a seeded report")
             AuditContent(report: seededReport(), onInspect: { _ in }, onReveal: { _ in })
         }
-        .padding(28)
+        .padding(Theme.renderInset)
         .frame(width: 1160, alignment: .leading)
         .background(Color(nsColor: .windowBackgroundColor))
         // Force the SwiftUI colorScheme too — ImageRenderer resolves `Color`
@@ -312,7 +331,7 @@ enum FleetRender {
         let now = Date()
         let (board, attention, signals) = seeded(now: now)
         let content = FleetFloor(board: board, attention: attention, signals: signals)
-            .padding(28)
+            .padding(Theme.renderInset)
             .frame(width: 1180, alignment: .topLeading)
             .background(Color(nsColor: .windowBackgroundColor))
             .environment(\.colorScheme, dark ? .dark : .light)
@@ -420,7 +439,7 @@ enum LedgerRender {
 @MainActor
 private func writePNG<V: View>(_ content: V, to path: String, dark: Bool, width: CGFloat) {
     let framed = content
-        .padding(28)
+        .padding(Theme.renderInset)
         .frame(width: width, alignment: .leading)
         .background(Color(nsColor: .windowBackgroundColor))
         .environment(\.colorScheme, dark ? .dark : .light)
@@ -496,7 +515,7 @@ enum BurnRender {
         let now = Date()
         let governor = BurnGovernor(sessions: seededSessions(now: now), now: now)
         let content = VStack(alignment: .leading, spacing: 16) {
-            RenderCaption("Credit-era burn governor (VISION 2.5) — the Jul-7 countdown's successor: today's API-equiv burn + Opus share + a recent-run-rate month projection, over a per-day tier-colored sparkline. The real BurnGovernorSection over a seeded ~30-day corpus.")
+            RenderCaption("Credit-era burn governor (VISION 2.5) — the Jul-7 countdown's successor: today's API-rate estimate + Opus share + a recent-run-rate month projection, over a per-day tier-colored sparkline. The real BurnGovernorSection over a seeded ~30-day corpus.")
             BurnGovernorSection(governor: governor)
             Divider()
             // A tier legend so the sparkline hues read (same hues as spend-by-tier).
@@ -740,8 +759,11 @@ enum CrossMachineRender {
                 Spacer(minLength: 8)
                 Text(fmtUSD(s.cost)).font(.subheadline).foregroundStyle(Theme.ink)
             }
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background { RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1) }
+            .padding(.horizontal, Theme.codePadding).padding(.vertical, Theme.toastVerticalInset)
+            .background {
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1)
+            }
         }
     }
 
@@ -774,7 +796,7 @@ enum CrossMachineRender {
                             Text("\(r.activeCount) active").font(.caption).foregroundStyle(Theme.muted)
                         }
                         Spacer()
-                        Text("\(r.sessionCount) sessions · \(fmtTokens(r.tokens)) tok").font(.caption).foregroundStyle(Theme.faint)
+                        Text("\(r.sessionCount) sessions · \(fmtTokens(r.tokens)) tokens").font(.caption).foregroundStyle(Theme.faint)
                         Text(fmtUSD(r.cost)).font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
                             .frame(minWidth: 56, alignment: .trailing)
                     }
@@ -892,8 +914,11 @@ private struct RecipeFormProjection: View {
                         .foregroundStyle(a.model.tier.color)
                     Text(a.description).font(.caption2).foregroundStyle(Theme.faint).lineLimit(1)
                 }
-                .padding(8)
-                .background { RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1) }
+                .padding(Theme.intraCell)
+                .background {
+                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1)
+                }
             }
             HStack(spacing: 16) {
                 field("Effort", recipe.effort.label)
@@ -1032,19 +1057,23 @@ private struct SkillDetailPreview: View {
                 FlowLayout(spacing: 6, lineSpacing: 6) {
                     ForEach(skill.triggers, id: \.self) { t in
                         Text(t).font(.caption).foregroundStyle(Theme.muted)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                            .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.rhythm / 2)
+                            .background {
+                                Capsule().fill(Theme.cardFill)
+                                Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+                            }
                     }
                 }
             }
             Text(skill.path).font(.caption2).foregroundStyle(Theme.faint).lineLimit(1)
             Spacer(minLength: 0)
         }
-        .padding(14)
+        .padding(Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 }
@@ -1177,11 +1206,12 @@ enum IdentityRender {
                     }
                     Spacer(minLength: 8)
                 }
-                .padding(.horizontal, 14).padding(.vertical, 12)
+                .padding(.horizontal, Theme.cardPadding).padding(.vertical, Theme.sectionGap)
                 .frame(width: 220, alignment: .leading)
                 .background {
-                    RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                        .strokeBorder(Theme.cardStroke, lineWidth: 1)
                 }
             }
         }
@@ -1199,10 +1229,11 @@ enum IdentityRender {
                         Text("\(count)").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
                     }
                 }
-                .padding(.horizontal, 9).padding(.vertical, 5)
+                .padding(.horizontal, Theme.liveGaugeBottomInset).padding(.vertical, Theme.rowVerticalInset)
                 .background {
+                    RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous).fill(Theme.cardFill)
                     RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                        .strokeBorder(Theme.cardStroke, lineWidth: 1)
                 }
                 Text(label).font(.caption2).foregroundStyle(Theme.faint)
             }
@@ -1418,7 +1449,7 @@ enum DeadlineRender {
                  platform: "audit done, coverage monitor armed", raw: "shipped Jul 1", line: 120),
         ]
         // Sort exactly as the board does.
-        var recs = Dictionary(uniqueKeysWithValues: cards.map { c -> (String, DeadlineRecord) in
+        let recs = Dictionary(uniqueKeysWithValues: cards.map { c -> (String, DeadlineRecord) in
             (c.projectKey, DeadlineRecord(projectKey: c.projectKey, deadline: c.deadline, kind: c.kind,
                                           source: c.source, shipped: c.shipped, platform: c.platform))
         })
@@ -1532,10 +1563,11 @@ enum ContextTaxRender {
                 Divider()
                 ContextTaxGaugeView(gauge: idleHeavy)
             }
-            .padding(12)
+            .padding(Theme.sectionGap)
             .background {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
             RenderCaption("ml-trainer is over threshold but idle — the advisor stays quiet: it advises live sessions, it does not nag history.")
             Divider()
@@ -1545,10 +1577,11 @@ enum ContextTaxRender {
                 ContextTaxGaugeView(gauge: coldHey, compact: true)
                 ContextTaxGaugeView(gauge: light, compact: true)
             }
-            .padding(12)
+            .padding(Theme.sectionGap)
             .background {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
         }
         writePNG(content, to: path, dark: dark, width: 860)
@@ -1624,11 +1657,13 @@ enum RerouteRender {
             id: "h0", project: "my-app", cwd: "/tmp/cmc",
             model: "claude-opus-4-8", lastActivity: now, messageCount: 400,
             usage: hogUsage, contextWeight: 0, filePath: "/tmp/cmc/h.jsonl",
+            lastUserMessage: "Coordinate the launch review",
             usageByModelDay: [today: ["claude-opus-4-8": hogUsage]])
         let hogSub = SessionSummary(
             id: "h1", project: "cmc-subagent", cwd: "/tmp/cmc",
             model: "claude-sonnet-5", lastActivity: now, messageCount: 60,
             usage: sideUsage, contextWeight: 0, filePath: "/tmp/cmc/h1.jsonl",
+            lastUserMessage: "Verify the launch checklist",
             usageByModelDay: [today: ["claude-sonnet-5": sideUsage]])
         let hogAlert = OrchestratorHog.alert(sessions: [hogMain, hogSub], day: today)
 
@@ -1643,34 +1678,37 @@ enum RerouteRender {
                     RenderCaption("webapp — zero flips: no receipt block at all (evidence, not decoration).")
                 }
             }
-            .padding(12)
+            .padding(Theme.sectionGap)
             .background {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
             Divider()
             RenderCaption("The fleet trend row — reroutes/day over 14 days, dominant pair named, /model exclusions counted in the corner.")
             VStack(alignment: .leading, spacing: 10) {
                 RerouteTrendRow(report: report, now: now)
             }
-            .padding(12)
+            .padding(Theme.sectionGap)
             .background {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
             Divider()
-            RenderCaption("The orchestrator-hog alert — fires only when one top-level session bills >\(fmtPct(OrchestratorHog.shareThreshold)) of a ≥\(fmtUSD(OrchestratorHog.minimumDayTotal)) day; the threshold lives in the copy.")
+            RenderCaption("The single-session concentration alert — fires only when one top-level session accounts for >\(fmtPct(OrchestratorHog.shareThreshold)) of a ≥\(fmtUSD(OrchestratorHog.minimumDayTotal)) API-rate day estimate; the threshold lives in the copy.")
             VStack(alignment: .leading, spacing: 10) {
                 if let hogAlert {
                     OrchestratorHogRow(alert: hogAlert)
                 } else {
-                    RenderCaption("hog alert did not fire on the seeded day — seeding bug, judge harshly.")
+                    RenderCaption("single-session alert did not fire on the seeded day — seeding bug, judge harshly.")
                 }
             }
-            .padding(12)
+            .padding(Theme.sectionGap)
             .background {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
         }
         writePNG(content, to: path, dark: dark, width: 860)
@@ -1711,10 +1749,11 @@ enum QuotaRender {
                 QuotaSection(snapshot: seededSnapshot(now: now),
                              status: "ok", source: .keychain, now: now)
             }
-            .padding(12)
+            .padding(Theme.sectionGap)
             .background {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
             Divider()
             RenderCaption("Graceful degradation — no credentials found. ONE calm line, no spinner, no alert; the app works fully without this surface.")
@@ -1722,10 +1761,11 @@ enum QuotaRender {
                 QuotaSection(snapshot: nil, status: "unavailable (no credentials)",
                              source: nil, now: now)
             }
-            .padding(12)
+            .padding(Theme.sectionGap)
             .background {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
         }
         writePNG(content, to: path, dark: dark, width: 860)

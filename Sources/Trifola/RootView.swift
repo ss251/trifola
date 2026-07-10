@@ -18,13 +18,20 @@ struct RootView: View {
     var body: some View {
         HStack(spacing: 0) {
             Sidebar()
-                .frame(width: 220)
-                .background(VisualEffectBackground(material: .sidebar).ignoresSafeArea())
+                .frame(width: 240)
+                .background {
+                    Theme.surfaceSidebar.ignoresSafeArea()
+                    VisualEffectBackground(material: .sidebar).opacity(0.30).ignoresSafeArea()
+                }
             Divider()
+                .padding(.top, Theme.blockGap)
                 .ignoresSafeArea()
             ContentColumn()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(VisualEffectBackground(material: .underWindowBackground).ignoresSafeArea())
+                .background {
+                    Theme.surfaceWindow.ignoresSafeArea()
+                    VisualEffectBackground(material: .underWindowBackground).opacity(0.16).ignoresSafeArea()
+                }
         }
         .background(WindowConfigurator())
         .frame(minWidth: 1120, minHeight: 720)
@@ -103,57 +110,41 @@ private struct Sidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Wordmark()
-                .padding(.top, 48)   // clear the traffic lights
                 .padding(.horizontal, Theme.gutter)
+                // The rail uses `.headline`, so this optical offset aligns its
+                // baseline with the 28pt page title sharing the same header row.
+                .padding(.top, Theme.codePadding)
+                .frame(height: ScreenScaffoldMetrics.headerHeight, alignment: .top)
+                .padding(.top, ScreenScaffoldMetrics.topInset)
+
+            Divider()
 
             VStack(spacing: 2) {
                 ForEach(v1Sections) { section in
                     SidebarItem(section: section)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 24)
+            .padding(.horizontal, Theme.intraCell)
+            .padding(.top, Theme.blockGap)
 
             Spacer()
 
             SidebarFooter()
                 .padding(.horizontal, Theme.gutter)
-                .padding(.bottom, 14)
+                .padding(.bottom, Theme.cardPadding)
         }
     }
 }
 
 private struct Wordmark: View {
-    @EnvironmentObject var services: AppServices
-
     var body: some View {
-        // The door light leads the name (POLISH II.A): the mark's fill is ink; its
-        // ring takes the fleet's WORST live state — red / amber / green, faint when
-        // quiet — the exact mapping the menu bar uses. A static rendering of a real
-        // value (recomputed with the existing refresh), never an animation. Still at
-        // the door is honest; the tint is the signal.
-        let worst = services.alertingAttentionBoard(now: services.now).worst
-        HStack(spacing: 9) {
-            SeatMark(fill: Theme.ink, ring: (worst?.color ?? Theme.faint),
-                     size: 15, ringWidth: 1.5, gapped: true)
-                .help(worstHelp(worst))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Trifola")
-                    .font(.headline)
-                    .foregroundStyle(Theme.ink)
-                Text("Claude Code fleet")
-                    .font(.caption)
-                    .foregroundStyle(Theme.muted)
-            }
-        }
-    }
-
-    private func worstHelp(_ worst: AttentionState?) -> String {
-        switch worst {
-        case .blocked: return "The door light — a session is blocked on you"
-        case .waiting: return "The door light — a session is waiting on you"
-        case .running: return "The door light — the fleet is running, nothing needs you"
-        default:       return "The door light — the fleet is quiet"
+        VStack(alignment: .leading, spacing: Theme.micro / 2) {
+            Text("Fleet console")
+                .font(.headline)
+                .foregroundStyle(Theme.ink)
+            Text("local · read-only")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
         }
     }
 }
@@ -199,12 +190,12 @@ private struct SidebarItem: View {
                         .foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, Theme.intraCell)
+            .padding(.vertical, Theme.rhythm)
             .contentShape(Rectangle())
         }
         .background {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
                 .fill(isSelected
                       ? Theme.selectionBG
                       : hovering
@@ -219,20 +210,20 @@ private struct SidebarFooter: View {
     @EnvironmentObject var services: AppServices
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.rhythm) {
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
             // The credit-era burn governor replaces the retired Jul-7 countdown
             // (VISION 2.5): today's API-equiv burn + the recent-run-rate month pace.
             let burn = services.sessions.burnGovernor(now: services.now)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
-                        .font(.caption2)
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(Theme.muted)
                     Text("today \(fmtUSD(burn.today.cost)) · ≈\(fmtUSD(burn.monthProjection))/mo")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                 }
-                Text("API-rate equivalent — not your bill")
+                Text("public API rates — not your bill")
                     .font(.caption2)
                     .foregroundStyle(Theme.faint)
             }
@@ -240,6 +231,10 @@ private struct SidebarFooter: View {
             Text("updated \(fmtAgo(services.sessions.lastRefresh))")
                 .font(.caption2)
                 .foregroundStyle(Theme.faint)
+
+            Divider()
+
+            AppLockup(size: 14, ring: services.alertingAttentionBoard(now: services.now).worst?.color ?? Theme.faint)
         }
     }
 }

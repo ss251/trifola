@@ -25,10 +25,10 @@ public enum ReceiptMetric: String, Sendable, Equatable {
 
     public var label: String {
         switch self {
-        case .cost: return "API-equiv cost"
-        case .cacheLeak: return "re-sent context — the leak (fresh input above the warm-cache floor)"
-        case .firstTouch: return "first-touch cache creation (5m ×1.25 · 1h ×2 — not a leak)"
-        case .mismatch: return "est. overspend — frontier legs repriced at date-aware Sonnet 5"
+        case .cost: return "API-rate cost estimate"
+        case .cacheLeak: return "fresh-vs-warm context price difference"
+        case .firstTouch: return "cache setup (5m ×1.25 · 1h ×2 — necessary build work)"
+        case .mismatch: return "cheaper-model price difference — frontier legs repriced at date-aware Sonnet 5"
         }
     }
 }
@@ -309,7 +309,7 @@ public enum CostProvenance {
     public static func sessionReceipt(_ s: SessionSummary,
                                       metric: ReceiptMetric = .cost,
                                       catalog: PricingCatalog = .current) -> CostReceipt {
-        receipt(scope: "session \(s.shortID) — \(s.project)",
+        receipt(scope: "\(s.project) — \(s.displayTitle)",
                 slices: slices(for: s), metric: metric, catalog: catalog,
                 rawUsageBlocks: s.rawUsageBlocks, dedupedBlocks: s.dedupedUsageBlocks)
     }
@@ -360,7 +360,7 @@ public enum CostProvenance {
                 ?? (key.model.isEmpty ? "(unknown model)" : key.model)
             let sonnetRule = "claude-sonnet-5 \(fmtInOut(key.sonnet))"
             let lines = [
-                ReceiptLine(label: "actual", math: "\(padLeft(fmtGrouped(g.usage.total), 13)) tok @ own rates", dollars: g.actual),
+                ReceiptLine(label: "actual", math: "\(padLeft(fmtGrouped(g.usage.total), 13)) tokens @ own rates", dollars: g.actual),
                 ReceiptLine(label: "repriced", math: "\(padLeft("", 13)) @ \(sonnetRule)", dollars: g.repriced),
             ]
             legs.append(ReceiptLeg(model: model,
@@ -370,7 +370,7 @@ public enum CostProvenance {
         }
         legs.sort { $0.dollars != $1.dollars ? $0.dollars > $1.dollars : $0.model < $1.model }
         return CostReceipt(
-            scope: "session \(s.shortID) — \(s.project)", metric: .mismatch,
+            scope: "\(s.project) — \(s.displayTitle)", metric: .mismatch,
             legs: legs, total: legs.reduce(0) { $0 + $1.dollars },
             pricingSource: pricingSource(catalog),
             dedupNote: dedupNote(raw: s.rawUsageBlocks, unique: s.dedupedUsageBlocks),

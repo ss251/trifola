@@ -31,7 +31,7 @@ struct BurnGovernorSection: View {
                 // The honest limit, permanent and calm — these are API-rate
                 // equivalents, not the metered credit bill (which isn't on disk).
                 if showsDisclaimer {
-                    Text("API-rate equivalent — not your bill")
+                    Text("public API rates — not your bill")
                         .font(.caption2)
                         .foregroundStyle(Theme.faint)
                 }
@@ -70,7 +70,7 @@ struct BurnGovernorSection: View {
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.ink)
                 .contentTransition(.numericText())
-            Text("API-equiv")
+            Text("API-rate estimate")
                 .font(.caption2).foregroundStyle(Theme.faint)
             if today.cost > 0 {
                 Text("·").font(.caption).foregroundStyle(Theme.faint)
@@ -148,7 +148,7 @@ struct BurnSparkline: View {
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: barH, alignment: .bottom)
-                        .clipShape(RoundedRectangle(cornerRadius: 1.5, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.sparkRadius, style: .continuous))
                         .opacity(isToday ? 1 : 0.7)
                     } else {
                         // Quiet day — a faint track tick, not an empty gap.
@@ -159,9 +159,9 @@ struct BurnSparkline: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .bottom)
-                // The 1pt tick that crowns today — ink, not a new color.
+                // The single accent now-marker, matching the calendar's now line.
                 Rectangle()
-                    .fill(isToday ? Theme.ink.opacity(0.85) : .clear)
+                    .fill(isToday ? Theme.accent : .clear)
                     .frame(maxWidth: .infinity)
                     .frame(height: 1.5)
             }

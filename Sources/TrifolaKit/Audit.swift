@@ -25,6 +25,8 @@ import Combine
 public struct CacheMissFinding: Identifiable, Sendable, Hashable {
     public let id: String
     public let project: String
+    public let handle: String
+    public let lastActivity: Date?
     public let shortID: String
     public let filePath: String
     public let tier: ModelTier
@@ -39,6 +41,8 @@ public struct CacheMissFinding: Identifiable, Sendable, Hashable {
     public init(_ s: SessionSummary) {
         self.id = s.id
         self.project = s.project
+        self.handle = s.displayTitle
+        self.lastActivity = s.lastActivity
         self.shortID = s.shortID
         self.filePath = s.filePath
         self.tier = s.tier
@@ -55,8 +59,11 @@ public struct CacheMissFinding: Identifiable, Sendable, Hashable {
     public init(id: String, project: String, shortID: String, filePath: String,
                 tier: ModelTier, leakDollars: Double, firstTouchDollars: Double,
                 cacheHitRate: Double, billedInput: Int, cacheReadTokens: Int,
-                contextWeight: Int, isSubagent: Bool) {
+                contextWeight: Int, isSubagent: Bool,
+                handle: String? = nil, lastActivity: Date? = nil) {
         self.id = id; self.project = project; self.shortID = shortID
+        self.handle = handle ?? "\(project) session"
+        self.lastActivity = lastActivity
         self.filePath = filePath; self.tier = tier
         self.leakDollars = leakDollars; self.firstTouchDollars = firstTouchDollars
         self.cacheHitRate = cacheHitRate
@@ -118,6 +125,8 @@ public struct SkillLedger: Sendable, Equatable {
 public struct MismatchCandidate: Identifiable, Sendable, Hashable {
     public let id: String
     public let project: String
+    public let handle: String
+    public let lastActivity: Date?
     public let shortID: String
     public let filePath: String
     public let tier: ModelTier
@@ -129,8 +138,11 @@ public struct MismatchCandidate: Identifiable, Sendable, Hashable {
 
     public init(id: String, project: String, shortID: String, filePath: String,
                 tier: ModelTier, cost: Double, estOverspend: Double,
-                messageCount: Int, fileEdits: Int, agentCalls: Int) {
+                messageCount: Int, fileEdits: Int, agentCalls: Int,
+                handle: String? = nil, lastActivity: Date? = nil) {
         self.id = id; self.project = project; self.shortID = shortID
+        self.handle = handle ?? "\(project) session"
+        self.lastActivity = lastActivity
         self.filePath = filePath; self.tier = tier; self.cost = cost
         self.estOverspend = estOverspend; self.messageCount = messageCount
         self.fileEdits = fileEdits; self.agentCalls = agentCalls
@@ -337,7 +349,9 @@ public struct AuditReport: Sendable, Equatable {
             candidates.append(MismatchCandidate(
                 id: s.id, project: s.project, shortID: s.shortID, filePath: s.filePath,
                 tier: s.tier, cost: s.cost, estOverspend: overspend,
-                messageCount: s.messageCount, fileEdits: s.fileEdits, agentCalls: s.agentCalls))
+                messageCount: s.messageCount, fileEdits: s.fileEdits,
+                agentCalls: s.agentCalls, handle: s.displayTitle,
+                lastActivity: s.lastActivity))
         }
         candidates.sort { $0.estOverspend > $1.estOverspend }
         return (Array(candidates.prefix(limit)), total, candidates.count)

@@ -16,6 +16,7 @@ struct AttentionStrip: View {
             signals: services.attention.signals,
             suppression: services.attentionSuppression(now: now),
             acknowledgement: services.agency.recoveryState.activeAcknowledgement(at: now),
+            now: now,
             defaultSnoozeMinutes: services.preferences.value.defaultSnoozeDurationMinutes,
             onAgencyAction: { services.agency.perform($0, now: now) },
             onSelect: { services.openTerminal($0) })
@@ -33,15 +34,20 @@ struct AttentionStripView: View {
     var signals: [String: AttentionSignals] = [:]
     var suppression: AttentionSuppressionResult? = nil
     var acknowledgement: UnblockedAcknowledgement? = nil
+    var now = Date()
     var defaultSnoozeMinutes = 60
     var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
     let onSelect: (SessionSummary) -> Void
+    @State private var showsSuppressed = false
 
     var body: some View {
         let alertingBoard = suppression?.alertingBoard ?? board
         let rows = suppression?.rows
             ?? board.items.map { AttentionSuppressionRow(item: $0, reason: nil) }
         let needs = rows.filter { $0.item.needsAttention }
+        let unsuppressed = needs.filter { !$0.isSuppressed }
+        let suppressed = needs.filter(\.isSuppressed)
+        let shown = suppressed.count > 1 && !showsSuppressed ? unsuppressed : needs
 
         return VStack(alignment: .leading, spacing: Theme.rhythm) {
             HStack(spacing: 8) {
@@ -66,10 +72,10 @@ struct AttentionStripView: View {
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
                 }
-                .padding(.vertical, 1)
+                .padding(.vertical, Theme.hairlineWidth)
             } else {
-                FlowLayout(spacing: 8, lineSpacing: 8) {
-                    ForEach(needs) { row in
+                FlowLayout(spacing: Theme.intraCell, lineSpacing: Theme.intraCell) {
+                    ForEach(shown) { row in
                         AttentionChip(row: row,
                                       suppressionState: suppression?.state,
                                       signal: signals[row.id],
@@ -79,26 +85,37 @@ struct AttentionStripView: View {
                         }
                     }
                 }
+                if suppressed.count > 1 {
+                    MutedDisclosurePill(
+                        label: showsSuppressed
+                            ? "Hide snoozed sessions"
+                            : "+\(suppressed.count) snoozed",
+                        isExpanded: showsSuppressed) {
+                            showsSuppressed.toggle()
+                        }
+                }
             }
 
-            if let acknowledgement {
+            if let acknowledgement,
+               now.timeIntervalSince(acknowledgement.startedAt) < 8 {
                 HStack(spacing: 8) {
                     SeatMark(fill: Theme.green, size: 7)
-                    Text(acknowledgement.message)
+                    Text("\(acknowledgement.project) moving again — approved \(fmtAgeShort(max(0, now.timeIntervalSince(acknowledgement.startedAt)))) ago")
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
                 }
                 .motionTransition(edge: .top)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
-        .reorderMotion(value: needs.map(\.id) + [acknowledgement?.id ?? ""])
+        .reorderMotion(value: shown.map(\.id) + [acknowledgement?.id ?? ""])
     }
 
     private func allClearText(_ b: AttentionBoard) -> String {
@@ -123,7 +140,7 @@ private struct AttentionChip: View {
     @State private var hovering = false
 
     /// The ask (UI_GRIND ATT-4): what the session wants, before you click — the
-    /// dangling/last tool + its detail, faint mono (disk truth), ~24 chars. Only
+    /// dangling/last tool + its detail, quiet narration, ~42 chars. Only
     /// when the signal exists; absence stays honest silence.
     private var ask: String? {
         let item = row.item
@@ -133,58 +150,58 @@ private struct AttentionChip: View {
         let s = detail.isEmpty ? tool : "\(tool) \(detail)"
         // Tail-truncate: the head (tool + the gate's name) IS the ask — a
         // mid-ellipsis chews it ("Bash app…· bun run dev").
-        return s.count > 24 ? String(s.prefix(23)) + "…" : s
+        return s.count > 42 ? String(s.prefix(41)) + "…" : s
     }
 
     var body: some View {
         let item = row.item
-        TapButton(action: onTap) {
-            HStack(spacing: 7) {
-                // The seat token: the state dot wears the tier as its 1pt ring
-                // (POLISH C10) — the same object as the Floor + the door light, so
-                // the chip's separate tier dot is gone; the tier label stays.
-                SeatMark(fill: item.state.color, ring: item.session.tier.color, size: 7)
-                VStack(alignment: .leading, spacing: 1) {
+        TapButton(focusVisual: .card, action: onTap) {
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                HStack(spacing: Theme.intraCell) {
                     Text(item.session.project)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(Theme.ink)
                         .lineLimit(1)
-                    Text(item.session.shortID)
-                        .font(.system(.caption2, design: .monospaced))
+                        .layoutPriority(1)
+                    AttentionStatusPill(state: item.state)
+                    if row.isSuppressed { SuppressionMark() }
+                    Text(fmtAgeShort(item.age))
+                        .font(.caption2)
+                        .foregroundStyle(Theme.muted)
+                    Spacer(minLength: 0)
+                    Text(item.session.tier.label)
+                        .font(.caption2)
+                        .foregroundStyle(Theme.faint)
+                    if item.session.isRemote {
+                        MachineChip(machineID: item.session.machineID, compact: true)
+                    }
+                }
+                HStack(spacing: Theme.rhythm) {
+                    Text(item.session.displayTitle)
+                        .font(.caption2)
                         .foregroundStyle(Theme.faint)
                         .lineLimit(1)
+                        .layoutPriority(1)
+                    if let ask {
+                        Text("· \(ask)")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.faint)
+                            .lineLimit(1)
+                    }
                 }
-                Text(item.state.label)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(item.state.color)
-                Text(fmtAgeShort(item.age))
-                    .font(.caption2)
-                    .foregroundStyle(Theme.muted)
-                if let ask {
-                    Text("· \(ask)")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(Theme.faint)
-                        .lineLimit(1)
-                }
-                Text(item.session.tier.label)
-                    .font(.caption2)
-                    .foregroundStyle(Theme.faint)
-                if item.session.isRemote {
-                    MachineChip(machineID: item.session.machineID, compact: true)
-                }
-                if row.isSuppressed { SuppressionMark() }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .contentShape(Capsule())
+            .frame(minWidth: 300, idealWidth: 400, maxWidth: 410, alignment: .leading)
+            .padding(.horizontal, Theme.sectionGap)
+            .padding(.vertical, Theme.intraCell)
+            .contentShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
             .background {
-                Capsule().fill(hovering
-                               ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.6)
-                               : .clear)
-                Capsule().strokeBorder(Theme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .fill(hovering ? Theme.cardStroke : Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
         }
-        .opacity(row.isSuppressed ? 0.5 : 1)
+        .opacity(row.isSuppressed ? 0.45 : 1)
         .contextMenu {
             if let onAgencyAction {
                 let now = Date()
@@ -221,7 +238,7 @@ private struct AttentionChip: View {
             }
         }
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
-        .help("Opens your terminal — macOS asks permission the first time")
+        .help("\(item.session.id) · opens your terminal — macOS asks permission the first time")
     }
 }
 

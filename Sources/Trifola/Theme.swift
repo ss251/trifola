@@ -2,24 +2,73 @@ import SwiftUI
 import AppKit
 import TrifolaKit
 
+extension NSColor {
+    /// A two-appearance semantic color. Keeping the appearance decision in
+    /// AppKit means the same token resolves correctly in windows and in the
+    /// headless ImageRenderer harness.
+    static func dyn(light: NSColor, dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+        }
+    }
+}
+
 // MARK: - Design tokens
-// Matches CodexBar (~/Developer/CodexBar): semantic system colors only, system
-// font at semantic sizes, 20pt gutters, 6/12pt rhythm, 6pt capsule bars,
-// hairline dividers instead of boxed cards. Everything adapts light/dark
-// automatically. See docs/CODEXBAR_DESIGN.md.
+// Warm, quiet, three-plane composition. Saturation is reserved for a decision,
+// a selected small filter, or an honest state marker; data is graphite by default.
 
 enum Theme {
-    // Text — semantic system colors, never hardcoded neutrals.
-    static let ink = Color(nsColor: .labelColor)
-    static let muted = Color(nsColor: .secondaryLabelColor)
+    // Ground and text. Dark mode follows the measured Notion/Codex warmth;
+    // light mode keeps macOS semantic ground and true label contrast.
+    static let surfaceWindow = Color(nsColor: .dyn(
+        light: .windowBackgroundColor,
+        dark: NSColor(srgbRed: 25 / 255, green: 25 / 255, blue: 24 / 255, alpha: 1)))
+    static let surfaceSidebar = Color(nsColor: .dyn(
+        light: .underPageBackgroundColor,
+        dark: NSColor(srgbRed: 33 / 255, green: 33 / 255, blue: 32 / 255, alpha: 1)))
+    static let ink = Color(nsColor: .dyn(
+        light: .labelColor,
+        dark: NSColor(srgbRed: 237 / 255, green: 236 / 255, blue: 233 / 255, alpha: 1)))
+    static let muted = Color(nsColor: .dyn(
+        light: .secondaryLabelColor,
+        dark: NSColor(srgbRed: 163 / 255, green: 160 / 255, blue: 154 / 255, alpha: 1)))
     static let faint = Color(nsColor: .tertiaryLabelColor)
     static let hairline = Color(nsColor: .separatorColor)
 
-    // Selection cascade (CodexBar MenuHighlightStyle): background flips to the
-    // system selection color and every text run flips to the selection text.
-    static let selectionBG = Color(nsColor: .selectedContentBackgroundColor)
-    static let selectionText = Color(nsColor: .selectedMenuItemTextColor)
+    // Large-area selection is a luminance step, never an accent billboard.
+    static let selectionBG = Color(nsColor: .dyn(
+        light: NSColor.black.withAlphaComponent(0.06),
+        dark: NSColor.white.withAlphaComponent(0.08)))
+    static let selectionText = ink
     static let accent = Color(nsColor: .controlAccentColor)
+    static let graphite = muted
+
+    // Elevation. Every stroked surface is paired with a fill; open tables and
+    // narration stay directly on the window ground.
+    static let cardFill = Color(nsColor: .dyn(
+        light: NSColor.black.withAlphaComponent(0.035),
+        dark: NSColor.white.withAlphaComponent(0.06)))
+    static let cardStroke = Color(nsColor: .dyn(
+        light: NSColor.black.withAlphaComponent(0.08),
+        dark: NSColor.white.withAlphaComponent(0.09)))
+    static let codeFill = Color(nsColor: .dyn(
+        light: NSColor.black.withAlphaComponent(0.03),
+        dark: NSColor.white.withAlphaComponent(0.04)))
+
+    // Attention pills are the only state-hued fills. The surrounding row/chip
+    // stays neutral so the fully saturated 6pt dot remains the signal.
+    static let blockedFill = Color(nsColor: .dyn(
+        light: NSColor.systemRed.withAlphaComponent(0.10),
+        dark: NSColor.systemRed.withAlphaComponent(0.15)))
+    static let blockedText = Color(nsColor: .dyn(
+        light: NSColor(srgbRed: 163 / 255, green: 44 / 255, blue: 38 / 255, alpha: 1),
+        dark: NSColor(srgbRed: 242 / 255, green: 199 / 255, blue: 196 / 255, alpha: 1)))
+    static let waitingFill = Color(nsColor: .dyn(
+        light: NSColor.systemYellow.withAlphaComponent(0.18),
+        dark: NSColor.systemYellow.withAlphaComponent(0.12)))
+    static let waitingText = Color(nsColor: .dyn(
+        light: NSColor(srgbRed: 125 / 255, green: 98 / 255, blue: 14 / 255, alpha: 1),
+        dark: NSColor(srgbRed: 239 / 255, green: 228 / 255, blue: 176 / 255, alpha: 1)))
 
     // Status dots — system semantic status colors, auto-adapting, applied
     // ONLY to dots and short warning text runs. Never to bar fills or chrome.
@@ -31,22 +80,45 @@ enum Theme {
     static let barHeight: CGFloat = 6
     static let progressTrack = Color(nsColor: .tertiaryLabelColor).opacity(0.22)
 
-    // Layout (CodexBar UsageMenuCardLayout): 20pt gutters, 6/12pt rhythm.
-    static let gutter: CGFloat = 20
+    // One spacing/radius scale. Screen code maps to these values instead of
+    // inventing a neighboring rhythm.
+    static let micro: CGFloat = 4
+    static let intraCell: CGFloat = 8
+    static let gutter: CGFloat = 24
     static let rhythm: CGFloat = 6
     static let sectionGap: CGFloat = 12
-    static let radius: CGFloat = 8
+    static let cardPadding: CGFloat = 14
+    static let codePadding: CGFloat = 10
+    static let hairlineWidth: CGFloat = 1
+    static let toggleKnobInset: CGFloat = 1.5
+    static let sparkRadius: CGFloat = 1.5
+    static let rowVerticalInset: CGFloat = 5
+    static let compactControlVerticalInset: CGFloat = 3
+    static let controlHorizontalInset: CGFloat = 11
+    static let toastVerticalInset: CGFloat = 7
+    static let liveGaugeBottomInset: CGFloat = 9
+    static let paletteFieldVerticalInset: CGFloat = 13
+    static let overlayEmptyVerticalInset: CGFloat = 18
+    static let paneInset: CGFloat = 16
+    static let paletteTopInset: CGFloat = 96
+    static let renderInset: CGFloat = 28
+    static let radiusInline: CGFloat = 4
+    static let radiusRow: CGFloat = 6
+    static let radiusCard: CGFloat = 10
+    static let radiusOverlay: CGFloat = 14
+    static let radius: CGFloat = radiusCard
 
     // Millimeter layer — stop freehanding (POLISH C7). One inset, one block gap,
     // fixed evidence-table column metrics so every table reads as the same grammar.
     static let rowInsets = EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
-    static let blockGap: CGFloat = 16          // between sections inside a screen
+    static let blockGap: CGFloat = 20          // between sections inside a screen
     static let rankBarWidth: CGFloat = 120     // the evidence rank column
     static let valueColWidth: CGFloat = 76     // primary right-aligned value column
     static let subValueColWidth: CGFloat = 56  // secondary value column
     static let microColWidth: CGFloat = 40     // counts (×N, session counts)
-    static let radiusRow: CGFloat = 6          // hover rows + inner code blocks
-    // radius (8) stays for containers, cards, callouts, the strip.
+    static let iconGutter: CGFloat = 14
+    static let compactRowHeight: CGFloat = 30
+    static let sessionRowHeight: CGFloat = 36
 }
 
 // MARK: - Reduce Motion
@@ -161,6 +233,12 @@ struct WindowConfigurator: NSViewRepresentable {
 // AppKit path so it's one object at every distance.
 
 enum AppBrand {
+    enum Geometry {
+        static let ringInsetRatio: CGFloat = 0.12
+        static let ringWidthRatio: CGFloat = 0.12
+        static let runningDotRatio: CGFloat = 0.22
+        static let needsDotRatio: CGFloat = 0.34
+    }
     /// The three honest menu-bar states — legible at a hallway glance.
     /// quiet = hollow ring · running = dot-in-ring · needsYou = filled dot + ring.
     enum MarkState { case quiet, running, needsYou }
@@ -169,24 +247,27 @@ enum AppBrand {
         NSApplication.shared.applicationIconImage = dockIcon()
     }
 
+    private static func drawMark(in rect: NSRect, state: MarkState, color: NSColor) {
+        color.setStroke(); color.setFill()
+        let size = min(rect.width, rect.height)
+        let lw = max(1, size * Geometry.ringWidthRatio)
+        let ringRect = rect.insetBy(dx: size * Geometry.ringInsetRatio,
+                                    dy: size * Geometry.ringInsetRatio)
+        let ring = NSBezierPath(ovalIn: ringRect)
+        ring.lineWidth = lw
+        ring.stroke()
+        guard state != .quiet else { return }
+        let d = state == .needsYou ? size * Geometry.needsDotRatio : size * Geometry.runningDotRatio
+        let dot = NSRect(x: rect.midX - d / 2, y: rect.midY - d / 2, width: d, height: d)
+        NSBezierPath(ovalIn: dot).fill()
+    }
+
     /// The mark alone, on a transparent canvas, in one `color`. `template` marks it
     /// as a menu-bar template so the system tints it for light/dark + selection.
     static func markImage(size: CGFloat, state: MarkState = .needsYou,
                           color: NSColor = .black, template: Bool = false) -> NSImage {
         let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            color.setStroke(); color.setFill()
-            // Ring: a concentric hollow circle, stroke ≈ 12% of the glyph.
-            let lw = max(1, size * 0.12)
-            let ringRect = rect.insetBy(dx: lw / 2 + size * 0.06, dy: lw / 2 + size * 0.06)
-            let ring = NSBezierPath(ovalIn: ringRect)
-            ring.lineWidth = lw
-            ring.stroke()
-            // Center dot: absent when quiet, small while running, full when it needs you.
-            if state != .quiet {
-                let d = state == .needsYou ? size * 0.34 : size * 0.22
-                let dot = NSRect(x: rect.midX - d / 2, y: rect.midY - d / 2, width: d, height: d)
-                NSBezierPath(ovalIn: dot).fill()
-            }
+            drawMark(in: rect, state: state, color: color)
             return true
         }
         img.isTemplate = template
@@ -200,15 +281,10 @@ enum AppBrand {
             NSGradient(colors: [NSColor(srgbRed: 0.32, green: 0.33, blue: 0.36, alpha: 1),
                                 NSColor(srgbRed: 0.17, green: 0.18, blue: 0.20, alpha: 1)])?
                 .draw(in: path, angle: -90)
-            // The mark, drawn to the dock spec: filled core Ø150, concentric ring
-            // Ø240 / 16pt stroke, both white 0.92 — the door light, not a borrowed ⌘.
-            let white = NSColor.white.withAlphaComponent(0.92)
-            white.setStroke(); white.setFill()
-            let ringD: CGFloat = 240, ringLW: CGFloat = 16, coreD: CGFloat = 150
-            let ringRect = NSRect(x: rect.midX - ringD / 2, y: rect.midY - ringD / 2, width: ringD, height: ringD)
-            let ring = NSBezierPath(ovalIn: ringRect); ring.lineWidth = ringLW; ring.stroke()
-            let coreRect = NSRect(x: rect.midX - coreD / 2, y: rect.midY - coreD / 2, width: coreD, height: coreD)
-            NSBezierPath(ovalIn: coreRect).fill()
+            // Same normalized path as the 14pt/64pt lockups, centered inside
+            // the graphite tile. Scale changes; geometry does not.
+            let markRect = NSRect(x: rect.midX - 160, y: rect.midY - 160, width: 320, height: 320)
+            drawMark(in: markRect, state: .needsYou, color: NSColor.white.withAlphaComponent(0.92))
             NSColor.white.withAlphaComponent(0.12).setStroke()
             let rim = NSBezierPath(roundedRect: inset.insetBy(dx: 1, dy: 1), xRadius: 107, yRadius: 107)
             rim.lineWidth = 2

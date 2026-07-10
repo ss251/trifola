@@ -273,6 +273,7 @@ public final class MCPIntrospectionServer {
             "session_id": s.id,
             "short_id": s.shortID,
             "name": s.name.map { $0 as Any } ?? NSNull(),
+            "handle": s.displayTitle,
             "project": s.project,
             "cwd": s.cwd,
             "transcript_path": s.filePath,

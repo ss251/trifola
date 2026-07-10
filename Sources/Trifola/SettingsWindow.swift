@@ -37,8 +37,7 @@ struct TrifolaSettingsView: View {
             AboutSettings()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 560, height: 430)
-        .padding(20)
+        .frame(width: 520, height: 420)
     }
 }
 
@@ -48,7 +47,7 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
-            Toggle("Show the menu-bar strip", isOn: menuPresence.boundEnabled)
+            TapToggle("Show the menu-bar strip", isOn: menuPresence.boundEnabled)
             LabeledContent("Claude config root") {
                 Text(location.url.path)
                     .font(.system(.body, design: .monospaced))
@@ -70,12 +69,12 @@ private struct AttentionSettings: View {
 
     var body: some View {
         Form {
-            Toggle("Notify when a session becomes blocked", isOn: Binding(
+            TapToggle("Notify when a session becomes blocked", isOn: Binding(
                 get: { notifier.enabled }, set: { notifier.enabled = $0 }))
             Text("Notifications are opt-in. The attention strip and menu-bar signal remain visible either way.")
                 .font(.footnote).foregroundStyle(.secondary)
 
-            Toggle("Quiet hours", isOn: preferenceBinding(
+            TapToggle("Quiet hours", isOn: preferenceBinding(
                 get: { $0.quietHours.enabled }, set: { $0.quietHours.enabled = $1 }))
             HStack {
                 DatePicker("From", selection: minuteDateBinding(\.quietHours.startMinute),
@@ -137,7 +136,7 @@ private struct MachineSettings: View {
         Form {
             Section {
                 HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "flask").foregroundStyle(.orange)
+                    Image(systemName: "flask").font(.body.weight(.medium)).foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Experimental").font(.headline)
                         Text("Remote transcript mirroring is read-only and best-effort. A down host leaves this Mac fully usable.")
@@ -160,9 +159,12 @@ private struct MachineSettings: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Button("Test connection") { machines.testConnection(remote) }
-                            Button(role: .destructive) { machines.removeRemote(remote) } label: {
+                            TapButton("Test connection") { machines.testConnection(remote) }
+                                .foregroundStyle(Theme.ink)
+                            TapButton(action: { machines.removeRemote(remote) }) {
                                 Image(systemName: "trash")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(Theme.muted)
                             }
                         }
                         if let test = machines.connectionTests[remote.name] {
@@ -181,7 +183,7 @@ private struct MachineSettings: View {
                         Text(validation).font(.footnote).foregroundStyle(.red)
                     }
                     Spacer()
-                    Button("Add host") {
+                    TapButton("Add host") {
                         if machines.addRemote(name: name, host: host, user: user) {
                             name = ""; host = ""; validation = nil
                         } else {
@@ -219,10 +221,11 @@ private struct AboutSettings: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(nsImage: AppBrand.markImage(size: 48, state: .running, template: false))
-            Text("Trifola").font(.title2.weight(.semibold))
-            Text("Version \(version)").foregroundStyle(.secondary)
+        VStack(spacing: Theme.sectionGap) {
+            AppLockup(size: 64, ring: Theme.green)
+            Text("Version \(version)")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.secondary)
             Text("MIT License")
             Text("An independent project — not affiliated with Anthropic.")
                 .foregroundStyle(.secondary)

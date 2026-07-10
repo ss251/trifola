@@ -12,28 +12,24 @@ struct SessionActions: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button {
+            QuietTapButton(action: {
                 let cmd = SessionResume.command(sessionID: session.id, cwd: session.cwd)
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(cmd, forType: .string)
                 flash("Resume command copied")
-            } label: {
+            }) {
                 Label(compact ? "Copy" : "Copy resume", systemImage: "doc.on.doc")
                     .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
             .help("Copy `claude --resume \(session.shortID)…` to the clipboard")
 
             if !compact {
-                Button {
+                QuietTapButton(action: {
                     NSWorkspace.shared.activateFileViewerSelecting(
                         [URL(fileURLWithPath: session.filePath)])
-                } label: {
+                }) {
                     Label("Reveal", systemImage: "folder")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
                 .help("Reveal the transcript .jsonl in Finder")
             }
         }

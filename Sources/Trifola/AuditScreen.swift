@@ -13,7 +13,7 @@ struct AuditScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Audit",
-            subtitle: "Waste attributed to a cause — cache-miss dollars, dead skills, model-mismatch.",
+            subtitle: "Explainable estimates from recorded usage · dollar values use public API rates, not your bill",
             epithet: "evidence, not nags"
         ) {
             AuditContent(
@@ -41,7 +41,7 @@ struct AuditScreen: View {
                         scope: r.scope, metric: r.metric, legs: r.legs, total: r.total,
                         pricingSource: r.pricingSource, dedupNote: r.dedupNote,
                         bucketingNote: r.bucketingNote,
-                        footnotes: r.footnotes + [String(format: "first-touch cache creation (5m ×1.25 · 1h ×2) = $%.2f — the cost of building cache, never summed into the leak", s.firstTouchDollars)])
+                        footnotes: r.footnotes + [String(format: "cache setup (5m ×1.25 · 1h ×2) = $%.2f — necessary cache-build work, not included in the fresh-vs-warm difference", s.firstTouchDollars)])
                 },
                 mismatchReceipt: { candidate in
                     guard let s = services.sessions.sessions.first(where: { $0.id == candidate.id }) else { return nil }
@@ -67,7 +67,7 @@ struct AuditContent: View {
     var mismatchReceipt: ((MismatchCandidate) -> CostReceipt?)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
             AuditHeadline(report: report)
             Divider()
             CacheMissSection(findings: report.cacheMiss,
@@ -96,14 +96,14 @@ private struct AuditHeadline: View {
     var body: some View {
         let l = report.skillLedger
         return StatRow {
-            StatTile(label: "Re-sent context (the leak)", value: fmtUSD(report.totalLeakDollars),
-                     sub: "above warm-cache floor · +\(fmtUSD(report.totalFirstTouchDollars)) first-touch")
+            StatTile(label: "Context re-billed above a warm cache", value: fmtUSD(report.totalLeakDollars),
+                     sub: "API-rate estimate · excludes \(fmtUSD(report.totalFirstTouchDollars)) needed to build cache")
             Divider()
-            StatTile(label: "Dead skills", value: "\(l.deadCount)/\(l.catalogCount)",
-                     sub: "never explicit-fired · ≈\(fmtTokens(l.deadPromptTaxTokens)) tok tax")
+            StatTile(label: "Unused catalog skills", value: "\(l.deadCount)/\(l.catalogCount)",
+                     sub: "never explicitly invoked · ≈\(fmtTokens(l.deadPromptTaxTokens)) prompt tokens")
             Divider()
-            StatTile(label: "Review candidates", value: "\(report.mismatchCount)",
-                     sub: "≈\(fmtUSD(report.totalMismatchOverspend)) est. overspend")
+            StatTile(label: "Cheaper-model review candidates", value: "\(report.mismatchCount)",
+                     sub: "≈\(fmtUSD(report.totalMismatchOverspend)) at API rates · heuristic")
         }
     }
 }
@@ -136,25 +136,25 @@ private struct CacheMissSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             AuditSectionHeader(
-                title: "Re-sent context — the leak",
-                caption: "\(fmtUSD(totalLeak)) was re-sent as FRESH input above the warm-cache floor — a warm cache serves it at ~10%. That is the leak. Cache CREATION (\(fmtUSD(totalFirstTouch)) fleet-wide) is first-touch — the unavoidable cost of building cache — shown per session, never counted as leak. Cache expiry (idle, /compact, task switches) makes some re-sending unavoidable; the hit-rate column is the honest denominator. Sorted by dollars leaked.")
+                title: "Context charged above the warm-cache price",
+                caption: "\(fmtUSD(totalLeak)) is the API-rate difference between context billed as fresh input and the same context served from a warm cache at about 10% of the input rate. It is not money known to have left your account. The separate \(fmtUSD(totalFirstTouch)) cache-build estimate is necessary first-use work and is never included here. Idle time, /compact, and task switches can expire cache, so some re-sending is unavoidable; the cached percentage is the denominator.")
             if findings.isEmpty {
-                LeanRow("Context is running warm — negligible re-sent-context leak.")
+                LeanRow("Context is running warm — negligible cost above the warm-cache rate.")
             } else {
                 let top = max(findings.first?.leakDollars ?? 1, 0.0001)
                 EvidenceColumns(leading: "Session", columns: [
                     ("rank", Theme.rankBarWidth, .leading),
                     ("cached", Theme.subValueColWidth, .trailing),
-                    ("first-touch", Theme.subValueColWidth, .trailing),
-                    ("leak", Theme.valueColWidth, .trailing),
+                    ("setup", Theme.subValueColWidth, .trailing),
+                    ("fresh-vs-warm", Theme.valueColWidth, .trailing),
                 ])
                 ForEach(findings) { f in
                     VStack(alignment: .leading, spacing: 2) {
                         EvidenceRow(barFraction: f.leakDollars / top) {
                             onSelect(f.id)
                         } leading: {
-                            IdentityCell(project: f.project, id: f.shortID,
-                                         caption: "\(fmtTokens(f.billedInput)) billed input\(f.isSubagent ? " · subagent" : "")",
+                            IdentityCell(project: "\(f.project) · \(f.handle)", id: f.shortID,
+                                         caption: "\(fmtAgo(f.lastActivity)) · \(fmtTokens(f.billedInput)) billed input tokens\(f.isSubagent ? " · subagent" : "")",
                                          tier: f.tier)
                         } trailing: {
                             Text(fmtPct(f.cacheHitRate))
@@ -174,7 +174,7 @@ private struct CacheMissSection: View {
                         // × (input − cacheRead) per model leg, Σ = this row.
                         if let make = receiptFor, let receipt = make(f) {
                             ReceiptDisclosure(storageKey: nil) { receipt }
-                                .padding(.leading, 8)
+                                .padding(.leading, Theme.intraCell)
                         }
                     }
                 }
@@ -189,6 +189,7 @@ private struct SkillLedgerSection: View {
     let ledger: SkillLedger
     let artifactPaths: [String: String]
     let onReveal: (String) -> Void
+    @State private var showsAllDead = false
 
     private var perSessionTax: Double {
         Double(ledger.deadPromptTaxTokens) / 1_000_000
@@ -202,8 +203,13 @@ private struct SkillLedgerSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             AuditSectionHeader(
-                title: "Skill ledger — dead weight + prompt tax",
-                caption: "\(ledger.deadCount) of \(ledger.catalogCount) catalog skills have never explicit-fired. Their descriptions ride every session's system prompt: \(String(format: "$%.4f/session", perSessionTax)) · \(String(format: "$%.2f", totalTax)) across \(fmtGrouped(ledger.sessionCount)) scanned sessions at Sonnet cache-read rates. \(ledger.distinctFired) distinct skills ever fired (explicit Skill-tool calls + slash commands; auto-loaded skills still uncounted).")
+                title: "Skill catalog — used versus never explicitly invoked",
+                caption: "\(ledger.deadCount) of \(ledger.catalogCount) catalog skills have no recorded Skill-tool or slash-command invocation. Their descriptions still enter each session prompt: about \(String(format: "$%.4f/session", perSessionTax)) and \(String(format: "$%.2f", totalTax)) across \(fmtGrouped(ledger.sessionCount)) scanned sessions at Sonnet cache-read API rates. Auto-loaded skills are not observable here, so this is a review list, not proof that a skill is useless.")
+
+            ArtifactPill(icon: "folder", name: "Skill catalog", help: "Reveal ~/.claude/skills in Finder") {
+                onReveal(FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".claude/skills", isDirectory: true).path)
+            }
 
             HStack(alignment: .top, spacing: Theme.gutter) {
                 firedColumn.frame(maxWidth: .infinity, alignment: .leading)
@@ -223,7 +229,7 @@ private struct SkillLedgerSection: View {
                     HoverRow(action: { onReveal(artifactPath(for: e)) }) {
                       HStack(spacing: 8) {
                         Text(e.name)
-                            .font(.system(.subheadline, design: .monospaced))
+                            .font(.subheadline)
                             .foregroundStyle(Theme.ink).lineLimit(1)
                         if !e.inCatalog {
                             Text("ext")
@@ -238,8 +244,8 @@ private struct SkillLedgerSection: View {
                             .frame(width: Theme.microColWidth, alignment: .trailing)
                             .monospacedDigit()
                       }
-                      .padding(.horizontal, 6)
-                      .padding(.vertical, 3)
+                      .padding(.horizontal, Theme.rhythm)
+                      .padding(.vertical, Theme.rhythm / 2)
                       .contentShape(Rectangle())
                       .overlay(alignment: .top) { Divider() }
                     }
@@ -254,35 +260,39 @@ private struct SkillLedgerSection: View {
         // same shape Ledger L-002 gives the identical data. The count lives in the
         // section caption ("95 of 110…"), never as a floating amber numeral (AUD-3).
         VStack(alignment: .leading, spacing: 6) {
-            ColumnLabel("Dead weight — never fired")
+            ColumnLabel("Unused — never explicitly invoked")
             if ledger.dead.isEmpty {
                 LeanRow("Every catalog skill has fired at least once.")
             } else {
                 let top = max(ledger.dead.map(\.descriptionTokens).max() ?? 1, 1)
-                ForEach(ledger.dead.prefix(10)) { e in
+                ForEach(showsAllDead ? ledger.dead : Array(ledger.dead.prefix(10))) { e in
                     HoverRow(action: { onReveal(artifactPath(for: e)) }) {
                       HStack(spacing: 8) {
                         Text(e.name)
-                            .font(.system(.subheadline, design: .monospaced))
+                            .font(.subheadline)
                             .foregroundStyle(Theme.muted).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         CapsuleBar(fraction: Double(e.descriptionTokens) / Double(top))
                             .frame(width: Theme.rankBarWidth)
-                        Text("≈\(fmtTokens(e.descriptionTokens)) tok")
+                        Text("≈\(fmtTokens(e.descriptionTokens)) prompt tokens")
                             .font(.caption2).foregroundStyle(Theme.faint)
-                            .frame(width: 74, alignment: .trailing)
+                            .frame(width: Theme.rankBarWidth, alignment: .trailing)
                             .monospacedDigit()
                       }
-                      .padding(.horizontal, 6)
-                      .padding(.vertical, 3)
+                      .padding(.horizontal, Theme.rhythm)
+                      .padding(.vertical, Theme.rhythm / 2)
                       .contentShape(Rectangle())
                       .overlay(alignment: .top) { Divider() }
                     }
                 }
                 if ledger.dead.count > 10 {
-                    Text("+\(ledger.dead.count - 10) more never-fired — archive candidates (the app never edits ~/.claude).")
-                        .font(.caption2).foregroundStyle(Theme.faint)
-                        .padding(.top, 2)
+                    MutedDisclosureRow(
+                        label: showsAllDead
+                            ? "Show only the first 10 · the app never edits ~/.claude"
+                            : "+\(ledger.dead.count - 10) more never explicitly invoked — archive candidates (the app never edits ~/.claude)",
+                        isExpanded: showsAllDead) {
+                            showsAllDead.toggle()
+                        }
                 }
             }
         }
@@ -314,15 +324,15 @@ private struct MismatchSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             AuditSectionHeader(
-                title: "Model-mismatch — review candidates",
-                caption: "Heuristic, not a verdict: frontier sessions whose shape (few messages, no Agent fan-out) looks like cheaper-model work. Est. overspend = the FRONTIER (Opus) legs repriced at the date-aware Sonnet rate — legs already at or below Sonnet are never counted. Evidence to review — right-sizing is a per-task judgment.")
+                title: "Sessions that may fit a cheaper model",
+                caption: "Heuristic, not a verdict: these frontier-model sessions had few messages and no Agent fan-out. The estimate reprices only their Opus usage at the date-aware Sonnet API rate; usage already at or below Sonnet is excluded. Review the transcript before changing routing — task difficulty is not visible from counts alone.")
             if candidates.isEmpty {
                 LeanRow("No frontier sessions look obviously right-sizable — routing looks lean.")
             } else {
                 EvidenceColumns(leading: "Session (ran on frontier)", columns: [
                     ("rank", Theme.rankBarWidth, .leading),
-                    ("billed", Theme.subValueColWidth, .trailing),
-                    ("overspend", Theme.valueColWidth, .trailing),
+                    ("API price", Theme.subValueColWidth, .trailing),
+                    ("price diff", Theme.valueColWidth, .trailing),
                 ])
                 ForEach(candidates) { c in
                     let top = max(candidates.first?.estOverspend ?? 1, 0.0001)
@@ -330,8 +340,8 @@ private struct MismatchSection: View {
                         EvidenceRow(barFraction: c.estOverspend / top) {
                             onSelect(c.id)
                         } leading: {
-                            IdentityCell(project: c.project, id: c.shortID,
-                                         caption: "\(c.messageCount) msgs · \(c.fileEdits) edit\(c.fileEdits == 1 ? "" : "s") · \(c.agentCalls) agent\(c.agentCalls == 1 ? "" : "s")",
+                            IdentityCell(project: "\(c.project) · \(c.handle)", id: c.shortID,
+                                         caption: "\(fmtAgo(c.lastActivity)) · \(c.messageCount) messages · \(c.fileEdits) edit\(c.fileEdits == 1 ? "" : "s") · \(c.agentCalls) agent\(c.agentCalls == 1 ? "" : "s")",
                                          tier: c.tier)
                         } trailing: {
                             Text(fmtUSD(c.cost))
@@ -347,7 +357,7 @@ private struct MismatchSection: View {
                         // vs Sonnet-repriced per frontier leg, Σ = this row.
                         if let make = receiptFor, let receipt = make(c) {
                             ReceiptDisclosure(storageKey: nil) { receipt }
-                                .padding(.leading, 8)
+                                .padding(.leading, Theme.intraCell)
                         }
                     }
                 }

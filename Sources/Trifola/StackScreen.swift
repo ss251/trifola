@@ -84,13 +84,11 @@ struct StackScreen: View {
         ) {
             HStack(spacing: Theme.sectionGap) {
                 summaryPill
-                Button {
+                QuietTapButton(action: {
                     Task { await store.refreshNow() }
-                } label: {
+                }) {
                     Label("Probe again", systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
                 .disabled(store.probing)
             }
         } content: {
@@ -159,13 +157,11 @@ struct StackScreen: View {
                         .font(.caption2)
                         .foregroundStyle(Theme.faint)
                 }
-                Button {
+                QuietTapButton(action: {
                     Task { await skillsStore.refreshNow() }
-                } label: {
+                }) {
                     Label("Rescan", systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
                 .disabled(skillsStore.loading)
             }
 
@@ -184,7 +180,7 @@ struct StackScreen: View {
 
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
-                        .font(.footnote)
+                        .font(.footnote.weight(.medium))
                         .foregroundStyle(Theme.muted)
                     TextField("Search \(hierarchy.totalSkills) skills by name, trigger or description…",
                               text: $skillQuery)
@@ -197,11 +193,12 @@ struct StackScreen: View {
                             .foregroundStyle(Theme.faint)
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .padding(.horizontal, Theme.intraCell)
+                .padding(.vertical, Theme.rhythm)
                 .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous).fill(Theme.codeFill)
+                    RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                        .strokeBorder(Theme.cardStroke, lineWidth: 1)
                 }
 
                 HStack(alignment: .top, spacing: Theme.sectionGap) {
@@ -221,7 +218,7 @@ struct StackScreen: View {
                 SkillUsageLegend()
             }
         }
-        .padding(.top, 4)
+        .padding(.top, Theme.micro)
     }
 
     private var hierarchyTree: some View {
@@ -235,12 +232,13 @@ struct StackScreen: View {
                                   onLaunch: { seedBuilder($0) })
                 }
             }
-            .padding(8)
+            .padding(Theme.intraCell)
         }
         .frame(height: 520)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 
@@ -256,12 +254,13 @@ struct StackScreen: View {
                                       onLaunch: { seedBuilder(skill) })
                 }
             }
-            .padding(6)
+            .padding(Theme.rhythm)
         }
         .frame(height: 520)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 
@@ -289,14 +288,12 @@ struct SkillDetail: View {
                         Label("Launch", systemImage: "paperplane.fill")
                     }
                     .help("Seed the Session Builder with /\(skill.qualifiedID)")
-                    Button {
+                    QuietTapButton(action: {
                         NSWorkspace.shared.selectFile(
                             skill.path, inFileViewerRootedAtPath: "")
-                    } label: {
+                    }) {
                         Label("Reveal", systemImage: "folder")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
 
                 HStack(spacing: 8) {
@@ -337,14 +334,15 @@ struct SkillDetail: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
             }
-            .padding(14)
+            .padding(Theme.cardPadding)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity)
         .frame(height: 520)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 
@@ -379,9 +377,12 @@ private struct FlowChips: View {
                 Text(item)
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                    .padding(.horizontal, Theme.intraCell)
+                    .padding(.vertical, Theme.rhythm / 2)
+                    .background {
+                        Capsule().fill(Theme.cardFill)
+                        Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+                    }
                     .lineLimit(1)
             }
         }
@@ -476,7 +477,7 @@ private struct FlowLayout: Layout {
     private var footnote: some View {
         HStack(spacing: 5) {
             Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
             if let lastRun = store.lastRun {
                 Text("last sweep \(fmtAgo(lastRun)) · re-probes every 30 s while you watch")
             } else {
@@ -509,7 +510,7 @@ struct ProbeCard: View {
         VStack(alignment: .leading, spacing: Theme.rhythm + 2) {
             HStack(spacing: 10) {
                 Image(systemName: symbol)
-                    .font(.body)
+                    .font(.body.weight(.medium))
                     .foregroundStyle(Theme.muted)
                     .frame(width: 24)
 
@@ -545,7 +546,7 @@ struct ProbeCard: View {
                             // room, not just the card-level dot.
                             if metricFails(metric.value) {
                                 Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.system(size: 9))
+                                    .font(.system(size: 9, weight: .medium))
                                     .foregroundStyle(Theme.amber)
                             }
                             Text(metric.value)
@@ -568,11 +569,12 @@ struct ProbeCard: View {
                     .foregroundStyle(Theme.faint)
             }
         }
-        .padding(14)
+        .padding(Theme.cardPadding)
         .frame(maxWidth: .infinity, minHeight: 124, alignment: .topLeading)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 
@@ -625,7 +627,7 @@ struct SkillLaneStats: View {
                      sub: "\(hierarchy.collisions.count) collision\(hierarchy.collisions.count == 1 ? "" : "s")",
                      valueColor: hierarchy.collisions.isEmpty ? Theme.ink : Theme.amber)
             Divider()
-            StatTile(label: "Dead", value: "\(deadCount)/\(catalog)", sub: "never explicit-fired")
+            StatTile(label: "Unused", value: "\(deadCount)/\(catalog)", sub: "never explicitly invoked")
         }
     }
 }
@@ -640,7 +642,7 @@ struct TriggerCollisionsPanel: View {
         CalloutPanel(tone: Theme.amber) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(Theme.amber)
+                    Image(systemName: "exclamationmark.triangle.fill").font(.caption.weight(.medium)).foregroundStyle(Theme.amber)
                     ColumnLabel("Trigger collisions")
                     Text("\(collisions.count)").font(.caption.weight(.medium)).foregroundStyle(Theme.amber)
                         .monospacedDigit()
@@ -651,7 +653,7 @@ struct TriggerCollisionsPanel: View {
                 ForEach(collisions.prefix(6)) { c in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("“\(c.phrase)”")
-                            .font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.ink)
+                            .font(.footnote).foregroundStyle(Theme.muted)
                             .lineLimit(1)
                         Spacer(minLength: 8)
                         Text(c.skillNames.joined(separator: " · "))
@@ -678,7 +680,7 @@ struct SkillLaneView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: lane.lane.icon).font(.footnote).foregroundStyle(Theme.muted).frame(width: 16)
+                Image(systemName: lane.lane.icon).font(.footnote.weight(.medium)).foregroundStyle(Theme.muted).frame(width: 16)
                 Text(lane.lane.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
                 Text("\(lane.count)").font(.caption).foregroundStyle(Theme.muted)
                 Spacer()
@@ -687,17 +689,17 @@ struct SkillLaneView: View {
             ForEach(lane.namespaces) { ns in
                 if ns.count > 1 || ns.key == "gstack" || !ns.key.isEmpty {
                     HStack(spacing: 5) {
-                        Image(systemName: "chevron.down").font(.system(size: 8)).foregroundStyle(Theme.faint)
+                        Image(systemName: "chevron.right").font(.caption2.weight(.medium)).foregroundStyle(Theme.faint)
                         Text(ns.displayName).font(.caption.weight(.medium)).foregroundStyle(Theme.muted)
                         Text("\(ns.count)").font(.caption2).foregroundStyle(Theme.faint)
                     }
-                    .padding(.leading, 4).padding(.top, 3)
+                    .padding(.leading, Theme.micro).padding(.top, Theme.rhythm / 2)
                 }
                 ForEach(ns.skills) { s in
                     HierarchySkillRow(skill: s, entry: entryFor(s),
                                       isSelected: s.path == selectedPath,
                                       onSelect: { onSelect(s) }, onLaunch: { onLaunch(s) })
-                        .padding(.leading, 10)
+                        .padding(.leading, Theme.codePadding)
                 }
             }
         }
@@ -724,43 +726,45 @@ struct HierarchySkillRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle().fill(dotColor).frame(width: 6, height: 6)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    Text(skill.name).font(.subheadline.weight(.medium)).foregroundStyle(primary).lineLimit(1)
-                    if let v = skill.version { Text("v\(v)").font(.caption2).foregroundStyle(secondary) }
-                    if showLane { Text(skill.source.lane.title).font(.caption2).foregroundStyle(secondary.opacity(0.8)) }
+            TapButton(focusVisual: .row, action: onSelect) {
+                HStack(spacing: 8) {
+                    Circle().fill(dotColor).frame(width: 6, height: 6)
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 5) {
+                            Text(skill.name).font(.subheadline.weight(.medium)).foregroundStyle(primary).lineLimit(1)
+                            if let v = skill.version { Text("v\(v)").font(.caption2).foregroundStyle(secondary) }
+                            if showLane { Text(skill.source.lane.title).font(.caption2).foregroundStyle(secondary.opacity(0.8)) }
+                        }
+                        Text(skill.description).font(.caption).foregroundStyle(secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    // Every row states its evidence: ×N (fired), unused (catalog
+                    // entry with no explicit invocation), or a faint em dash.
+                    if fired {
+                        Text("×\(entry!.invocations)").font(.caption2.weight(.medium))
+                            .foregroundStyle(isSelected ? Theme.selectionText : Theme.green)
+                            .monospacedDigit()
+                    } else if isDead {
+                        Text("unused").font(.caption2).foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
+                    } else {
+                        Text("—").font(.caption2)
+                            .foregroundStyle(isSelected ? Theme.selectionText.opacity(0.6) : Theme.faint)
+                            .help("Never seen in a transcript — no explicit Skill-tool call recorded")
+                    }
                 }
-                Text(skill.description).font(.caption).foregroundStyle(secondary).lineLimit(1)
-            }
-            Spacer(minLength: 4)
-            // Every row states its evidence (UI_GRIND SKL-1/§2.6): ×N (fired),
-            // dead (in catalog, never fired), or a faint — (never seen in a
-            // transcript). Blank was a silent third state.
-            if fired {
-                Text("×\(entry!.invocations)").font(.caption2.weight(.medium))
-                    .foregroundStyle(isSelected ? Theme.selectionText : Theme.green)
-                    .monospacedDigit()
-            } else if isDead {
-                Text("dead").font(.caption2).foregroundStyle(isSelected ? Theme.selectionText : Theme.amber.opacity(0.8))
-            } else {
-                Text("—").font(.caption2)
-                    .foregroundStyle(isSelected ? Theme.selectionText.opacity(0.6) : Theme.faint)
-                    .help("Never seen in a transcript — no explicit Skill-tool call recorded")
             }
             // Launch appears on hover/selection only (UI_GRIND SKL-2): at rest the
             // tree is pure evidence, not fourteen paperplanes of verb wallpaper.
             TapButton(action: onLaunch) { Image(systemName: "paperplane") }
-                .font(.caption)
-                .foregroundStyle(isSelected ? Theme.selectionText : Theme.accent)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
                 .opacity(hovering || isSelected ? 1 : 0)
                 .help("Seed the Session Builder with /\(skill.qualifiedID)")
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
+        .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.rowVerticalInset)
         .contentShape(Rectangle())
-        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .background(RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
             .fill(isSelected ? Theme.selectionBG : .clear))
-        .onTapGesture(perform: onSelect)
         .onHover { hovering = $0 }
     }
 }
@@ -770,7 +774,7 @@ struct HierarchySkillRow: View {
 /// Shared by the live tree + `--render-skills`.
 struct SkillUsageLegend: View {
     var body: some View {
-        Text("×N = explicit Skill-tool calls counted from transcripts · dead = in catalog, never fired · — = never seen in a transcript")
+        Text("×N = explicit Skill-tool calls counted from transcripts · unused = in the catalog, never explicitly invoked · — = never seen in a transcript")
             .font(.caption2).foregroundStyle(Theme.faint)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -781,13 +785,16 @@ struct SkillSourceBadge: View {
     let source: SkillSource
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: source.lane.icon).font(.system(size: 9))
+            Image(systemName: source.lane.icon).font(.system(size: 9, weight: .medium))
             Text(source.pluginName.map { "\(source.lane.title) · \($0)" } ?? source.lane.title)
                 .font(.caption2)
         }
         .foregroundStyle(Theme.muted)
-        .padding(.horizontal, 6).padding(.vertical, 2)
-        .background(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+        .padding(.horizontal, Theme.rhythm).padding(.vertical, Theme.micro / 2)
+        .background {
+            Capsule().fill(Theme.cardFill)
+            Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+        }
     }
 }
 
@@ -805,7 +812,7 @@ struct SkillLedgerBadge: View {
                     .font(.caption2).foregroundStyle(Theme.muted)
             } else if entry != nil {
                 SeatMark(fill: Theme.amber.opacity(0.6), size: 6)
-                Text("dead — never explicit-fired").font(.caption).foregroundStyle(Theme.muted)
+                Text("unused — never explicitly invoked").font(.caption).foregroundStyle(Theme.muted)
             } else if source.lane == .user {
                 SeatMark(fill: Theme.faint, size: 6)
                 Text("no explicit invocations recorded").font(.caption).foregroundStyle(Theme.muted)

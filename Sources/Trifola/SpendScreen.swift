@@ -18,7 +18,7 @@ struct SpendScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Spend & Routing",
-            subtitle: "API-rate equivalent — estimated from real token counts — what a metered key would have billed"
+            subtitle: "Estimated from recorded tokens at public API rates · comparison only, not your bill or subscription charge"
         ) {
             headline
             // "Show the math" (W3): the whole-corpus receipt behind the
@@ -50,8 +50,8 @@ struct SpendScreen: View {
 
     private var headline: some View {
         StatRow {
-            StatTile(label: "Est. total spend", value: fmtUSD(store.totalCost),
-                     sub: "\(fmtTokens(store.totalUsage.total)) tokens all time")
+            StatTile(label: "API-rate estimate", value: fmtUSD(store.totalCost),
+                     sub: "\(fmtTokens(store.totalUsage.total)) recorded tokens · not your bill")
             Divider()
             StatTile(label: "Cache savings — net of write premiums", value: fmtUSD(store.totalCacheSavings),
                      sub: "cache reads billed at 10% of input")
@@ -65,7 +65,7 @@ struct SpendScreen: View {
 
     private var tierTable: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
-            SectionLabel("Tier economics")
+            SectionLabel("API-rate estimate by model tier")
             TierSplitBar(stats: store.tierStats)
             VStack(spacing: 0) {
                 header
@@ -85,12 +85,15 @@ struct SpendScreen: View {
                 .font(.caption2)
                 .foregroundStyle(Theme.faint)
             if let pricingError {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.amber)
                 Text(pricingError)
                     .font(.caption2)
-                    .foregroundStyle(Theme.amber)
+                    .foregroundStyle(Theme.muted)
             }
             Spacer()
-            Button(pricingRefreshing ? "Refreshing…" : "Refresh from models.dev") {
+            TapButton(pricingRefreshing ? "Refreshing…" : "Refresh from models.dev") {
                 pricingRefreshing = true
                 pricingError = nil
                 Task {
@@ -103,20 +106,20 @@ struct SpendScreen: View {
                     pricingRefreshing = false
                 }
             }
-            .buttonStyle(.link)
             .font(.caption2)
+            .foregroundStyle(Theme.muted)
             .disabled(pricingRefreshing)
         }
-        .padding(.top, 4)
+        .padding(.top, Theme.micro)
     }
 
     private var header: some View {
         HStack {
             Text("Tier").frame(width: 110, alignment: .leading)
             Text("Sessions (dominant tier)").frame(width: 122, alignment: .trailing)
-            Text("tok (excl. cache reads)").frame(width: 130, alignment: .trailing)
+            Text("tokens excluding cache reads").frame(width: 130, alignment: .trailing)
             Spacer()
-            Text("Est. cost").frame(width: 84, alignment: .trailing)
+            Text("API price").frame(width: 84, alignment: .trailing)
         }
         .font(.caption)
         .foregroundStyle(Theme.muted)
@@ -147,13 +150,13 @@ struct SpendScreen: View {
                     .foregroundStyle(Theme.ink)
                     .frame(width: 84, alignment: .trailing)
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, Theme.intraCell)
             // "Show the math" (W3): this tier row's receipt — the tier is only
             // the display grouping; the legs are the per-model truth.
             ReceiptDisclosure(storageKey: "provenance.spend-tier-\(st.tier.rawValue)") {
                 CostProvenance.tierReceipt(sessions: store.sessions, tier: st.tier)
             }
-            .padding(.bottom, 6)
+            .padding(.bottom, Theme.rhythm)
         }
         .overlay(alignment: .top) { Divider() }
     }
@@ -217,7 +220,7 @@ struct SpendScreen: View {
 
     private var projectBoard: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
-            SectionLabel("Spend by project")
+            SectionLabel("API-rate estimate by project")
             let rows = Array(store.projectSpend.prefix(12))
             let top = max(rows.first?.cost ?? 1, 0.0001)
             VStack(spacing: Theme.rhythm) {

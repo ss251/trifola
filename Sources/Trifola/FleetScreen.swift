@@ -113,11 +113,17 @@ struct FleetScreen: View {
     var body: some View {
         Group {
             if board.bays.isEmpty {
-                EmptyState(
-                    icon: "square.grid.3x3",
-                    title: "The floor is empty",
-                    detail: "Bays appear here as your agents arrive — one stable seat per repo, in arrival order. A seat never moves; only its dot, its now-line, and its cost change in place."
-                )
+                ScreenScaffold(
+                    title: "Fleet Board",
+                    subtitle: "No active agents · dollar estimates use public API rates, not your bill",
+                    epithet: "the floor") {
+                    EmptyState(
+                        icon: "square.grid.3x3",
+                        title: "The floor is empty",
+                        detail: "Bays appear as agents arrive: one stable seat per repository. A seat stays put while its status, current work, and API-rate estimate update in place."
+                    )
+                    .frame(minHeight: 460)
+                }
             } else {
                 ScrollView {
                     FleetFloor(
@@ -169,8 +175,9 @@ struct FleetFloor: View {
     var onSelect: (SessionSummary) -> Void = { _ in }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
             header
+            Divider()
             // The strip rides on top: "who needs me NOW" survives even while the
             // room below holds still. Sorted (triage) over stable (presence).
             AttentionStripView(board: attention,
@@ -182,7 +189,7 @@ struct FleetFloor: View {
                 (onOpenTerminal ?? onSelect)($0)
             }
             Divider()
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: Theme.blockGap) {
                 ForEach(board.bays) { bay in
                     FleetBayView(bay: bay,
                                  chipForced: duplicatedProjects.contains(bay.project),
@@ -218,7 +225,8 @@ struct FleetFloor: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
                     Text("Fleet Board")
-                        .font(.title2.weight(.semibold))
+                        .font(.system(size: 28, weight: .bold))
+                        .tracking(-0.4)
                         .foregroundStyle(Theme.ink)
                     Text("the floor")
                         .font(.caption)
@@ -233,7 +241,7 @@ struct FleetFloor: View {
             // second (subagent-inclusive) count adjacent to it reads as a
             // contradiction rather than a census. The subtitle holds the totals.
         }
-        .padding(.top, 4)
+        .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
     }
 
     private var subtitle: String {
@@ -249,7 +257,7 @@ struct FleetFloor: View {
         let across = machineN > 1
             ? "across \(machineN) machines · \(bays) bay\(bays == 1 ? "" : "s")"
             : "across \(bays) bay\(bays == 1 ? "" : "s")"
-        return "\(who) \(across) · stable seats, live presence · \(fmtUSD(board.totalCost)) today"
+        return "\(who) \(across) · stable seats · \(fmtUSD(board.totalCost)) today at public API rates — not your bill"
     }
 }
 
@@ -282,12 +290,14 @@ private struct FleetBayView: View {
                         Text(t.session.tier.label).font(.caption).foregroundStyle(Theme.faint)
                         if let q = t.taskQuote {
                             Text("last: \(q)").font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
+                        } else {
+                            Text(t.session.displayTitle).font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
                         }
                         Spacer(minLength: 8)
                         Text(fmtUSD(t.session.cost)).font(.caption).foregroundStyle(Theme.muted)
                     }
-                    .padding(.leading, 2)
-                    .opacity(snoozed || muted ? 0.5 : 0.85)
+                    .padding(.leading, Theme.micro / 2)
+                    .opacity(snoozed || muted ? 0.45 : 0.85)
                     .contextMenu {
                         Button("Focus transcript") { onSelect(t.session) }
                         if let onOpenTerminal {
@@ -329,10 +339,10 @@ private struct FleetBayView: View {
                 if let c = bay.collision {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle")
-                            .font(.caption2).foregroundStyle(Theme.amber)
-                        Text(c.message).font(.caption2).foregroundStyle(Theme.amber)
+                            .font(.caption2.weight(.medium)).foregroundStyle(Theme.amber)
+                        Text(c.message).font(.caption2).foregroundStyle(Theme.muted)
                     }
-                    .padding(.leading, 2)
+                    .padding(.leading, Theme.micro / 2)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(bay.tokens) { token in
@@ -414,20 +424,33 @@ private struct FleetTokenView: View {
     var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
     var onOpenTerminal: ((SessionSummary) -> Void)? = nil
     var onSelect: (SessionSummary) -> Void
+    @State private var showsChildren = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             row
-            ForEach(Array(token.children.enumerated()), id: \.element.id) { i, child in
-                FleetTokenView(token: child, depth: depth + 1,
-                               isLast: i == token.children.count - 1, pulses: pulses,
-                               suppressionState: suppressionState,
-                               defaultSnoozeMinutes: defaultSnoozeMinutes,
-                               onAgencyAction: onAgencyAction,
-                               onOpenTerminal: onOpenTerminal,
-                               onSelect: onSelect)
+            if !token.children.isEmpty {
+                MutedDisclosureRow(
+                    label: "\(token.children.count) subagent\(token.children.count == 1 ? "" : "s") · \(fmtUSD(token.children.reduce(0) { $0 + $1.session.cost }))",
+                    isExpanded: showsChildren) {
+                        showsChildren.toggle()
+                    }
+                    .padding(.leading, Theme.gutter)
+                if showsChildren {
+                    ForEach(Array(token.children.enumerated()), id: \.element.id) { i, child in
+                        FleetTokenView(token: child, depth: depth + 1,
+                                       isLast: i == token.children.count - 1, pulses: pulses,
+                                       suppressionState: suppressionState,
+                                       defaultSnoozeMinutes: defaultSnoozeMinutes,
+                                       onAgencyAction: onAgencyAction,
+                                       onOpenTerminal: onOpenTerminal,
+                                       onSelect: onSelect)
+                            .motionTransition(edge: .top)
+                    }
+                }
             }
         }
+        .reorderMotion(value: showsChildren)
     }
 
     private var row: some View {
@@ -438,8 +461,8 @@ private struct FleetTokenView: View {
         return HoverRow(action: { onSelect(token.session) }) {
             HStack(spacing: 9) {
                 if depth > 0 {
-                    Text(isLast ? "└" : "├")
-                        .font(.system(.caption, design: .monospaced))
+                    Image(systemName: isLast ? "arrow.turn.down.right" : "arrow.turn.right.down")
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(Theme.faint)
                         .frame(width: 10)
                 }
@@ -451,23 +474,28 @@ private struct FleetTokenView: View {
                     .foregroundStyle(Theme.muted)
                     .frame(width: 58, alignment: .leading)
                 Text("\(token.session.displayTitle) · \(fmtAgeShort(token.age))")
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.caption)
                     .foregroundStyle(Theme.faint)
                     .lineLimit(1)
-                    .frame(width: 116, alignment: .leading)
+                    .frame(minWidth: 160, alignment: .leading)
+                    .layoutPriority(1)
                 middle
-                Spacer(minLength: 8)
+                HRule()
+                    .stroke(Theme.hairline.opacity(0.5),
+                            style: StrokeStyle(lineWidth: 1, dash: [1, 3]))
+                    .frame(height: 1)
+                    .frame(maxWidth: .infinity)
                 Text(fmtUSD(token.session.cost))
                     .font(.subheadline)
                     .foregroundStyle(Theme.ink)
                     .frame(minWidth: 52, alignment: .trailing)
                     .monospacedDigit()
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .padding(.leading, CGFloat(depth) * 16)
+            .padding(.horizontal, Theme.intraCell)
+            .padding(.vertical, Theme.rowVerticalInset)
+            .padding(.leading, CGFloat(depth) * Theme.paneInset)
         }
-        .opacity(suppressed ? 0.5 : emberOpacity)
+        .opacity(suppressed ? 0.45 : emberOpacity)
         .contextMenu {
             Button("Focus transcript") { onSelect(token.session) }
             if let onOpenTerminal {
@@ -516,22 +544,22 @@ private struct FleetTokenView: View {
     @ViewBuilder private var middle: some View {
         VStack(alignment: .leading, spacing: 1) {
             if let n = token.nowLine {
-                (Text(n.tool).font(.system(.caption, design: .monospaced).weight(.semibold))
+                (Text(n.tool).font(.caption.weight(.semibold))
                     .foregroundStyle(token.state == .blocked ? Theme.red : Theme.ink)
                  + Text(n.detail.isEmpty ? "" : "  \(midTruncate(n.detail, 44))")
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.caption)
                     .foregroundStyle(Theme.muted))
                     .lineLimit(1)
                 if token.state.needsAttention, let q = token.taskQuote {
-                    Text("“\(q)”").font(.caption2).foregroundStyle(Theme.faint).lineLimit(1)
+                    Text("“\(q)”").font(.footnote).foregroundStyle(Theme.muted).lineLimit(1)
                 }
             } else if let q = token.taskQuote {
-                Text("“\(q)”").font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
+                Text("“\(q)”").font(.footnote).foregroundStyle(Theme.muted).lineLimit(1)
             } else {
                 Text(token.state.label.lowercased()).font(.caption).foregroundStyle(Theme.faint)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: 420, alignment: .leading)
     }
 
     /// Findings-as-evidence hover (VISION §5): the classification's basis, not a

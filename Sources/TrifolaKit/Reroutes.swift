@@ -76,6 +76,7 @@ public struct ModelFlip: Identifiable, Sendable, Hashable, Codable {
 public struct RerouteReceipt: Identifiable, Sendable, Hashable {
     public let id: String
     public let project: String
+    public let handle: String
     public let shortID: String
     public let filePath: String
     public let tier: ModelTier
@@ -89,17 +90,19 @@ public struct RerouteReceipt: Identifiable, Sendable, Hashable {
 
     public init(id: String, project: String, shortID: String, filePath: String,
                 tier: ModelTier, isSubagent: Bool, silentFlips: [ModelFlip],
-                userSwitches: Int, totalTurns: Int) {
+                userSwitches: Int, totalTurns: Int,
+                handle: String? = nil) {
         self.id = id; self.project = project; self.shortID = shortID
+        self.handle = handle ?? "\(project) session"
         self.filePath = filePath; self.tier = tier; self.isSubagent = isSubagent
         self.silentFlips = silentFlips
         self.userSwitches = userSwitches
         self.totalTurns = totalTurns
     }
 
-    /// "2 silent reroutes across 41 assistant turns" — count + denominator.
+    /// Count plus denominator, with the absence of a recorded /model command explicit.
     public var headline: String {
-        "\(silentFlips.count) silent reroute\(silentFlips.count == 1 ? "" : "s") across \(totalTurns) assistant turns"
+        "\(silentFlips.count) model change\(silentFlips.count == 1 ? "" : "s") without a recorded /model command across \(totalTurns) assistant turns"
     }
 
     /// The honest exclusion, shown faint under the receipts; nil when clean.
@@ -193,7 +196,8 @@ public enum Reroutes {
             id: s.id, project: s.project, shortID: s.shortID, filePath: s.filePath,
             tier: s.tier, isSubagent: s.isSubagent, silentFlips: silent,
             userSwitches: s.modelFlips.count - silent.count,
-            totalTurns: s.assistantTurnsByModel.values.reduce(0, +))
+            totalTurns: s.assistantTurnsByModel.values.reduce(0, +),
+            handle: s.displayTitle)
     }
 
     /// Build the fleet report. Subagents ARE included — the classifier does
@@ -250,6 +254,7 @@ public struct OrchestratorHogAlert: Sendable, Equatable {
     public let day: String
     public let sessionID: String
     public let project: String
+    public let handle: String
     public let shortID: String
     /// The hog's API-equiv cost on `day`, via `cost(onDay:)` — the same
     /// number every other surface prints for this session-day.
@@ -259,8 +264,10 @@ public struct OrchestratorHogAlert: Sendable, Equatable {
     public let dayTotal: Double
 
     public init(day: String, sessionID: String, project: String, shortID: String,
-                sessionCost: Double, dayTotal: Double) {
+                sessionCost: Double, dayTotal: Double,
+                handle: String? = nil) {
         self.day = day; self.sessionID = sessionID; self.project = project
+        self.handle = handle ?? "\(project) session"
         self.shortID = shortID; self.sessionCost = sessionCost; self.dayTotal = dayTotal
     }
 
@@ -269,7 +276,7 @@ public struct OrchestratorHogAlert: Sendable, Equatable {
     /// The advisor line — evidence with the threshold IN the copy (the
     /// ContextTax rule: a visible threshold is a measurement, not a nag).
     public var line: String {
-        "delegate more to cheaper subagents — \(project) (\(shortID)) billed "
+        "delegate more to cheaper subagents — \(project) · \(handle) billed "
             + "\(fmtUSD(sessionCost)) of today's \(fmtUSD(dayTotal)) (\(fmtPct(share)); "
             + "threshold \(fmtPct(OrchestratorHog.shareThreshold)) of a ≥\(fmtUSD(OrchestratorHog.minimumDayTotal)) day)"
     }
@@ -302,7 +309,8 @@ public enum OrchestratorHog {
               top.cost / dayTotal > shareThreshold else { return nil }
         return OrchestratorHogAlert(day: day, sessionID: top.s.id,
                                     project: top.s.project, shortID: top.s.shortID,
-                                    sessionCost: top.cost, dayTotal: dayTotal)
+                                    sessionCost: top.cost, dayTotal: dayTotal,
+                                    handle: top.s.displayTitle)
     }
 
     /// Today's alert (LOCAL calendar).

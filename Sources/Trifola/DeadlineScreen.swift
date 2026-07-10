@@ -326,7 +326,7 @@ struct DeadlineScreen: View {
     var body: some View {
         ScreenScaffold(title: "Deadlines",
                        subtitle: subtitle,
-                       epithet: "the calendar's jeopardy",
+                       epithet: "time × inactivity",
                        trailing: { syncButton }) {
             if cards.isEmpty {
                 EmptyState(icon: "calendar",
@@ -359,7 +359,7 @@ struct DeadlineScreen: View {
         let active = cards.filter { $0.state != .shipped }.count
         let stalled = cards.filter { $0.state == .stalled }.count
         let alarm = stalled > 0 ? " · \(stalled) STALLED" : ""
-        return "\(active) live deadline\(active == 1 ? "" : "s") · sorted by jeopardy (idle ÷ runway)\(alarm)"
+        return "\(active) live deadline\(active == 1 ? "" : "s") · sorted by time pressure (idle time ÷ time left)\(alarm) · dollar values are API-rate estimates, not your bill"
     }
 
     @ViewBuilder private var syncButton: some View {
@@ -417,8 +417,8 @@ struct DeadlineContent: View {
                 DeadlineStrip(card: worst, tier: tiers[worst.projectKey]) { onSelect(worst) }
             }
             VStack(alignment: .leading, spacing: 4) {
-                Eyebrow("Evidence — deadline × activity, sorted by jeopardy (idle ÷ runway)")
-                Text("Usage at API rates")
+                Eyebrow("Evidence — deadlines sorted by time pressure (idle time ÷ time left)")
+                Text("Usage estimated at public API rates — not your bill")
                     .font(.caption2).foregroundStyle(Theme.faint)
                 columnsHeader
                 VStack(alignment: .leading, spacing: 2) {
@@ -452,15 +452,15 @@ struct DeadlineContent: View {
     private var columnsHeader: some View {
         HStack(spacing: Theme.sectionGap) {
             Text("project").frame(maxWidth: .infinity, alignment: .leading)
-            Text("jeopardy").frame(width: Theme.rankBarWidth, alignment: .leading)
+            Text("deadline pressure").frame(width: Theme.rankBarWidth, alignment: .leading)
             Text("left").frame(width: 54, alignment: .trailing)
             Text("last touch").frame(width: 70, alignment: .trailing)
-            Text("spent").frame(width: Theme.subValueColWidth, alignment: .trailing)
-            Text("sess").frame(width: Theme.microColWidth, alignment: .trailing)
+            Text("API price").frame(width: Theme.subValueColWidth, alignment: .trailing)
+            Text("count").frame(width: Theme.microColWidth, alignment: .trailing)
             Text("state").frame(width: 96, alignment: .leading)
         }
         .font(.caption).foregroundStyle(Theme.faint)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, Theme.intraCell)
     }
 
     private var shippedRule: some View {
@@ -489,17 +489,17 @@ private struct DeadlineStrip: View {
                 Text("· \(fmtCountdown(card.runway)) left, untouched \(fmtAgeShort(card.idle))")
                     .font(.caption).foregroundStyle(Theme.muted)
                 Spacer(minLength: 8)
-                Text("jeopardy \(String(format: "%.2f", card.jeopardy))")
+                Text("pressure score \(String(format: "%.2f", card.jeopardy))")
                     .font(.caption).foregroundStyle(Theme.faint).monospacedDigit()
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+            .padding(.horizontal, Theme.sectionGap).padding(.vertical, Theme.intraCell)
             .contentShape(Rectangle())
         }
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .fill(card.state.color.opacity(0.06))
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(card.state.color.opacity(card.state == .stalled ? 0.55 : 0.30), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 }
@@ -572,7 +572,7 @@ private struct DeadlineCardRow: View {
             HStack(spacing: 2) {
                 if idleWarns {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 8)).foregroundStyle(Theme.amber)
+                        .font(.system(size: 8, weight: .medium)).foregroundStyle(Theme.amber)
                 }
                 Text(card.lastActivity == nil ? "—" : fmtAgeShort(card.idle))
                     .font(.caption).foregroundStyle(Theme.muted).monospacedDigit()
@@ -588,7 +588,7 @@ private struct DeadlineCardRow: View {
                 .frame(width: Theme.microColWidth, alignment: .trailing)
 
             HStack(spacing: 4) {
-                Image(systemName: card.state.chipGlyph).font(.system(size: 9)).foregroundStyle(card.state.color)
+                Image(systemName: card.state.chipGlyph).font(.system(size: 9, weight: .medium)).foregroundStyle(card.state.color)
                 Text(card.state.label).font(.caption.weight(.medium)).foregroundStyle(card.state.color)
             }
             .frame(width: 96, alignment: .leading)
@@ -599,7 +599,7 @@ private struct DeadlineCardRow: View {
     private var identityLine: some View {
         HStack(spacing: 6) {
             Text(fmtDeadlineStamp(card.deadline))
-                .font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.muted)
+                .font(.caption).foregroundStyle(Theme.muted)
             Text("· \(card.platform ?? card.kind.label)")
                 .font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
             if card.isLive {
@@ -615,10 +615,10 @@ private struct DeadlineCardRow: View {
         TapButton(action: { onReveal(card) }) {
             HStack(spacing: 4) {
                 Text(provenanceText)
-                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(Theme.faint)
+                    .font(.caption2).foregroundStyle(Theme.faint)
                     .lineLimit(1)
                 Text(confirmSuffix)
-                    .font(.caption2).foregroundStyle(card.source.confirmed ? Theme.faint : Theme.accent)
+                    .font(.caption2).foregroundStyle(card.source.confirmed ? Theme.faint : Theme.ink)
             }
             .contentShape(Rectangle())
         }
@@ -671,18 +671,20 @@ struct DeadlineConnectPanel: View {
             }
             if isConnected, !report.isEmpty { reportList }
         }
-        .padding(12)
+        .padding(Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: isConnected ? "link.circle.fill" : "link.circle")
-                .font(.footnote).foregroundStyle(isConnected ? Theme.green : Theme.muted)
+                .font(.footnote.weight(.medium)).foregroundStyle(isConnected ? Theme.green : Theme.muted)
             Text(connectionLine).font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
             Spacer()
             if isConnected, let onDisconnect {
@@ -712,15 +714,17 @@ struct DeadlineConnectPanel: View {
                 } else {
                     // Headless render: a static field placeholder (SecureField can't rasterize).
                     HStack(spacing: 6) {
-                        Image(systemName: "key.fill").font(.caption2).foregroundStyle(Theme.faint)
+                        Image(systemName: "key.fill").font(.caption2.weight(.medium)).foregroundStyle(Theme.faint)
                         Text("Paste your Linear personal API key").font(.caption).foregroundStyle(Theme.faint)
                         Spacer()
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 6).frame(maxWidth: 360)
-                    .background(RoundedRectangle(cornerRadius: Theme.radiusRow).strokeBorder(Theme.hairline, lineWidth: 1))
+                    .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.rhythm).frame(maxWidth: 360)
+                    .background {
+                        RoundedRectangle(cornerRadius: Theme.radiusRow).fill(Theme.codeFill)
+                        RoundedRectangle(cornerRadius: Theme.radiusRow).strokeBorder(Theme.cardStroke, lineWidth: 1)
+                    }
                 }
-                Button("Save key") { onSaveKey?() }
-                    .buttonStyle(.bordered).controlSize(.small)
+                QuietTapButton("Save key") { onSaveKey?() }
                     .disabled(onSaveKey == nil || keyDraft.wrappedValue.isEmpty)
             }
             Text("Stored in your macOS Keychain — never in a file, never logged.")
@@ -741,8 +745,7 @@ struct DeadlineConnectPanel: View {
                 }
             }
             HStack(spacing: 10) {
-                Button("Sync to Linear") { onSync?() }
-                    .buttonStyle(.bordered).controlSize(.small)
+                QuietTapButton("Sync to Linear") { onSync?() }
                     .disabled(onSync == nil || (team == nil && selectedTeamID == nil))
                 if let onToggleBackground {
                     TapToggle("Background sync", isOn: Binding(get: { backgroundSync }, set: { onToggleBackground($0) }))
@@ -750,7 +753,7 @@ struct DeadlineConnectPanel: View {
                     // Headless render: a static on/off pill (Toggle can't rasterize).
                     HStack(spacing: 5) {
                         Image(systemName: backgroundSync ? "checkmark.circle.fill" : "circle")
-                            .font(.caption2).foregroundStyle(backgroundSync ? Theme.green : Theme.faint)
+                            .font(.caption2.weight(.medium)).foregroundStyle(backgroundSync ? Theme.green : Theme.faint)
                         Text("Background sync").font(.caption).foregroundStyle(Theme.muted)
                     }
                 }
@@ -770,16 +773,16 @@ struct DeadlineConnectPanel: View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(report) { row in reportRow(row) }
         }
-        .padding(.top, 2)
+        .padding(.top, Theme.micro / 2)
     }
 
     private func reportRow(_ row: LinearSyncRow) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: rowGlyph(row.outcome))
-                .font(.system(size: 9)).foregroundStyle(rowTone(row.outcome))
+                .font(.system(size: 9, weight: .medium)).foregroundStyle(rowTone(row.outcome))
                 .frame(width: 12)
             Text(row.projectKey)
-                .font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.ink)
+                .font(.caption).foregroundStyle(Theme.ink)
                 .lineLimit(1)
             rowSentence(row)
             Spacer(minLength: 0)
@@ -819,7 +822,7 @@ struct DeadlineConnectPanel: View {
     @ViewBuilder private func linkText(_ label: String, url: String?, font: Font) -> some View {
         if let raw = url, let dest = URL(string: raw) {
             TapButton(action: { NSWorkspace.shared.open(dest) }) {
-                Text(label).font(font).foregroundStyle(Theme.accent).underline()
+                Text(label).font(font).foregroundStyle(Theme.ink).underline()
             }
         } else {
             Text(label).font(font).foregroundStyle(Theme.ink)

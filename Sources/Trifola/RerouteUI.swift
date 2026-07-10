@@ -54,7 +54,7 @@ struct RerouteReceiptView: View {
         HStack(spacing: 6) {
             Image(systemName: flip.direction == .upshift
                   ? "arrow.up.right" : (flip.direction == .downshift ? "arrow.down.right" : "arrow.right"))
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.muted)
             // Disk truth: the pair and the message ref are mono.
             Text("\(flip.fromModel) → \(flip.toModel)")
@@ -88,9 +88,9 @@ struct RerouteTrendRow: View {
                     .font(.caption2)
                     .foregroundStyle(Theme.faint)
                 Text(sparkline)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.caption)
                     .foregroundStyle(Theme.muted)
-                Text("\(report.totalSilent) silent · \(report.receipts.count) session\(report.receipts.count == 1 ? "" : "s")")
+                Text("\(report.totalSilent) without a recorded /model command · \(report.receipts.count) session\(report.receipts.count == 1 ? "" : "s")")
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundStyle(Theme.muted)
@@ -128,9 +128,9 @@ struct OrchestratorHogRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.amber)
-            Text("One session billed \(fmtPct(alert.share)) of today's \(fmtUSD(alert.dayTotal)). Orchestrator hog: \(alert.project) (\(alert.shortID)) billed \(fmtUSD(alert.sessionCost)); delegate more to cheaper subagents.")
+            Text("\(alert.project) · \(alert.handle) accounts for \(fmtPct(alert.share)) of today's \(fmtUSD(alert.dayTotal)) API-rate estimate (\(fmtUSD(alert.sessionCost))). This is not your bill; consider delegating independent work to cheaper subagents.")
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)

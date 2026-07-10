@@ -27,7 +27,7 @@ struct ContextTaxGaugeView: View {
                 compactStrip
             } else {
                 headerRow
-                CapsuleBar(fraction: gauge.gaugeFraction, tint: Theme.accent)
+                CapsuleBar(fraction: gauge.gaugeFraction, tint: Theme.graphite)
                 priceLine
                 compositionRow(composition ?? Self.liveComposition(for: gauge))
             }
@@ -75,22 +75,22 @@ struct ContextTaxGaugeView: View {
             Spacer(minLength: 8)
             // Exact token count, grouped + mono — what the disk said the last
             // message re-sent, never the compact "0.3M".
-            Text("\(fmtGrouped(gauge.contextWeight)) tok resent/msg")
-                .font(.system(.caption2, design: .monospaced))
+            Text("\(fmtGrouped(gauge.contextWeight)) context tokens resent / message")
+                .font(.caption2)
                 .foregroundStyle(Theme.muted)
         }
     }
 
     private var priceLine: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("next message ≈")
+            Text("next message at API rates ≈")
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
             Text("\(fmtUSD(gauge.warmPerMessage)) warm · \(fmtUSD(gauge.coldPerMessage)) cold")
                 .font(.caption.weight(.medium))
                 .monospacedDigit()
                 .foregroundStyle(Theme.ink)
-            Text("· \(fmtPct(gauge.cacheHitRate)) cached · cold = cache expired (>5m idle)")
+            Text("· \(fmtPct(gauge.cacheHitRate)) cached · warm = cache valid · cold = cache expired (>5m idle) · not your bill")
                 .font(.caption)
                 .foregroundStyle(Theme.faint)
                 .lineLimit(1)
@@ -121,12 +121,12 @@ struct ContextTaxGaugeView: View {
 
     private var compactStrip: some View {
         HStack(spacing: 8) {
-            CapsuleBar(fraction: gauge.gaugeFraction, tint: Theme.accent)
+            CapsuleBar(fraction: gauge.gaugeFraction, tint: Theme.graphite)
                 .frame(width: 72)
-            Text("\(fmtTokens(gauge.contextWeight)) ctx")
-                .font(.system(.caption2, design: .monospaced))
+            Text("\(fmtTokens(gauge.contextWeight)) context tokens")
+                .font(.caption2)
                 .foregroundStyle(Theme.muted)
-            Text("next ≈ \(fmtUSD(gauge.warmPerMessage)) warm · \(fmtUSD(gauge.coldPerMessage)) cold")
+            Text("next at API rates ≈ \(fmtUSD(gauge.warmPerMessage)) warm cache · \(fmtUSD(gauge.coldPerMessage)) expired cache")
                 .font(.caption2.weight(.medium))
                 .monospacedDigit()
                 .foregroundStyle(Theme.ink)
@@ -142,7 +142,7 @@ struct ContextTaxGaugeView: View {
     private func advisorRow(_ line: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.amber)
             Text(line)
                 .font(compact ? .caption2 : .caption)

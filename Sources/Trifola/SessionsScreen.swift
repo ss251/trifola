@@ -28,6 +28,7 @@ struct SessionsScreen: View {
             let q = query.lowercased()
             out = out.filter {
                 $0.project.lowercased().contains(q)
+                    || $0.displayTitle.lowercased().contains(q)
                     || $0.cwd.lowercased().contains(q)
                     || $0.id.lowercased().hasPrefix(q)
             }
@@ -61,75 +62,92 @@ struct SessionsScreen: View {
             inspector
                 .frame(maxWidth: .infinity)
         }
+        .frame(maxWidth: ScreenScaffoldMetrics.maxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: List column
 
     private var listColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: Theme.sectionGap) {
-                Text("Sessions")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(Theme.ink)
-                    .padding(.top, ScreenScaffoldMetrics.topInset)
-
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.muted)
-                    TextField("Search project, path or id…", text: $query)
-                        .textFieldStyle(.plain)
-                        .font(.subheadline)
+            VStack(alignment: .leading, spacing: Theme.blockGap) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Sessions")
+                        .font(.system(size: 28, weight: .bold))
+                        .tracking(-0.4)
                         .foregroundStyle(Theme.ink)
+                    Text("Find a session by project or task · dollar values are API-rate estimates, not your bill")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(2)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
-                }
+                .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
+                .padding(.top, ScreenScaffoldMetrics.topInset)
+                .padding(.horizontal, Theme.gutter)
 
-                ScrollView(.horizontal) {
+                Divider()
+
+                VStack(alignment: .leading, spacing: Theme.sectionGap) {
                     HStack(spacing: 6) {
-                        FilterChip(label: "Active", isOn: activeOnly) {
-                            activeOnly.toggle()
-                        }
-                        FilterChip(label: "Heavy ctx", isOn: heavyOnly) {
-                            heavyOnly.toggle()
-                        }
-                        // Machine filter — only when the fleet spans more than one
-                        // machine, so single-machine users see zero cross-machine chrome.
-                        if services.isCrossMachine {
-                            ForEach(services.sessions.fleetMachines) { m in
-                                FilterChip(label: m.chipLabel, isOn: machineFilter == m.id) {
-                                    machineFilter = machineFilter == m.id ? nil : m.id
+                        Image(systemName: "magnifyingglass")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(Theme.muted)
+                        TextField("Search project, task, path or id…", text: $query)
+                            .textFieldStyle(.plain)
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.ink)
+                    }
+                    .padding(.horizontal, Theme.intraCell)
+                    .padding(.vertical, Theme.rhythm)
+                    .background {
+                        RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                            .fill(Theme.codeFill)
+                        RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                            .strokeBorder(Theme.cardStroke, lineWidth: 1)
+                    }
+
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 6) {
+                            FilterChip(label: "Active", isOn: activeOnly) {
+                                activeOnly.toggle()
+                            }
+                            FilterChip(label: "Heavy context", isOn: heavyOnly) {
+                                heavyOnly.toggle()
+                            }
+                            // Machine filter — only when the fleet spans more than one
+                            // machine, so single-machine users see zero cross-machine chrome.
+                            if services.isCrossMachine {
+                                ForEach(services.sessions.fleetMachines) { m in
+                                    FilterChip(label: m.chipLabel, isOn: machineFilter == m.id) {
+                                        machineFilter = machineFilter == m.id ? nil : m.id
+                                    }
+                                }
+                            }
+                            ForEach(ModelTier.allCases.filter { $0 != .other }, id: \.self) { tier in
+                                FilterChip(label: tier.label, isOn: tierFilter == tier) {
+                                    tierFilter = tierFilter == tier ? nil : tier
                                 }
                             }
                         }
-                        ForEach(ModelTier.allCases.filter { $0 != .other }, id: \.self) { tier in
-                            FilterChip(label: tier.label, isOn: tierFilter == tier) {
-                                tierFilter = tierFilter == tier ? nil : tier
-                            }
-                        }
                     }
-                }
-                .scrollIndicators(.never)
+                    .scrollIndicators(.never)
 
-                HStack {
-                    Text("\(filtered.count) shown")
-                        .font(.caption)
-                        .foregroundStyle(Theme.muted)
-                    Spacer()
-                    Picker("", selection: $sort) {
-                        ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
+                    HStack {
+                        Text("\(filtered.count) shown")
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                        Spacer()
+                        Picker("", selection: $sort) {
+                            ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                        .controlSize(.small)
+                        .fixedSize()
                     }
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                    .fixedSize()
                 }
+                .padding(.horizontal, Theme.gutter)
             }
-            .padding(.horizontal, Theme.gutter)
-            .padding(.bottom, 8)
+            .padding(.bottom, Theme.intraCell)
 
             Divider()
 
@@ -145,12 +163,12 @@ struct SessionsScreen: View {
                             Text("Showing first 400 — refine the search to narrow down.")
                                 .font(.caption)
                                 .foregroundStyle(Theme.faint)
-                                .padding(.vertical, 10)
+                                .padding(.vertical, Theme.codePadding)
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.top, 8)
-                    .padding(.bottom, 20)
+                    .padding(.horizontal, Theme.codePadding)
+                    .padding(.top, Theme.intraCell)
+                    .padding(.bottom, Theme.blockGap)
                     // The one app-standard reorder motion (W6 wave 4): when a rank
                     // genuinely changes, the row glides — never teleports. Keyed on
                     // the id order so in-place value updates animate nothing.
@@ -196,6 +214,9 @@ private struct SessionRow: View {
     private var suppressed: Bool {
         services.agency.reason(for: session, now: services.now) != nil
     }
+    private var attentionState: AttentionState? {
+        services.attentionBoard(now: services.now).items.first(where: { $0.id == session.id })?.state
+    }
 
     var body: some View {
         HoverRow {
@@ -210,7 +231,7 @@ private struct SessionRow: View {
                 if suppressed { SuppressionMark() }
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
-                        Text(session.displayTitle)
+                        Text("\(session.project) · \(session.displayTitle)")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(primary)
                             .lineLimit(1)
@@ -218,31 +239,31 @@ private struct SessionRow: View {
                             MachineChip(machineID: session.machineID)
                         }
                     }
-                    Text("\(session.project) · \(session.tier.label) · \(session.messageCount) msgs · \(fmtAgo(session.lastActivity))")
-                        .font(.caption)
+                    (Text(session.shortID)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(secondary.opacity(0.8))
+                     + Text(" · \(fmtAgo(session.lastActivity)) · \(session.tier.label) · \(session.messageCount) messages · \(fmtUSD(session.cost)) API estimate")
+                        .font(.caption2)
                         .foregroundStyle(secondary)
-                        .lineLimit(1)
+                     + Text(session.isContextHeavy ? " · \(fmtTokens(session.contextWeight)) context tokens / message" : "")
+                        .font(.caption2)
+                        .foregroundStyle(secondary))
+                    .lineLimit(1)
                 }
                 Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(fmtUSD(session.cost))
-                        .font(.subheadline)
-                        .foregroundStyle(primary)
-                    if session.isContextHeavy {
-                        Text("\(fmtTokens(session.contextWeight)) ctx")
-                            .font(.caption2)
-                            .foregroundStyle(isSelected ? Theme.selectionText.opacity(0.8) : Theme.red)
-                    }
+                if let attentionState, attentionState.needsAttention {
+                    AttentionStatusPill(state: attentionState)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.horizontal, Theme.intraCell)
+            .frame(minHeight: Theme.sessionRowHeight)
         }
-        .opacity(suppressed ? 0.5 : 1)
+        .opacity(suppressed ? 0.45 : 1)
+        .help("Session \(session.id)")
         .contextMenu { SessionAgencyMenu(session: session) }
         .background {
             if isSelected {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
                     .fill(Theme.selectionBG)
             }
         }
@@ -252,10 +273,11 @@ private struct SessionRow: View {
 // MARK: - Inspector detail
 
 private struct SessionInspector: View {
+    @EnvironmentObject var services: AppServices
     let session: SessionSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Theme.cardPadding) {
             // header
             VStack(alignment: .leading, spacing: Theme.rhythm) {
                 HStack(spacing: 8) {
@@ -263,8 +285,9 @@ private struct SessionInspector: View {
                     // was a third, unsanctioned state (UI_GRIND CLB-3).
                     SeatMark(fill: session.isActive ? Theme.green : Theme.faint,
                              ring: session.tier.color, size: 7)
-                    Text(session.displayTitle)
-                        .font(.title2.weight(.semibold))
+                    Text("\(session.project) · \(session.displayTitle)")
+                        .font(.system(size: 28, weight: .bold))
+                        .tracking(-0.4)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(1)
                     TierBadge(tier: session.tier)
@@ -272,7 +295,24 @@ private struct SessionInspector: View {
                         MachineChip(machineID: session.machineID)
                     }
                     Spacer()
+                    TapButton(
+                        shortcut: KeyboardShortcut(.return, modifiers: .command),
+                        action: { services.openTerminal(session) }) {
+                            HStack(spacing: Theme.rhythm) {
+                                Image(systemName: "terminal").font(.caption.weight(.medium))
+                                Text("Terminal").font(.caption.weight(.medium))
+                            }
+                            .foregroundStyle(Theme.ink)
+                            .padding(.horizontal, Theme.intraCell)
+                            .padding(.vertical, Theme.micro)
+                            .background(Theme.cardFill,
+                                        in: RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous))
+                        }
+                        .help("Open in Terminal — ⌘↩")
                 }
+                Text(session.id)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Theme.faint)
                 Text(session.cwd.isEmpty ? "no working directory recorded" : session.cwd)
                     .font(.footnote)
                     .foregroundStyle(Theme.muted)
@@ -282,12 +322,14 @@ private struct SessionInspector: View {
                 SessionActions(session: session)
             }
             .padding(.top, ScreenScaffoldMetrics.topInset)
+            .frame(minHeight: ScreenScaffoldMetrics.topInset + ScreenScaffoldMetrics.headerHeight,
+                   alignment: .top)
 
             Divider()
 
             // economics strip
             StatRow {
-                InspectorStat(label: "Est. cost", value: fmtUSD(session.cost))
+                InspectorStat(label: "API-rate estimate", value: fmtUSD(session.cost))
                 Divider()
                 InspectorStat(label: "Messages", value: "\(session.messageCount)")
                 Divider()
@@ -295,8 +337,11 @@ private struct SessionInspector: View {
                 Divider()
                 InspectorStat(label: "Cache hit", value: fmtPct(session.usage.cacheHitRate))
                 Divider()
-                InspectorStat(label: "Ctx / msg", value: fmtTokens(session.contextWeight))
+                InspectorStat(label: "Context tokens / message", value: fmtTokens(session.contextWeight))
             }
+            Text("Estimated from public API rates for recorded usage — not your bill or subscription charge.")
+                .font(.caption2)
+                .foregroundStyle(Theme.faint)
 
             // CONTEXT-TAX GAUGE (spree #1): what the next message re-sends,
             // priced warm/cold at this session's own model rates. The advisor
@@ -318,7 +363,7 @@ private struct SessionInspector: View {
                 .frame(maxHeight: .infinity)
         }
         .padding(.horizontal, Theme.gutter)
-        .padding(.bottom, 16)
+        .padding(.bottom, Theme.paneInset)
     }
 }
 
