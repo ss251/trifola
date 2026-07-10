@@ -8,6 +8,11 @@ DerivedData/
 # Build output
 dist/
 *.app/
+# …except the CLI's compiled output: it is committed so the README's
+# "runs straight from the clone, nothing to install" command is TRUE on a
+# clean clone (zero runtime deps; only the test build stays untracked).
+!cli/dist/
+cli/dist/__tests__/
 
 # macOS
 .DS_Store
