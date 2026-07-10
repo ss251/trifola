@@ -9,6 +9,12 @@ export function fmtUSD(v: number): string {
   return `$${v.toFixed(2)}`;
 }
 
+/** Preserve tiny per-session estimates that ordinary cents formatting hides. */
+export function fmtTinyUSD(v: number): string {
+  if (v === 0 || Math.abs(v) >= 0.01) return fmtUSD(v);
+  return `$${v.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+
 /** "34%" from a 0..1 fraction — mirrors fmtPct. */
 export function fmtPct(v: number): string {
   return `${Math.round(v * 100)}%`;
@@ -18,4 +24,12 @@ export function fmtPct(v: number): string {
  * receipts print exact counts, never a compact "2.7k". */
 export function fmtCount(n: number): string {
   return n.toLocaleString("en-US");
+}
+
+/** "950" / "1.5k" / "2.5M" / "12.6B" — mirrors Swift fmtTokens. */
+export function fmtTokens(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return Math.trunc(n).toString();
 }

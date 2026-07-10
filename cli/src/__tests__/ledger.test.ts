@@ -32,6 +32,7 @@ function corpusWith(opts: { fired?: Record<string, number>; sessionCount?: numbe
     fileCount: opts.sessionCount ?? 1,
     skillFireCounts: new Map(Object.entries(opts.fired ?? {})),
     totalDedupedEntries: 0,
+    unsupportedPricingModeEntries: 0,
     totalUsage: emptyUsage(),
     usageByDayModel: new Map(),
   };
@@ -73,10 +74,10 @@ describe("buildFinding — dead-skill count (catalog minus fired, matched by id 
     assert.equal(finding.deadCount, 0);
     assert.equal(finding.catalogCount, 0);
     assert.equal(finding.taxUsd, 0);
-    assert.equal(finding.wastedUsd, 0);
+    assert.equal(finding.freshInputPremiumUsd, 0);
     assert.equal(finding.firstTouchUsd, 0);
     assert.equal(finding.cacheHitRatePct, 0);
-    assert.equal(finding.reads, 0);
+    assert.equal(finding.totalInputTokens, 0);
   });
 });
 
@@ -92,8 +93,9 @@ describe("buildFinding — prompt-tax pricing (dead-skill descriptions, cache-re
     const corpus = corpusWith({ fired: { "fired-one": 1 }, sessionCount: 1 });
     const finding = buildFinding(catalog, corpus);
     assert.equal(finding.deadCount, 2);
-    // taxUsd = (10+20)/1e6 * (3 * 0.10) * max(sessionCount,1) = 30e-6 * 0.3 * 1
+    // taxUsd = (10+20)/1e6 * (3 * 0.10) * sessionCount = 30e-6 * 0.3 * 1
     assert.ok(Math.abs(finding.taxUsd - 30e-6 * 0.3 * 1) < 1e-12);
+    assert.ok(Math.abs(finding.taxUsdPerSession - 30e-6 * 0.3) < 1e-12);
   });
 
   test("cross-check against the Swift Ledger fixture's own numbers (catalogCount 110-scale, deadPromptTaxTokens 41800, sessionCount 2691 -> ~$33.75)", () => {
@@ -112,10 +114,11 @@ describe("buildFinding — prompt-tax pricing (dead-skill descriptions, cache-re
     assert.ok(Math.abs(finding.taxUsd - 33.74514) < 0.001);
   });
 
-  test("zero sessions still floors the tax multiplier at 1 (max(sessionCount,1)), never zeroing out the catalog signal", () => {
+  test("zero sessions invent no cumulative prompt tax", () => {
     const catalog: Skill[] = [skill("dead-only", { description: "x".repeat(40) })];
     const corpus = corpusWith({ sessionCount: 0 });
     const finding = buildFinding(catalog, corpus);
-    assert.ok(finding.taxUsd > 0);
+    assert.equal(finding.taxUsd, 0);
+    assert.ok(finding.taxUsdPerSession > 0);
   });
 });

@@ -207,6 +207,20 @@ struct ClaudeQuotaRedactionTests {
         }
     }
 
+    @Test("terminal quota states use calm exact copy")
+    func terminalStatusCopy() {
+        let signedOut = "Signed out — run claude once to sign in, then Retry."
+        #expect(QuotaStore.describe(.expired) == signedOut)
+        #expect(QuotaStore.describe(.unauthorized) == signedOut)
+
+        let unavailable = "Plan quota unavailable — the usage endpoint didn't answer. Costs and attention don't need it."
+        #expect(QuotaStore.describe(.network("secret-free diagnostic")) == unavailable)
+        #expect(QuotaStore.describe(.server(503)) == unavailable)
+        #expect(QuotaStore.describe(.badPayload) == unavailable)
+        #expect(!signedOut.contains("(any prompt)"))
+        #expect(!signedOut.contains("then Refresh"))
+    }
+
     @Test("public decode seam matches the internal decoder exactly")
     func publicSeamMatchesInternal() throws {
         // QuotaSnapshot.decode is the ONE public seam over OAuthUsageDecoder

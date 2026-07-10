@@ -47,6 +47,16 @@ nonisolated(unsafe) private let localDayFormatter: DateFormatter = {
 }()
 
 func localDayKey(_ date: Date) -> String { localDayFormatter.string(from: date) }
+/// Explicit-time-zone seam used to prove that one instant belongs to different
+/// persisted day buckets after travel. The hot parser path above keeps its
+/// shared formatter; this helper is for cache identity tests and diagnostics.
+func localDayKey(_ date: Date, timeZone: TimeZone) -> String {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = timeZone
+    f.dateFormat = "yyyy-MM-dd"
+    return f.string(from: date)
+}
 func localDayKey(fromTimestamp s: String?) -> String? {
     guard let d = parseDate(s) else { return nil }
     return localDayFormatter.string(from: d)
@@ -70,6 +80,7 @@ public struct SessionAccumulator: Sendable, Codable {
         var usage: SessionUsage
         var model: String
         var day: String
+        var usesUnsupportedPricingMode: Bool = false
         var tier: ModelTier { ModelTier(raw: model) }
     }
     /// Billed usage keyed per assistant message ("<message.id>:<requestId>").
@@ -90,6 +101,11 @@ public struct SessionAccumulator: Sendable, Codable {
     /// collapses them last-chunk-wins. The pair is the receipt's dedup note
     /// ("N raw usage blocks → M unique messageId:requestId", W3 provenance).
     var rawUsageBlocks: Int = 0
+    /// Deduped entries carrying a non-standard `usage.speed` or
+    /// `usage.service_tier`. Counted from the final last-chunk-wins map.
+    var unsupportedPricingEntryCount: Int {
+        usageByKey.values.reduce(0) { $0 + ($1.usesUnsupportedPricingMode ? 1 : 0) }
+    }
     /// Deduped total usage — the sum of the per-message map (last cumulative
     /// chunk per key). Replaces the old per-line running sum.
     var usage: SessionUsage {
@@ -355,15 +371,20 @@ public struct SessionAccumulator: Sendable, Codable {
             }
             if let u = m["usage"] as? [String: Any] {
                 rawUsageBlocks += 1
-                let inp = (u["input_tokens"] as? Int) ?? 0
-                let out = (u["output_tokens"] as? Int) ?? 0
-                let cw = (u["cache_creation_input_tokens"] as? Int) ?? 0
-                let cr = (u["cache_read_input_tokens"] as? Int) ?? 0
+                let inp = max(0, (u["input_tokens"] as? Int) ?? 0)
+                let out = max(0, (u["output_tokens"] as? Int) ?? 0)
+                let cw = max(0, (u["cache_creation_input_tokens"] as? Int) ?? 0)
+                let cr = max(0, (u["cache_read_input_tokens"] as? Int) ?? 0)
                 // The 5m/1h cache-write split: `usage.cache_creation.
                 // ephemeral_1h_input_tokens` is the 1h slice billed at 2× (the
                 // 5m remainder bills 1.25×). Absent on older transcripts → 0.
-                let cw1h = min(cw, ((u["cache_creation"] as? [String: Any])?[
-                    "ephemeral_1h_input_tokens"] as? Int) ?? 0)
+                let cw1h = min(cw, max(0, ((u["cache_creation"] as? [String: Any])?[
+                    "ephemeral_1h_input_tokens"] as? Int) ?? 0))
+                let pricingModes = [u["speed"], u["service_tier"]]
+                    .compactMap { ($0 as? String)?.lowercased()
+                        .trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                let usesUnsupportedPricingMode = pricingModes.contains { $0 != "standard" }
                 let msgUsage = SessionUsage(
                     inputTokens: inp, outputTokens: out,
                     cacheCreateTokens: cw, cacheReadTokens: cr,
@@ -390,7 +411,9 @@ public struct SessionAccumulator: Sendable, Codable {
                     key = "#\(unkeyedSeq)"
                     unkeyedSeq += 1
                 }
-                usageByKey[key] = KeyedUsage(usage: msgUsage, model: msgModel, day: dayKey)
+                usageByKey[key] = KeyedUsage(
+                    usage: msgUsage, model: msgModel, day: dayKey,
+                    usesUnsupportedPricingMode: usesUnsupportedPricingMode)
                 // context weight = what the MOST RECENT message resent (the "$20 hey"
                 // metric). The last streaming chunk carries the full cumulative usage,
                 // so the last line processed is the right one — set unconditionally.
@@ -451,6 +474,7 @@ public struct SessionAccumulator: Sendable, Codable {
                               usageByModelDay: snap.usageByModelDay,
                               messagesByModelDay: snap.messagesByModelDay,
                               rawUsageBlocks: snap.rawUsageBlocks,
+                              unsupportedPricingEntryCount: snap.unsupportedPricingEntryCount,
                               skillInvocations: snap.skillInvocations,
                               commandInvocations: snap.commandInvocations,
                               agentCalls: snap.agentCalls, fileEdits: snap.fileEdits,
@@ -733,6 +757,7 @@ public final class SessionStore: ObservableObject {
                                   usageByModelDay: s.usageByModelDay,
                                   messagesByModelDay: s.messagesByModelDay,
                                   rawUsageBlocks: s.rawUsageBlocks,
+                                  unsupportedPricingEntryCount: s.unsupportedPricingEntryCount,
                                   skillInvocations: s.skillInvocations,
                                   commandInvocations: s.commandInvocations,
                                   agentCalls: s.agentCalls, fileEdits: s.fileEdits,
@@ -776,6 +801,7 @@ public final class SessionStore: ObservableObject {
     }
     private struct CacheFile: Codable {
         var version: Int
+        var timeZoneIdentifier: String
         var entries: [CacheEntry]
     }
     // v2: SessionAccumulator gained `usageByTier` (per-message model attribution).
@@ -825,17 +851,25 @@ public final class SessionStore: ObservableObject {
     // decided inline) plus `lastTurnModel`/`sawModelCommandSinceTurn`. Old
     // caches carry no positional flip evidence, so they must reparse once or
     // every receipt would read "clean" while the corpus wasn't.
-    private nonisolated static let cacheVersion = 13
+    // v14: usage entries retain unsupported speed/service-tier evidence, and
+    // the file records the local time-zone identifier. A zone change invalidates
+    // every materialized day key even when transcript size+mtime are unchanged.
+    private nonisolated static let cacheVersion = 14
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Trifola/session-index.json")
     }
 
-    public nonisolated static func loadIndexCache(from url: URL = defaultCacheURL) -> SessionIndex? {
+    public nonisolated static func loadIndexCache(
+        from url: URL = defaultCacheURL,
+        timeZone: TimeZone = .current
+    ) -> SessionIndex? {
         guard let data = try? Data(contentsOf: url),
               let file = try? JSONDecoder().decode(CacheFile.self, from: data),
-              file.version == cacheVersion, !file.entries.isEmpty else { return nil }
+              file.version == cacheVersion,
+              file.timeZoneIdentifier == timeZone.identifier,
+              !file.entries.isEmpty else { return nil }
         var idx = SessionIndex()
         for e in file.entries {
             idx.entries[e.path] = SessionIndex.Entry(
@@ -845,8 +879,13 @@ public final class SessionStore: ObservableObject {
         return idx
     }
 
-    public nonisolated static func saveIndexCache(_ index: SessionIndex, to url: URL = defaultCacheURL) {
-        let file = CacheFile(version: cacheVersion, entries: index.entries.map {
+    public nonisolated static func saveIndexCache(
+        _ index: SessionIndex,
+        to url: URL = defaultCacheURL,
+        timeZone: TimeZone = .current
+    ) {
+        let file = CacheFile(version: cacheVersion, timeZoneIdentifier: timeZone.identifier,
+                             entries: index.entries.map {
             CacheEntry(path: $0.key, size: $0.value.size, mtime: $0.value.mtime, acc: $0.value.acc)
         })
         guard let data = try? JSONEncoder().encode(file) else { return }
@@ -858,10 +897,16 @@ public final class SessionStore: ObservableObject {
     public var totalUsage: SessionUsage { sessions.reduce(SessionUsage()) { $0 + $1.usage } }
     public var activeSessions: [SessionSummary] { sessions.filter { $0.isActive } }
     public var totalCost: Double { sessions.reduce(0) { $0 + $1.cost } }
-    /// Cache savings priced at the per-model rate that ACTUALLY billed those
-    /// reads — not the session's single dominant tier applied to its whole pile.
+    /// Net cache savings priced at the per-model rate that ACTUALLY billed each
+    /// slice: read discounts minus 5m/1h write premiums.
     public var totalCacheSavings: Double {
         sessions.reduce(0) { $0 + $1.cacheSavingsDollars }
+    }
+
+    /// Entries explicitly marked fast/batch (or another non-standard mode).
+    /// Totals currently use standard cards; another lane may surface this count.
+    public var unsupportedPricingEntryCount: Int {
+        sessions.reduce(0) { $0 + $1.unsupportedPricingEntryCount }
     }
 
     /// Spend split by model tier (the "silent Opus routing" panel).

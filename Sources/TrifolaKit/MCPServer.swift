@@ -20,12 +20,12 @@ import Foundation
 //   silently; unknown params are ignored. Every reply is a single line of
 //   deterministic (sorted-keys) JSON.
 // - No third-party deps — Foundation JSONSerialization only.
-// - Read-only: the server never writes ~/.claude or anything else. Registration
-//   is deliberately NOT this binary's job.
+// - Source-safe: the server never mutates ~/.claude or external systems. The
+//   shared session scanner does maintain an app-local index in Application Support.
 
 /// Injected outcome of the one quota fetch — lets tests and the selfcheck run
 /// the tool without a network (and lets the live path degrade gracefully).
-public enum MCPQuotaOutcome {
+public enum MCPQuotaOutcome: Sendable {
     case snapshot(QuotaSnapshot)
     case unavailable(String)
 }
@@ -38,7 +38,7 @@ public final class MCPIntrospectionServer {
 
     // MARK: identity + protocol
 
-    public static let serverName = "my-app"
+    public static let serverName = "trifola"
     public static let serverVersion = "1.0.0"
     /// Latest revision this server speaks; also the fallback offer when the
     /// client requests a version we don't know (per the MCP version handshake).
@@ -68,7 +68,8 @@ public final class MCPIntrospectionServer {
     /// via the read-only credential + one GET (`ClaudeQuotaFetcher`).
     public static func live(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                             rescanInterval: TimeInterval = 15) -> MCPIntrospectionServer {
-        let dir = home.appendingPathComponent(".claude/projects")
+        let configRoot = ClaudeCredentialReader.configDirectory(home: home)
+        let dir = configRoot.appendingPathComponent("projects")
         var cache: [SessionSummary] = []
         var scannedAt = Date.distantPast
         return MCPIntrospectionServer(
@@ -80,12 +81,12 @@ public final class MCPIntrospectionServer {
                 }
                 return cache
             },
-            quota: { blockingQuotaFetch() })
+            quota: { blockingQuotaFetch(configDirectory: configRoot) })
     }
 
     /// How long the MCP path waits for the credential-file-or-keychain read.
-    /// Bounded (unlike `ClaudeCredentialReader.load()`'s other, GUI-side call
-    /// site) because `security find-generic-password` runs on the server's
+    /// Bounded more tightly than the GUI-side candidate read because
+    /// `security find-generic-password` runs on the server's
     /// one thread — a cross-app ACL prompt on that subprocess would otherwise
     /// wedge the whole stdio loop forever (plan 09).
     static let credentialReadTimeout: TimeInterval = 3
@@ -104,50 +105,27 @@ public final class MCPIntrospectionServer {
         sem.wait(timeout: .now() + timeout) != .timedOut
     }
 
-    /// Same file → keychain fallback as `ClaudeCredentialReader.load()`, but
-    /// with a hard deadline on the `security` subprocess so a keychain ACL
-    /// prompt can't hang the caller. Reuses `load()`'s pure, unmodified
-    /// `credentialsFileURL`/`parse` — only the keychain shell-out gets a cap.
-    private static func loadCredentialsBounded(home: URL = FileManager.default.homeDirectoryForCurrentUser)
-        -> (creds: ClaudeOAuthCredentials, source: ClaudeCredentialSource)? {
-        if let data = try? Data(contentsOf: ClaudeCredentialReader.credentialsFileURL(home: home)),
-           let creds = ClaudeCredentialReader.parse(data) {
-            return (creds, .file)
-        }
-        if let (status, out) = ProbePrimitives.runCommand(
-            "/usr/bin/security",
-            ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-            timeout: credentialReadTimeout),
-           status == 0, let creds = ClaudeCredentialReader.parse(out) {
-            return (creds, .keychain)
-        }
-        return nil
-    }
-
     /// Credential read + the one usage GET, bridged synchronously for the
     /// stdio loop. Reasons, never payloads (ClaudeQuota SECURITY doctrine);
     /// no credentials → a graceful `.unavailable`, never an error reply.
     /// Every blocking wait on this path is capped — see `credentialReadTimeout`
     /// / `quotaFetchTimeout` — so one hung fetch can never freeze the server.
-    public static func blockingQuotaFetch() -> MCPQuotaOutcome {
-        guard let (creds, _) = loadCredentialsBounded() else {
-            return .unavailable("no credentials found (file + keychain) — the app reads Claude Code's login read-only and works without it")
-        }
-        guard !creds.isExpired else {
-            return .unavailable("token expired — run `claude` (any prompt) to re-authenticate")
-        }
-        final class Box: @unchecked Sendable { var value: Result<QuotaSnapshot, ClaudeQuotaError>? }
+    public static func blockingQuotaFetch(configDirectory: URL? = nil) -> MCPQuotaOutcome {
+        let candidates = ClaudeCredentialReader.loadCandidates(
+            configDirectory: configDirectory,
+            keychainTimeout: credentialReadTimeout)
+        final class Box: @unchecked Sendable { var value: Result<ResolvedQuota, ClaudeQuotaError>? }
         let box = Box()
         let sem = DispatchSemaphore(value: 0)
         Task.detached {
-            box.value = await ClaudeQuotaFetcher.fetch(creds: creds)
+            box.value = await ClaudeQuotaResolver.resolve(candidates: candidates)
             sem.signal()
         }
         guard waitBounded(sem, timeout: quotaFetchTimeout) else {
             return .unavailable("quota fetch timed out")
         }
         switch box.value {
-        case .success(let snap): return .snapshot(snap)
+        case .success(let resolved): return .snapshot(resolved.snapshot)
         case .failure(let err): return .unavailable(QuotaStore.describe(err))
         case nil: return .unavailable("fetch did not complete")
         }
@@ -205,10 +183,15 @@ public final class MCPIntrospectionServer {
             "capabilities": ["tools": [String: Any]()],
             "serverInfo": [
                 "name": Self.serverName,
-                "title": "Claude Mission Control — session self-introspection",
+                "title": "trifola — session self-introspection",
                 "version": Self.serverVersion,
             ],
-            "instructions": "Forensics over this machine's Claude Code corpus (~/.claude/projects), for agent self-diagnosis mid-run: session_brief, context_tax (next-message warm/cold price + fresh-session advisor), reroutes (silent model flips), cost_today (day spend by model + orchestrator-hog check), quota_windows (real 5h/weekly plan limits). All costs are API-equivalent estimates at catalog rates, not your plan bill. Read-only — this server never writes anything.",
+            "instructions": "Forensics over this machine's Claude Code corpus, for agent self-diagnosis mid-run: "
+                + "session_brief, context_tax (next-message warm/cold price + fresh-session advisor), reroutes "
+                + "(silent model flips), cost_today (day spend by model + orchestrator-hog check), quota_windows "
+                + "(real 5h/weekly plan limits). All costs are API-equivalent estimates at catalog rates, not your "
+                + "plan bill. This server never mutates ~/.claude or external systems; it maintains an app-local "
+                + "session index.",
         ]
     }
 

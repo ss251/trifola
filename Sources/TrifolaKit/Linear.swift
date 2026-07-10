@@ -234,11 +234,11 @@ public enum LinearFormat {
     static func citation(_ source: DeadlineSource) -> String {
         switch source.origin {
         case .manual:
-            return "Set by hand in Claude Mission Control."
+            return "Set by hand in Trifola."
         case .override:
             return "Source: \(source.file.isEmpty ? "deadlines.toml" : source.file)."
         case .parsed, .seeded:
-            guard !source.file.isEmpty else { return "Tracked by Claude Mission Control." }
+            guard !source.file.isEmpty else { return "Tracked by Trifola." }
             let loc = source.line > 0 ? " line \(source.line)" : ""
             return "Source: \(source.file)\(loc)."
         }

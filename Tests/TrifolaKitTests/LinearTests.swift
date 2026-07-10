@@ -211,12 +211,16 @@ struct LinearFormatTests {
         let now = day(2026, 7, 10)
         let manual = card("webapp", deadline: day(2026, 7, 19), now: now, origin: .manual)
         #expect(LinearFormat.projectDescription(manual) ==
-                "Hackathon due July 19, 2026. Set by hand in Claude Mission Control.")
+                "Hackathon due July 19, 2026. Set by hand in Trifola.")
 
         let override = card("webapp", deadline: day(2026, 7, 19), now: now, kind: .gate,
                             file: "deadlines.toml", line: 0, origin: .override)
         #expect(LinearFormat.projectDescription(override) ==
                 "Gate due July 19, 2026. Source: deadlines.toml.")
+
+        let tracked = card("webapp", deadline: day(2026, 7, 19), now: now, file: "")
+        #expect(LinearFormat.projectDescription(tracked) ==
+                "Hackathon due July 19, 2026. Tracked by Trifola.")
     }
 
     @Test func updateBodyLeadsWithStatusThenDeadlineThenSpend() {

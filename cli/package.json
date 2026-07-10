@@ -8,19 +8,27 @@
   },
   "main": "dist/trifola.js",
   "files": [
-    "dist"
+    "dist/*.js",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p . && chmod +x dist/trifola.js",
     "test": "tsc -p . && node --test dist/__tests__/*.test.js",
-    "start": "node dist/trifola.js"
+    "start": "node dist/trifola.js",
+    "prepack": "npm run clean && npm run build",
+    "prepublishOnly": "npm test"
   },
   "license": "MIT",
   "author": "ss251",
-  "homepage": "https://github.com/ss251/trifola/tree/main/cli#readme",
+  "homepage": "https://github.com/ss251/trifola",
+  "bugs": {
+    "url": "https://github.com/ss251/trifola/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/ss251/trifola.git",

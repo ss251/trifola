@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# secret-scan.sh — fail the build if any personal identifier or private path leaks
-# into the public tree. Run before every push; wired into CI.
+# secret-scan.sh — personal-PII/private-path lint for the public tree.
+# This is not a credential scanner. Run before every push; wired into CI.
 #
 # Scans the whole repo except .git and this script itself. Exits non-zero on any hit.
 set -uo pipefail

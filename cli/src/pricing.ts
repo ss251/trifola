@@ -67,6 +67,10 @@ BUNDLED["claude-sonnet-5"] = {
 put(["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4-0", "claude-sonnet-4"], 3, 15);
 // Haiku 4.5 — in 1, out 5.
 put(["claude-haiku-4-5"], 1, 5);
+// Fable 5 — in 10, out 50, cr 1, cw5m 12.50, cw1h 20.
+put(["claude-fable-5"], 10, 50);
+// Haiku 3.5 — in 0.80, out 4, cr 0.08, cw5m 1, cw1h 1.60.
+put(["claude-3-5-haiku"], 0.8, 4);
 // Legacy generation, for completeness — date-stamped ids normalize onto these.
 put(["claude-3-7-sonnet", "claude-3-5-sonnet", "claude-3-sonnet"], 3, 15);
 put(["claude-3-opus"], 15, 75);

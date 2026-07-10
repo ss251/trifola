@@ -347,7 +347,7 @@ public enum LessonMiner {
         // exactly the "your math is wrong" failure a cost tool dies from. The dead-skill
         // COUNT is the headline; this dollar figure stays deliberately conservative.
         let taxDollars = Double(ledger.deadPromptTaxTokens) / 1_000_000
-            * (ModelTier.sonnet.rates.inp * 0.10) * Double(max(ledger.sessionCount, 1))
+            * (ModelTier.sonnet.rates.inp * 0.10) * Double(ledger.sessionCount)
         return Lesson(
             kind: .deadSkillArchive,
             metricValue: Double(ledger.deadCount),

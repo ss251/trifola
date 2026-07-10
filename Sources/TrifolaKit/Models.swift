@@ -139,10 +139,15 @@ public struct SessionUsage: Sendable, Hashable, Codable {
     /// per-model data (synthetic/tests) and unknown model ids.
     public func cost(_ tier: ModelTier) -> Double { cost(rate: ModelRate(tier: tier)) }
 
-    /// What the cache-read tokens WOULD have cost as fresh input, minus what
-    /// they cost as cache reads — dollars prompt-caching saved on this usage.
+    /// Net prompt-cache savings: the cache-read discount versus fresh input,
+    /// minus the 5m/1h cache-write premiums above ordinary fresh input. This is
+    /// deliberately allowed to be negative for a slice; aggregation decides the
+    /// displayed total rather than hiding a write-heavy slice behind a clamp.
     public func cacheSavings(rate r: ModelRate) -> Double {
-        Double(cacheReadTokens) / 1_000_000 * (r.input - r.cacheRead)
+        let readDiscount = Double(cacheReadTokens) / 1_000_000 * (r.input - r.cacheRead)
+        let write5mPremium = Double(cacheCreate5mTokens) / 1_000_000 * (r.input * 0.25)
+        let write1hPremium = Double(cacheCreate1hTokens) / 1_000_000 * r.input
+        return readDiscount - write5mPremium - write1hPremium
     }
 
     /// Tier-fallback overload of `cacheSavings(rate:)`.
@@ -273,6 +278,10 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     /// of the receipt's dedup note ("N raw → M unique, last-chunk-wins").
     /// 0 for synthetic/pre-W3 summaries.
     public let rawUsageBlocks: Int
+    /// Deduped billed entries whose `usage.speed` or `usage.service_tier`
+    /// explicitly named a non-standard pricing mode. Trifola keeps standard
+    /// rates for these entries today; the count lets a UI warn without guessing.
+    public let unsupportedPricingEntryCount: Int
     /// Explicit `Skill` tool invocations in this session, keyed by the `skill`
     /// argument → count. Feeds the dead-skill ledger (VISION 2.2). Labeled
     /// "explicit invocations" everywhere it surfaces: skills auto-loaded as
@@ -342,6 +351,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                 usageByModelDay: [String: [String: SessionUsage]] = [:],
                 messagesByModelDay: [String: [String: Int]] = [:],
                 rawUsageBlocks: Int = 0,
+                unsupportedPricingEntryCount: Int = 0,
                 skillInvocations: [String: Int] = [:], commandInvocations: [String: Int] = [:],
                 agentCalls: Int = 0, fileEdits: Int = 0,
                 tiersSeen: Set<ModelTier> = [],
@@ -367,6 +377,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         self.usageByModelDay = usageByModelDay
         self.messagesByModelDay = messagesByModelDay
         self.rawUsageBlocks = rawUsageBlocks
+        self.unsupportedPricingEntryCount = unsupportedPricingEntryCount
         self.skillInvocations = skillInvocations
         self.commandInvocations = commandInvocations
         self.agentCalls = agentCalls
@@ -401,6 +412,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         usageByModelDay = try c.decodeIfPresent([String: [String: SessionUsage]].self, forKey: .usageByModelDay) ?? [:]
         messagesByModelDay = try c.decodeIfPresent([String: [String: Int]].self, forKey: .messagesByModelDay) ?? [:]
         rawUsageBlocks = try c.decodeIfPresent(Int.self, forKey: .rawUsageBlocks) ?? 0
+        unsupportedPricingEntryCount = try c.decodeIfPresent(Int.self, forKey: .unsupportedPricingEntryCount) ?? 0
         skillInvocations = try c.decodeIfPresent([String: Int].self, forKey: .skillInvocations) ?? [:]
         commandInvocations = try c.decodeIfPresent([String: Int].self, forKey: .commandInvocations) ?? [:]
         agentCalls = try c.decodeIfPresent(Int.self, forKey: .agentCalls) ?? 0
@@ -426,6 +438,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                        usageByDay: usageByDay,
                        usageByModel: usageByModel, usageByModelDay: usageByModelDay,
                        messagesByModelDay: messagesByModelDay, rawUsageBlocks: rawUsageBlocks,
+                       unsupportedPricingEntryCount: unsupportedPricingEntryCount,
                        skillInvocations: skillInvocations, commandInvocations: commandInvocations,
                        agentCalls: agentCalls,
                        fileEdits: fileEdits, tiersSeen: tiersSeen,
@@ -493,6 +506,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                               usageByDay: usageByDay,
                               usageByModel: usageByModel, usageByModelDay: usageByModelDay,
                               messagesByModelDay: messagesByModelDay, rawUsageBlocks: rawUsageBlocks,
+                              unsupportedPricingEntryCount: unsupportedPricingEntryCount,
                               skillInvocations: skillInvocations, commandInvocations: commandInvocations,
                               agentCalls: agentCalls,
                               fileEdits: fileEdits, tiersSeen: tiersSeen,

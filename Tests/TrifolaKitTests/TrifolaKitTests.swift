@@ -95,8 +95,19 @@ struct CostTests {
     }
 
     @Test func cacheSavings() {
-        // 2M reads × $3 × 0.90 = $5.40 saved vs fresh input
-        #expect(abs(usage.cacheSavings(.sonnet) - 5.40) < 0.0001)
+        // Gross read discount $5.40 minus the 400k 5m-write premium $0.30.
+        #expect(abs(usage.cacheSavings(.sonnet) - 5.10) < 0.0001)
+
+        // Mixed 5m/1h writes: $5.40 gross − $0.075 (100k×$0.75/M)
+        // − $0.90 (300k×$3/M) = $4.425 true net.
+        let mixed = SessionUsage(cacheCreateTokens: 400_000, cacheReadTokens: 2_000_000,
+                                 cacheCreate1hTokens: 300_000)
+        #expect(abs(mixed.cacheSavings(.sonnet) - 4.425) < 0.0001)
+
+        // A write-heavy slice stays negative; no per-slice floor hides it.
+        let writeOnly = SessionUsage(cacheCreateTokens: 1_000_000,
+                                     cacheCreate1hTokens: 1_000_000)
+        #expect(abs(writeOnly.cacheSavings(.sonnet) - (-3.0)) < 0.0001)
     }
 
     @Test func cacheHitRate() {
@@ -315,6 +326,30 @@ struct AccumulatorTests {
         #expect(s.usage.total == 0)
     }
 
+    @Test func malformedTokenFieldsAreClampedBeforeUsageConstruction() {
+        let negative = #"{"type":"assistant","requestId":"r-neg","message":{"id":"m-neg","model":"claude-opus-4-8","usage":{"input_tokens":-10,"output_tokens":-20,"cache_creation_input_tokens":-30,"cache_read_input_tokens":-40,"cache_creation":{"ephemeral_1h_input_tokens":-50}}}}"#
+        let oversized = #"{"type":"assistant","requestId":"r-big","message":{"id":"m-big","model":"claude-opus-4-8","usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":3,"cache_creation":{"ephemeral_1h_input_tokens":900}}}}"#
+        var acc = SessionAccumulator(defaultID: "fb")
+        acc.ingest(Data((negative + "\n" + oversized + "\n").utf8))
+        let u = acc.summary(filePath: "").usage
+        #expect(u.inputTokens == 1)
+        #expect(u.outputTokens == 2)
+        #expect(u.cacheCreateTokens == 100)
+        #expect(u.cacheReadTokens == 3)
+        #expect(u.cacheCreate1hTokens == 100)
+    }
+
+    @Test func nonstandardPricingModesAreCountedAfterDedup() {
+        let standard = #"{"type":"assistant","requestId":"r-std","message":{"id":"m-std","model":"claude-opus-4-8","usage":{"input_tokens":1,"speed":"standard"}}}"#
+        let fastFirstChunk = #"{"type":"assistant","requestId":"r-fast","message":{"id":"m-fast","model":"claude-opus-4-8","usage":{"input_tokens":1,"speed":"fast"}}}"#
+        let fastLastChunk = #"{"type":"assistant","requestId":"r-fast","message":{"id":"m-fast","model":"claude-opus-4-8","usage":{"input_tokens":2,"service_tier":"batch"}}}"#
+        var acc = SessionAccumulator(defaultID: "fb")
+        acc.ingest(Data((standard + "\n" + fastFirstChunk + "\n" + fastLastChunk + "\n").utf8))
+        let summary = acc.summary(filePath: "")
+        #expect(summary.unsupportedPricingEntryCount == 1)
+        #expect(summary.usage.inputTokens == 3)
+    }
+
     @Test func lastUserMessageTracksMostRecentRealPrompt() {
         // A real (string-content) prompt, then an automatic tool_result
         // continuation, then an isMeta image-dimensions reminder: the tracked
@@ -444,6 +479,24 @@ struct AccumulatorTests {
 
 @Suite("Session index (incremental scan)")
 struct IndexTests {
+    @Test func timezoneIdentityChangesDayKeysAndInvalidatesPersistedIndex() throws {
+        let utc = try #require(TimeZone(identifier: "UTC"))
+        let kolkata = try #require(TimeZone(identifier: "Asia/Kolkata"))
+        let instant = try #require(ISO8601DateFormatter().date(from: "2026-07-04T23:30:00Z"))
+        #expect(localDayKey(instant, timeZone: utc) == "2026-07-04")
+        #expect(localDayKey(instant, timeZone: kolkata) == "2026-07-05")
+
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = dir.appendingPathComponent("session.jsonl")
+        try (asst1 + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let index = SessionIndex.update(SessionIndex(), dir: dir)
+        let cache = dir.appendingPathComponent("session-index.json")
+        SessionStore.saveIndexCache(index, to: cache, timeZone: utc)
+        #expect(SessionStore.loadIndexCache(from: cache, timeZone: utc) != nil)
+        #expect(SessionStore.loadIndexCache(from: cache, timeZone: kolkata) == nil)
+    }
+
     @Test func incrementalAppendMatchesFullParse() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

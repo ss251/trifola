@@ -27,6 +27,9 @@ A detector is a distilled finding turned into a deterministic lint rule over a s
 - **Never commit real `~/.claude` data.** Transcripts hold secrets, client names, and dollar
   figures. Fixtures are **synthetic only** — the secret-scan CI gate fails the build on any
   personal string or absolute home path. Marketing assets come from demo mode, not real data.
+- **Manually review every screenshot before committing it.** `Scripts/secret-scan.sh` is a
+  personal-PII/path lint, not a credential scanner and not an image scanner. Confirm that each
+  image uses synthetic data and contains no credentials, private names, paths, hosts, or account data.
 - **Correctness is the trust story.** Dedup on `(messageId, requestId)`; degrade a bad field to
   zero, never drop a record or crash a scan. Numbers that are wrong once are fatal in this
   category — label every estimate ("API-equivalent, not your bill").
