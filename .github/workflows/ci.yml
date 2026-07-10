@@ -11,8 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Swift version
-        run: swift --version
+      - name: Toolchain report
+        run: |
+          swift --version
+          ls /Applications | grep -i xcode || true
 
       # The gate is enforcement, not prose: no personal identifier or private
       # path may ever enter the public tree — a PR that trips it fails here.
