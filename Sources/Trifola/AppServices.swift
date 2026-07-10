@@ -316,11 +316,23 @@ final class AppServices: ObservableObject {
 
         let projectsPrefix = claudePaths.projects.standardizedFileURL.path + "/"
         let settingsPath = claudePaths.settingsJSON.standardizedFileURL.path
-        let watcher = FSEventsWatcher(paths: [claudePaths.root.path]) { [weak self] paths in
+        // The SessionStore already scans ~/.codex as a second provider; watch it
+        // too (when present) so Codex rollouts refresh live, not just on the next
+        // Claude-triggered pass. Codex archives older rollouts as .jsonl.zst.
+        let codexPaths = CodexPaths.process
+        let codexPrefix = codexPaths.sessions.standardizedFileURL.path + "/"
+        var watchPaths = [claudePaths.root.path]
+        if FileManager.default.fileExists(atPath: codexPaths.root.path) {
+            watchPaths.append(codexPaths.root.path)
+        }
+        let watcher = FSEventsWatcher(paths: watchPaths) { [weak self] paths in
             var sessionsDirty = false, settingsDirty = false
             for p in paths {
                 let standardized = URL(fileURLWithPath: p).standardizedFileURL.path
                 if standardized.hasPrefix(projectsPrefix) && standardized.hasSuffix(".jsonl") {
+                    sessionsDirty = true
+                } else if standardized.hasPrefix(codexPrefix)
+                            && (standardized.hasSuffix(".jsonl") || standardized.hasSuffix(".jsonl.zst")) {
                     sessionsDirty = true
                 } else if standardized == settingsPath {
                     settingsDirty = true

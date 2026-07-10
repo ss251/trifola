@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="docs/assets/banner.png" alt="Trifola — the command center for your Claude Code fleet" width="680">
+<img src="docs/assets/banner.png" alt="Trifola — the command center for your Claude Code and Codex fleet" width="680">
 
 # trifola
 
-**The command center for your whole Claude Code fleet.**
-Reads your local `~/.claude`, keeps transcript analysis local, and tells you what your agents
-cost you, where the spend is being wasted, and which one is blocked waiting on
+**The command center for your whole coding-agent fleet — Claude Code and Codex.**
+Reads your local `~/.claude` and `~/.codex`, keeps transcript analysis local, and tells you what
+your agents cost you, where the spend is being wasted, and which one is blocked waiting on
 you — across every machine.
 
 <!-- Badges: wire real URLs at launch -->
@@ -22,7 +22,7 @@ you — across every machine.
 
 _A truffle pig for your agent fleet: it sniffs out the valuable — and the
 wasteful — hidden in data Claude Code already writes to disk. (Demo data — trifola
-renders every screenshot from synthetic fixtures; your real `~/.claude` never leaves your machine.)_
+renders every screenshot from synthetic fixtures; your real `~/.claude` and `~/.codex` never leave your machine.)_
 
 </div>
 
@@ -43,7 +43,7 @@ and nothing on your machine surfaces either:
   needs-approval / silently-stalled** the moment it happens — in the menu bar, all day,
   and across every machine you run on.
 
-It analyzes what Claude Code already writes to `~/.claude`. **No Trifola account, no
+It analyzes what Claude Code and Codex already write to `~/.claude` and `~/.codex`. **No Trifola account, no
 Trifola cloud, no telemetry. Source-auditable.** Idle CPU is ~0% in typical use.
 
 ## What it does
