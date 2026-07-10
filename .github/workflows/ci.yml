@@ -25,63 +25,25 @@ jobs:
         run: swift build -c release
 
       - name: Test
-        timeout-minutes: 15
-        shell: bash
-        # Runner-only OOM: the test process balloons to tens of GB (compressed)
-        # and is jetsam-killed. It never reproduces locally (114 MB peak) and is
-        # not any single suspect found by reasoning, so this sampler CORRELATES
-        # system memory with the currently-running test line every 2s — when
-        # free memory craters, `$last` names the exact ballooning test across
-        # all 118 suites. No pgrep (swift-testing's process name did not match).
+        timeout-minutes: 12
         run: |
-          # Force per-event flushing via a pty (macOS has no stdbuf): swift-testing
-          # block-buffers to a pipe, so the prior sampler's `tail -1` lagged and
-          # named provably-fast tests (buffering artifacts). Under `script`'s pty
-          # it line-flushes, so the crater sample names the EXACT stuck test.
-          (
-            while true; do
-              ts=$(date +%H:%M:%S)
-              freepg=$(vm_stat 2>/dev/null | awk -F: '/Pages free/{gsub(/[ .]/,"",$2);print $2}')
-              last=$(tail -1 test-output.log 2>/dev/null | tr -cd '[:print:]' | tail -c 130)
-              echo "[$ts] freePages=${freepg:-?} :: $last"
-              sleep 2
-            done
-          ) > sampler.log 2>&1 &
-          SAMPLER=$!
           set +e
-          script -q test-output.log bash -c 'swift test --no-parallel --disable-sandbox; echo "RC=$?" > swift-test-exit.code'
-          set -e
-          kill "$SAMPLER" 2>/dev/null || true
-          EC=$(grep -oE '[0-9]+' swift-test-exit.code 2>/dev/null | head -1 || echo 1)
-          echo "SWIFT_TEST_RC=$EC"
+          swift test 2>&1 | tee test-output.log
+          EC=${PIPESTATUS[0]}
+          echo "$EC" > swift-test-exit.code
           [ "$EC" = "0" ]
 
-      # Turns a non-reproducible runner-only death into a real diagnosis: the
-      # raw exit signal, the resource curve over the whole run, kernel kill /
-      # jetsam events, and any crash reports macOS writes on a catchable signal.
-      # Runs even when the test step fails.
-      - name: Crash diagnostics
-        if: always()
-        shell: bash
+      # Insurance for the runner-only OOM this project spent many rounds pinning
+      # down: an unbounded ancestor walk in discoverPolicies that converged on
+      # Swift 6.3 but ballooned to ~42 GB on the runner's Swift 6.1.2 and was
+      # jetsam-killed (message-less, no crash report). Now bounded. This runs
+      # ONLY on failure and names the signal + any kernel OOM kill, so a
+      # regression is diagnosed in one round instead of ten.
+      - name: Failure diagnostics
+        if: failure()
         run: |
-          echo "===== swift test raw exit ====="
-          echo "raw exit: $(cat swift-test-exit.code 2>/dev/null || echo '?')  (137=SIGKILL 134=SIGABRT 139=SIGSEGV 143=SIGTERM)"
-          echo "===== runner resources ====="
-          echo "-- disk --";   df -h /
-          echo "-- ulimit --"; ulimit -a
-          echo "-- cpu/mem --"; sysctl hw.ncpu hw.memsize 2>/dev/null || true
-          echo "===== resource sampler (RSS / threads / swap over the run) ====="
-          tail -180 sampler.log 2>/dev/null || echo "(no sampler.log)"
-          echo "===== last 60 lines of the test stream ====="
-          tail -60 test-output.log 2>/dev/null || echo "(no test-output.log)"
-          echo "===== crash / resource markers in the stream ====="
-          grep -nE 'Fatal error|Precondition|Crashed|crashed|received signal|SIG[A-Z]+|No space left|Killed|abort|Trace/BPT' test-output.log 2>/dev/null | tail -40 || true
-          echo "===== kernel kill / jetsam / memorystatus / thread-limit events ====="
-          log show --last 25m --predicate 'eventMessage CONTAINS[c] "jetsam" OR eventMessage CONTAINS[c] "memorystatus" OR eventMessage CONTAINS[c] "low swap" OR eventMessage CONTAINS[c] "lowswap" OR eventMessage CONTAINS[c] "thread_create" OR (eventMessage CONTAINS[c] "kill" AND (eventMessage CONTAINS[c] "swift" OR eventMessage CONTAINS[c] "xctest" OR eventMessage CONTAINS[c] "Trifola"))' --style compact 2>/dev/null | tail -80 || echo "(log show unavailable)"
-          echo "===== macOS crash reports (full symbolicated backtraces) ====="
-          ls -la ~/Library/Logs/DiagnosticReports/ 2>/dev/null || echo "(DiagnosticReports empty or absent)"
-          for f in ~/Library/Logs/DiagnosticReports/*.ips ~/Library/Logs/DiagnosticReports/*.crash; do
-            [ -e "$f" ] || continue
-            echo "----- $f -----"
-            cat "$f"
-          done
+          echo "raw exit: $(cat swift-test-exit.code 2>/dev/null || echo '?')  (137=SIGKILL 134=SIGABRT 139=SIGSEGV)"
+          echo "=== kernel jetsam / OOM kills (last 20m) ==="
+          log show --last 20m --predicate 'eventMessage CONTAINS[c] "jetsam" OR eventMessage CONTAINS[c] "killing largest"' --style compact 2>/dev/null | tail -30 || echo "(log show unavailable)"
+          echo "=== crash reports ==="
+          ls -la ~/Library/Logs/DiagnosticReports/ 2>/dev/null || echo "(none)"

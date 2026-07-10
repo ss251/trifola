@@ -262,7 +262,17 @@ public struct ClaudeSettings: Sendable, Equatable {
         var policies: [DeclaredRoutingPolicy] = []
         var definitionPaths: [String] = []
         var cursor = cwd
-        while true {
+        // Ancestor walk to the filesystem root. The natural stop is
+        // deletingLastPathComponent() fixed-pointing at "/", but this loop is NOT
+        // allowed to trust that invariant alone: because it APPENDS as it climbs,
+        // a walk that fails to converge balloons the process without bound. On
+        // Swift 6.1.2 / macOS 15 the walk did exactly that and OOM-killed CI at
+        // ~42 GB (it converges cleanly on 6.3). A visited-set guards cycles and
+        // repeated fixed points; a hard depth cap guards monotonic non-convergence.
+        // No real path comes near the cap, so ancestor resolution is unaffected.
+        var visited = Set<String>()
+        while visited.count < 256 {
+            guard visited.insert(cursor.path).inserted else { break }
             let instructionURLs = [
                 cursor.appendingPathComponent("CLAUDE.md"),
                 cursor.appendingPathComponent(".claude/CLAUDE.md"),
