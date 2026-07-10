@@ -83,15 +83,40 @@ public struct RemoteConfig: Sendable, Hashable, Codable, Identifiable {
     public var sshTarget: String { "\(user)@\(host)" }
 }
 
+/// Stable, path-safe machine identifiers. Remote names become directory and
+/// transient-file components, so accepting anything broader than this ASCII
+/// slug would turn a display label into a filesystem traversal primitive.
+public enum MachineNameSlug {
+    public static func isValid(_ value: String) -> Bool {
+        guard let first = value.utf8.first, isASCIIAlphaNumeric(first) else { return false }
+        return value.utf8.dropFirst().allSatisfy {
+            isASCIIAlphaNumeric($0) || $0 == 0x2E || $0 == 0x5F || $0 == 0x2D
+        }
+    }
+
+    private static func isASCIIAlphaNumeric(_ byte: UInt8) -> Bool {
+        (0x30...0x39).contains(byte)
+            || (0x41...0x5A).contains(byte)
+            || (0x61...0x7A).contains(byte)
+    }
+}
+
 /// The persisted fleet config (JSON in the app's OWN Application Support dir — never
 /// `~/.claude`). Seeded with `workstation` on first launch.
 public struct MachinesConfig: Sendable, Codable, Equatable {
     public var version: Int
-    public var remotes: [RemoteConfig]
+    public var remotes: [RemoteConfig] {
+        didSet {
+            // The app layer mutates this array directly. Keep the trust boundary
+            // in TrifolaKit so an invalid UI/config value never survives long
+            // enough to reach createDirectory, the files-list write, or rsync.
+            remotes = remotes.filter { MachineNameSlug.isValid($0.name) }
+        }
+    }
 
     public init(version: Int = MachinesConfig.currentVersion, remotes: [RemoteConfig]) {
         self.version = version
-        self.remotes = remotes
+        self.remotes = remotes.filter { MachineNameSlug.isValid($0.name) }
     }
 
     public static let currentVersion = 1
@@ -103,12 +128,67 @@ public struct MachinesConfig: Sendable, Codable, Equatable {
     }
 }
 
+/// The durable receipt for one remote mirror. Reachability is deliberately absent:
+/// a TCP result from a previous process cannot prove that a host is online now.
+/// The current process starts at `.unknown`, while these timestamps explain how old
+/// the last local evidence is and what happened on the most recent sync attempt.
+public struct RemoteMirrorPersistence: Sendable, Codable, Equatable {
+    public var lastAttempt: Date?
+    public var lastSuccess: Date?
+    public var lastError: String?
+    public var mirrorFreshness: Date?
+
+    public init(lastAttempt: Date? = nil,
+                lastSuccess: Date? = nil,
+                lastError: String? = nil,
+                mirrorFreshness: Date? = nil) {
+        self.lastAttempt = lastAttempt
+        self.lastSuccess = lastSuccess
+        self.lastError = lastError
+        self.mirrorFreshness = mirrorFreshness
+    }
+}
+
+/// App-owned, low-frequency runtime receipts keyed by the stable remote slug.
+public struct MachinesRuntimeState: Sendable, Codable, Equatable {
+    public var remotes: [String: RemoteMirrorPersistence]
+
+    public init(remotes: [String: RemoteMirrorPersistence] = [:]) {
+        self.remotes = remotes.filter { MachineNameSlug.isValid($0.key) }
+    }
+}
+
+/// A short, user-presentable persistence failure. Keeping the path in the error
+/// makes Settings' Reveal/Retry surface useful without exposing Foundation errors
+/// across every store boundary.
+public enum MachinePersistenceError: Error, Sendable, Equatable, LocalizedError {
+    case invalidMachineName(String)
+    case write(path: String, reason: String)
+    case remove(path: String, reason: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidMachineName(let name):
+            return "Invalid machine name \(name)."
+        case .write(let path, let reason):
+            return "Could not save \(path): \(reason)"
+        case .remove(let path, let reason):
+            return "Could not remove \(path): \(reason)"
+        }
+    }
+}
+
 // MARK: - Application Support paths (the read-only mirror lives here, never ~/.claude)
 
 /// Where the cross-machine layer keeps its files — all under the app's OWN
 /// Application Support dir. The remote mirrors sit under `remotes/<name>/`; nothing
 /// here ever touches `~/.claude` (local) or the remote host beyond a read-only pull.
 public enum MachinePaths {
+    public enum PathError: Error, Equatable {
+        case invalidMachineName(String)
+        case escapedRemotesRoot(String)
+    }
+
     public static var appSupport: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Trifola", isDirectory: true)
@@ -116,47 +196,199 @@ public enum MachinePaths {
     public static var configURL: URL {
         appSupport.appendingPathComponent("machines.json")
     }
+    public static var runtimeStateURL: URL {
+        appSupport.appendingPathComponent("machine-runtime.json")
+    }
     /// Root of all remote mirrors.
     public static var remotesRoot: URL {
         appSupport.appendingPathComponent("remotes", isDirectory: true)
     }
     /// The read-only mirror dir for one remote — the parser reads this like a second
     /// `~/.claude/projects`.
+    /// Compatibility surface for already-validated/config-owned names. Runtime
+    /// input must use `validatedMirror`; invalid values fail closed there.
     public static func mirror(for name: String) -> URL {
-        remotesRoot.appendingPathComponent(name, isDirectory: true)
+        guard let path = try? validatedMirror(for: name) else {
+            preconditionFailure("invalid remote machine name or mirror path")
+        }
+        return path
+    }
+
+    public static func validatedMirror(for name: String, root: URL = remotesRoot) throws -> URL {
+        try remotePath(component: name, root: root, isDirectory: true)
     }
     /// The transient file list a sync pass feeds to `rsync --files-from`.
     public static func syncListFile(for name: String) -> URL {
-        remotesRoot.appendingPathComponent(".\(name).files", isDirectory: false)
+        guard let path = try? validatedSyncListFile(for: name) else {
+            preconditionFailure("invalid remote machine name or files-list path")
+        }
+        return path
+    }
+
+    public static func validatedSyncListFile(for name: String, root: URL = remotesRoot) throws -> URL {
+        guard MachineNameSlug.isValid(name) else { throw PathError.invalidMachineName(name) }
+        return try contained(
+            root.appendingPathComponent(".\(name).files", isDirectory: false),
+            under: root)
+    }
+
+    /// Re-check an already-composed path immediately before a create, write, or
+    /// rsync invocation. The standardized boundary includes a trailing slash so
+    /// sibling prefixes such as `remotes-evil` cannot pass.
+    public static func contained(_ candidate: URL, under root: URL = remotesRoot) throws -> URL {
+        let base = root.standardizedFileURL
+        let child = candidate.standardizedFileURL
+        let prefix = base.path.hasSuffix("/") ? base.path : base.path + "/"
+        guard child.path.hasPrefix(prefix), child.path != base.path else {
+            throw PathError.escapedRemotesRoot(child.path)
+        }
+        return child
+    }
+
+    private static func remotePath(
+        component: String,
+        root: URL,
+        isDirectory: Bool
+    ) throws -> URL {
+        guard MachineNameSlug.isValid(component) else {
+            throw PathError.invalidMachineName(component)
+        }
+        return try contained(
+            root.appendingPathComponent(component, isDirectory: isDirectory),
+            under: root)
     }
 
     /// Load the config, SEEDING it with workstation on first run (idempotent).
-    public static func loadConfig() -> MachinesConfig {
-        let url = configURL
+    public static func loadConfig(from url: URL = configURL) -> MachinesConfig {
         if let data = try? Data(contentsOf: url),
            let cfg = try? JSONDecoder().decode(MachinesConfig.self, from: data) {
-            return cfg
+            let valid = cfg.remotes.filter { MachineNameSlug.isValid($0.name) }
+            return MachinesConfig(version: cfg.version, remotes: valid)
         }
         let seed = MachinesConfig.seeded
-        saveConfig(seed)
+        _ = saveConfig(seed, to: url)
         return seed
     }
 
-    public static func saveConfig(_ cfg: MachinesConfig) {
-        guard let data = try? JSONEncoder().encode(cfg) else { return }
-        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
-        try? data.write(to: configURL, options: .atomic)
+    /// Persist configuration atomically and return the actual outcome so callers
+    /// never publish a host change that disk rejected.
+    @discardableResult
+    public static func saveConfig(_ cfg: MachinesConfig,
+                                  to url: URL = configURL) -> Result<Void, MachinePersistenceError> {
+        guard cfg.remotes.allSatisfy({ MachineNameSlug.isValid($0.name) }) else {
+            let invalid = cfg.remotes.first { !MachineNameSlug.isValid($0.name) }?.name ?? ""
+            return .failure(.invalidMachineName(invalid))
+        }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(cfg).write(to: url, options: .atomic)
+            return .success(())
+        } catch {
+            return .failure(.write(path: url.path, reason: error.localizedDescription))
+        }
+    }
+
+    public static func loadRuntimeState(from url: URL = runtimeStateURL) -> MachinesRuntimeState {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let data = try? Data(contentsOf: url),
+              let state = try? decoder.decode(MachinesRuntimeState.self, from: data)
+        else { return MachinesRuntimeState() }
+        return state
+    }
+
+    @discardableResult
+    public static func saveRuntimeState(_ state: MachinesRuntimeState,
+                                        to url: URL = runtimeStateURL) -> Result<Void, MachinePersistenceError> {
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(state).write(to: url, options: .atomic)
+            return .success(())
+        } catch {
+            return .failure(.write(path: url.path, reason: error.localizedDescription))
+        }
     }
 
     /// True once a remote's mirror dir exists AND holds at least one transcript —
     /// i.e. a sync has actually succeeded. Until then the remote is INERT (configured
     /// but contributing nothing), exactly as the seed requires.
-    public static func mirrorHasContent(for name: String) -> Bool {
-        let dir = mirror(for: name)
+    public static func mirrorHasContent(for name: String, root: URL = remotesRoot) -> Bool {
+        guard let dir = try? validatedMirror(for: name, root: root) else { return false }
         guard let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil,
                                                       options: [.skipsHiddenFiles]) else { return false }
         for case let u as URL in en where u.pathExtension == "jsonl" { return true }
         return false
+    }
+
+    /// Newest on-disk transcript modification. This is mirror freshness, not host
+    /// liveness and not the time the app happened to launch.
+    public static func mirrorFreshness(for name: String, root: URL = remotesRoot) -> Date? {
+        guard let dir = try? validatedMirror(for: name, root: root),
+              let en = FileManager.default.enumerator(
+                at: dir,
+                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles])
+        else { return nil }
+        var newest: Date?
+        for case let url as URL in en where url.pathExtension == "jsonl" {
+            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey,
+                                                                 .isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate else { continue }
+            if newest == nil || modified > newest! { newest = modified }
+        }
+        return newest
+    }
+
+    /// Logical bytes retained under the local mirror, used by the removal
+    /// confirmation. Missing/unreadable files contribute zero rather than making
+    /// the confirmation itself fail.
+    public static func mirrorSize(for name: String, root: URL = remotesRoot) -> UInt64 {
+        guard let dir = try? validatedMirror(for: name, root: root),
+              let en = FileManager.default.enumerator(
+                at: dir,
+                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles])
+        else { return 0 }
+        var bytes: UInt64 = 0
+        for case let url as URL in en {
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let size = values.fileSize,
+                  size > 0 else { continue }
+            bytes += UInt64(size)
+        }
+        return bytes
+    }
+
+    /// Remove only app-owned local copies (mirror + transient rsync file list).
+    /// The remote source is never touched.
+    @discardableResult
+    public static func removeMirror(for name: String,
+                                    root: URL = remotesRoot) -> Result<Void, MachinePersistenceError> {
+        guard MachineNameSlug.isValid(name) else {
+            return .failure(.invalidMachineName(name))
+        }
+        do {
+            let fm = FileManager.default
+            let mirror = try validatedMirror(for: name, root: root)
+            let list = try validatedSyncListFile(for: name, root: root)
+            if fm.fileExists(atPath: mirror.path) { try fm.removeItem(at: mirror) }
+            if fm.fileExists(atPath: list.path) { try fm.removeItem(at: list) }
+            return .success(())
+        } catch let error as MachinePersistenceError {
+            return .failure(error)
+        } catch {
+            let path = (try? validatedMirror(for: name, root: root))?.path ?? name
+            return .failure(.remove(path: path, reason: error.localizedDescription))
+        }
     }
 }
 
@@ -211,6 +443,27 @@ public enum RemoteSync {
     /// transcripts are ever enumerated (and therefore pulled).
     public static func plan(remote: RemoteConfig, mirror: URL, listFile: URL,
                             timeout: Int = connectTimeoutSeconds) -> Plan {
+        do {
+            return try validatedPlan(
+                remote: remote, mirror: mirror, listFile: listFile,
+                timeout: timeout)
+        } catch {
+            preconditionFailure("unsafe remote sync plan: \(error)")
+        }
+    }
+
+    public static func validatedPlan(
+        remote: RemoteConfig,
+        mirror: URL,
+        listFile: URL,
+        remotesRoot: URL = MachinePaths.remotesRoot,
+        timeout: Int = connectTimeoutSeconds
+    ) throws -> Plan {
+        guard MachineNameSlug.isValid(remote.name) else {
+            throw MachinePaths.PathError.invalidMachineName(remote.name)
+        }
+        let mirror = try MachinePaths.contained(mirror, under: remotesRoot)
+        let listFile = try MachinePaths.contained(listFile, under: remotesRoot)
         let opts = sshOptions(timeout: timeout)
 
         // Step 1 — enumerate recent transcripts on the remote. The remote shell
@@ -462,32 +715,52 @@ public struct RemoteStatus: Sendable, Equatable, Identifiable {
     public let lastSynced: Date?
     public let lastError: String?
     public let sessionCount: Int
+    public let lastAttempt: Date?
+    public let mirrorFreshness: Date?
 
     public init(machine: Machine, reachable: MachineReachability.Status, hasMirror: Bool,
-                lastSynced: Date?, lastError: String?, sessionCount: Int) {
+                lastSynced: Date?, lastError: String?, sessionCount: Int,
+                lastAttempt: Date? = nil, mirrorFreshness: Date? = nil) {
         self.machine = machine
         self.reachable = reachable
         self.hasMirror = hasMirror
         self.lastSynced = lastSynced
         self.lastError = lastError
         self.sessionCount = sessionCount
+        self.lastAttempt = lastAttempt
+        self.mirrorFreshness = mirrorFreshness
     }
     public var id: String { machine.id }
 
-    /// Online = it has mirrored sessions AND we last saw it reachable (or haven't
-    /// probed). Offline otherwise — but always local-only-safe, never blocking.
-    public var isOnline: Bool { hasMirror && reachable != .unreachable }
+    /// Online requires evidence from THIS process. A retained mirror plus unknown
+    /// reachability is useful local data, but it is never proof that the host is up.
+    public var isOnline: Bool { hasMirror && reachable == .reachable }
 
-    /// The one-line indicator text. Calm and factual.
+    /// The one-line indicator text. It names the local mirror separately from live
+    /// reachability so a stale copy can never read as a currently-online machine.
     public var indicator: String {
-        if isOnline {
-            let synced = lastSynced.map { "synced \(fmtAgo($0))" } ?? "synced"
-            return "\(machine.name) · \(sessionCount) session\(sessionCount == 1 ? "" : "s") · \(synced)"
+        let freshest = mirrorFreshness ?? lastSynced
+        let mirror: String
+        if hasMirror {
+            mirror = freshest.map { "local mirror updated \(fmtAgo($0))" }
+                ?? "local mirror age unknown"
+        } else {
+            mirror = "no local mirror"
         }
-        if !hasMirror {
-            return "\(machine.name) offline — not yet synced"
+        let failure = lastError.map { error in
+            let attempted = lastAttempt.map { " \(fmtAgo($0))" } ?? ""
+            return " · last sync attempt\(attempted) failed: \(error)"
+        } ?? ""
+
+        switch reachable {
+        case .reachable where hasMirror:
+            return "\(machine.name) · \(sessionCount) session\(sessionCount == 1 ? "" : "s") · \(mirror)\(failure)"
+        case .reachable:
+            return "\(machine.name) · SSH port reachable — \(mirror)\(failure)"
+        case .unreachable:
+            return "\(machine.name) unreachable — \(mirror)\(failure)"
+        case .unknown:
+            return "\(machine.name) unverified — \(mirror)\(failure)"
         }
-        let synced = lastSynced.map { "last synced \(fmtAgo($0))" } ?? "never synced"
-        return "\(machine.name) offline — \(synced)"
     }
 }

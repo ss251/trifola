@@ -11,37 +11,81 @@ import TrifolaKit
 @MainActor
 final class LaunchStore: ObservableObject {
     @Published private(set) var recipes: [Recipe] = []
-    let repo = RecipeRepository()
+    @Published private(set) var persistenceError: String?
+    let repo: RecipeRepository
+    private var persistenceRetry: (() -> Void)?
+
+    var persistenceLocation: URL { repo.directory }
+
+    init(repo: RecipeRepository = RecipeRepository()) {
+        self.repo = repo
+    }
 
     func reload() {
         recipes = repo.list()
     }
 
-    func save(_ recipe: Recipe) {
+    @discardableResult
+    func save(_ recipe: Recipe) -> Recipe? {
         var r = recipe
         r.updatedAt = Date()
-        try? repo.save(r)
-        _ = try? repo.materializePrompt(r)
+        do {
+            try repo.save(r)
+        } catch {
+            recordPersistenceFailure(
+                "Recipe was not saved at \(repo.recipeURL(r.id).path): \(error.localizedDescription)") { [weak self] in
+                    _ = self?.save(r)
+                }
+            return nil
+        }
         reload()
+        clearPersistenceFailure()
+        do {
+            _ = try repo.materializePrompt(r)
+        } catch {
+            recordPersistenceFailure(
+                "Recipe saved, but its skill-hint file was not written: \(error.localizedDescription)") { [weak self] in
+                    self?.retryPromptMaterialization(r)
+                }
+        }
+        return r
     }
 
     func delete(_ id: String) { repo.delete(id); reload() }
 
     @discardableResult
-    func duplicate(_ recipe: Recipe) -> Recipe {
+    func duplicate(_ recipe: Recipe) -> Recipe? {
         var copy = recipe
         copy.id = UUID().uuidString
         copy.name = recipe.name + " copy"
         copy.createdAt = Date(); copy.updatedAt = Date()
-        try? repo.save(copy)
+        do {
+            try repo.save(copy)
+        } catch {
+            recordPersistenceFailure(
+                "Recipe copy was not saved at \(repo.recipeURL(copy.id).path): \(error.localizedDescription)") { [weak self] in
+                    _ = self?.duplicatePersisting(copy)
+                }
+            return nil
+        }
         reload()
+        clearPersistenceFailure()
         return copy
     }
 
     /// Compose with the REAL materialized prompt-file path (writes the file when
     /// the recipe has skill refs) — the exact command a launch/copy uses.
     func compose(_ recipe: Recipe) -> RecipeCommand {
-        let path = (try? repo.materializePrompt(recipe)) ?? nil
+        let path: String?
+        do {
+            path = try repo.materializePrompt(recipe)
+        } catch {
+            path = nil
+            recordPersistenceFailure(
+                "Launch command omitted the skill-hint file because it could not be written: \(error.localizedDescription)") { [weak self] in
+                    self?.retryPromptMaterialization(recipe)
+                }
+        }
         return RecipeComposer.compose(recipe, promptFilePath: path)
     }
 
@@ -54,6 +98,48 @@ final class LaunchStore: ObservableObject {
     func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func retryPersistence() {
+        persistenceRetry?()
+    }
+
+    private func duplicatePersisting(_ copy: Recipe) -> Recipe? {
+        do {
+            try repo.save(copy)
+            reload()
+            clearPersistenceFailure()
+            return copy
+        } catch {
+            recordPersistenceFailure(
+                "Recipe copy still could not be saved: \(error.localizedDescription)") { [weak self] in
+                    _ = self?.duplicatePersisting(copy)
+                }
+            return nil
+        }
+    }
+
+    private func retryPromptMaterialization(_ recipe: Recipe) {
+        do {
+            _ = try repo.materializePrompt(recipe)
+            clearPersistenceFailure()
+        } catch {
+            recordPersistenceFailure(
+                "Skill-hint file still could not be written: \(error.localizedDescription)") { [weak self] in
+                    self?.retryPromptMaterialization(recipe)
+                }
+        }
+    }
+
+    private func recordPersistenceFailure(_ message: String,
+                                          retry: @escaping () -> Void) {
+        persistenceError = message
+        persistenceRetry = retry
+    }
+
+    private func clearPersistenceFailure() {
+        persistenceError = nil
+        persistenceRetry = nil
     }
 }
 
@@ -212,6 +298,12 @@ struct LaunchScreen: View {
 
     private var rightColumn: some View {
         VStack(alignment: .leading, spacing: Theme.gutter) {
+            if let persistenceError = store.persistenceError {
+                InlinePersistenceBanner(
+                    message: persistenceError,
+                    retry: store.retryPersistence,
+                    reveal: { NSWorkspace.shared.open(store.persistenceLocation) })
+            }
             CommandPreview(recipe: draft, command: command)
             launchActions
             Divider()
@@ -232,7 +324,7 @@ struct LaunchScreen: View {
                 .disabled(draft.name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             Text("The composed command is copied to your clipboard — paste it into any terminal to start the session. Skills are a prompt hint — they resolve at runtime via /skill-name.")
-                .font(.caption2).foregroundStyle(Theme.faint)
+                .font(.caption2).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -257,7 +349,12 @@ struct LaunchScreen: View {
                     RecipeCardView(recipe: r,
                                    onLaunch: { launchSaved(r) },
                                    onEdit: { draft = r; editingID = r.id; flash("Editing “\(r.name)”") },
-                                   onDuplicate: { let c = store.duplicate(r); draft = c; editingID = c.id },
+                                   onDuplicate: {
+                                       if let copy = store.duplicate(r) {
+                                           draft = copy
+                                           editingID = copy.id
+                                       }
+                                   },
                                    onDelete: { store.delete(r.id) })
                 }
             }
@@ -270,22 +367,23 @@ struct LaunchScreen: View {
     private func launch() {
         let cmd = store.compose(draft)
         store.copyToClipboard(cmd.shellCommand)
-        flash("Command copied")
+        flash(store.persistenceError == nil ? "Command copied" : "Command copied without skill hint")
     }
 
     private func launchSaved(_ r: Recipe) {
         let cmd = store.compose(r)
         store.copyToClipboard(cmd.shellCommand)
-        flash("Command copied")
+        flash(store.persistenceError == nil ? "Command copied" : "Command copied without skill hint")
     }
 
     private func save() {
         var r = draft
-        if editingID == nil { r.createdAt = Date() }
-        store.save(r)
-        draft = r
-        editingID = r.id
-        flash(editingID == nil ? "Recipe saved" : "Recipe updated")
+        let isNew = editingID == nil
+        if isNew { r.createdAt = Date() }
+        guard let saved = store.save(r) else { return }
+        draft = saved
+        editingID = saved.id
+        flash(isNew ? "Recipe saved" : "Recipe updated")
     }
 
     private func flash(_ text: String) {
@@ -377,7 +475,7 @@ private struct DisclosureRow: View {
                 .foregroundStyle(Theme.muted)
             }
             if open {
-                Text(detail).font(.caption2).foregroundStyle(Theme.faint)
+                Text(detail).font(.caption2).foregroundStyle(Theme.muted)
                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     .motionRowTransition()
             }
@@ -410,7 +508,9 @@ struct RecipeCardView: View {
             }
             Text((recipe.cwd.isEmpty ? "no working dir" : recipe.cwd)
                     .replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                .font(.caption2).foregroundStyle(Theme.faint).lineLimit(1).truncationMode(.middle)
+                .font(.caption2)
+                .foregroundStyle(recipe.cwd.isEmpty ? Theme.muted : Theme.faint)
+                .lineLimit(1).truncationMode(.middle)
             FlowLayout(spacing: 5, lineSpacing: 5) {
                 MetaChip(icon: "gauge.with.dots.needle.67percent", text: recipe.effort.label)
                 if recipe.permissionMode != .standard {
@@ -452,6 +552,8 @@ struct RecipeCardView: View {
         TapButton(action: action) { Image(systemName: symbol).font(.caption.weight(.medium)) }
             .foregroundStyle(Theme.muted).frame(width: 20)
             .help(help)
+            .accessibilityLabel(help)
+            .accessibilityHint("Acts on this saved recipe")
     }
 }
 
@@ -528,6 +630,8 @@ private struct DirListEditor: View {
                             Text((d as NSString).lastPathComponent).font(.caption2).foregroundStyle(Theme.muted)
                             TapButton(action: { dirs.remove(at: i) }) { Image(systemName: "xmark").font(.system(size: 8, weight: .medium)) }
                                 .foregroundStyle(Theme.faint)
+                                .accessibilityLabel("Remove directory \((d as NSString).lastPathComponent)")
+                                .accessibilityHint("Removes this directory from the recipe")
                         }
                         .padding(.horizontal, Theme.rhythm).padding(.vertical, Theme.micro / 2)
                         .background {
@@ -574,7 +678,7 @@ private struct AgentsEditor: View {
                 }) { Label("Add agent", systemImage: "plus") }
             }
             Text("Each agent pins a model at composition time, so a subagent never silently inherits the main-loop model.")
-                .font(.caption2).foregroundStyle(Theme.faint).fixedSize(horizontal: false, vertical: true)
+                .font(.caption2).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
             if agents.isEmpty {
                 Text("No custom agents — the session runs with your defaults.")
                     .font(.caption).foregroundStyle(Theme.muted)
@@ -608,6 +712,8 @@ private struct AgentRow: View {
                 Spacer()
                 TapButton(action: { onRemove() }) { Image(systemName: "trash").font(.caption.weight(.medium)) }
                     .foregroundStyle(Theme.faint)
+                    .accessibilityLabel("Remove agent \(agent.name)")
+                    .accessibilityHint("Removes this agent from the recipe")
             }
             TextField("description", text: $agent.description)
                 .textFieldStyle(.plain).font(.caption).foregroundStyle(Theme.muted)
@@ -642,7 +748,7 @@ private struct SkillsEditor: View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             SectionLabel("Skills")
             Text("Skills resolve at RUNTIME via /skill-name — this is a system-prompt hint (“lead with X”), not an install. Honest by design. ★ = lead skill, named first in the prompt hint.")
-                .font(.caption2).foregroundStyle(Theme.faint).fixedSize(horizontal: false, vertical: true)
+                .font(.caption2).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
 
             if !draft.skillRefs.isEmpty {
                 FlowLayout(spacing: 5, lineSpacing: 5) {
@@ -702,9 +808,13 @@ struct SkillRefChip: View {
                     .font(.system(size: 9, weight: .medium)).foregroundStyle(isLead ? Theme.ink : Theme.faint)
             }
             .help(isLead ? "Lead skill" : "Make lead skill")
+            .accessibilityLabel(isLead ? "Lead skill \(ref)" : "Make \(ref) the lead skill")
+            .accessibilityHint("The lead skill is named first in the prompt hint")
             Text("/\(ref)").font(.caption2).foregroundStyle(Theme.ink)
             TapButton(action: onRemove) { Image(systemName: "xmark").font(.system(size: 8, weight: .medium)) }
                 .foregroundStyle(Theme.faint)
+                .accessibilityLabel("Remove skill \(ref)")
+                .accessibilityHint("Removes this skill from the recipe")
         }
         .padding(.horizontal, Theme.toastVerticalInset).padding(.vertical, Theme.rhythm / 2)
         .background(Capsule().fill(isLead ? Theme.selectionBG : Theme.cardFill))

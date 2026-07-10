@@ -83,7 +83,7 @@ struct SpendScreen: View {
         HStack(spacing: 8) {
             Text("pricing: \(pricingSource) · grouped by tier, priced per model")
                 .font(.caption2)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
             if let pricingError {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.caption2.weight(.medium))
@@ -238,7 +238,7 @@ struct SpendScreen: View {
                         CapsuleBar(fraction: row.cost / top)
                         Text("\(row.sessions)")
                             .font(.footnote)
-                            .foregroundStyle(Theme.faint)
+                            .foregroundStyle(Theme.muted)
                             .frame(width: 40, alignment: .trailing)
                         Text(fmtUSD(row.cost))
                             .font(.subheadline.weight(.medium))

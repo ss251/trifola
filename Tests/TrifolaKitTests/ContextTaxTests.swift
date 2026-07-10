@@ -13,10 +13,11 @@ import Testing
 private func sess(_ id: String, model: String? = "claude-opus-4-8",
                   ctx: Int, ageSecs: TimeInterval? = 60,
                   usage: SessionUsage = SessionUsage(inputTokens: 100_000),
-                  subagent: Bool = false) -> SessionSummary {
+                  subagent: Bool = false,
+                  now: Date = Date()) -> SessionSummary {
     let path = subagent ? "/x/p/s/subagents/agent-\(id).jsonl" : "/x/p/\(id).jsonl"
     return SessionSummary(id: id, project: "p", cwd: "/x/p", model: model,
-                          lastActivity: ageSecs.map { Date().addingTimeInterval(-$0) },
+                          lastActivity: ageSecs.map { now.addingTimeInterval(-$0) },
                           messageCount: 3, usage: usage,
                           contextWeight: ctx, filePath: path)
 }
@@ -128,11 +129,15 @@ struct ContextTaxPoolTests {
     @Test func liveWindowMatchesIsActive() {
         // 14m59s → live; 15m01s → not: the SAME 15-minute window as isActive.
         #expect(ContextTax.liveWindow == 15 * 60)
-        let now = Date()
-        let just = sess("just", ctx: 10_000, ageSecs: 15 * 60 - 1)
-        let past = sess("past", ctx: 10_000, ageSecs: 15 * 60 + 1)
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        let just = sess("just", ctx: 10_000, ageSecs: 15 * 60 - 1,
+                        now: now)
+        let past = sess("past", ctx: 10_000, ageSecs: 15 * 60 + 1,
+                        now: now)
         #expect(ContextTax.gauge(just, now: now).isLive)
         #expect(!ContextTax.gauge(past, now: now).isLive)
+        #expect(just.isActive(at: now))
+        #expect(!past.isActive(at: now))
     }
 
     @Test func sortIsDeterministicUnderEqualPrices() {

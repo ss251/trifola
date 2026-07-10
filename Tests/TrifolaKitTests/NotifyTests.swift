@@ -97,7 +97,8 @@ struct NotifyPlanTests {
         AttentionSignals(lastEventAt: t0.addingTimeInterval(-ageSecs), lastKind: .toolUse,
                          lastStopReason: "tool_use", hasDanglingToolUse: true,
                          danglingToolUseAt: t0.addingTimeInterval(-ageSecs),
-                         lastToolName: tool, lastToolDetail: detail)
+                         lastToolName: tool, lastToolDetail: detail,
+                         hasPermissionGate: true)
     }
     private func waitingSig(ageSecs: TimeInterval) -> AttentionSignals {
         AttentionSignals(lastEventAt: t0.addingTimeInterval(-ageSecs), lastKind: .assistantText,
@@ -259,5 +260,16 @@ struct NotifyPreferencesTests {
         let path = NotifyPreferencesStore.defaultURL.path
         #expect(path.contains("Application Support/Trifola"))
         #expect(!path.contains("/.claude"))
+    }
+
+    @Test func saveReportsFailureInsteadOfPretendingTheTogglePersisted() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mc-notify-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let blocker = dir.appendingPathComponent("not-a-directory")
+        try Data("x".utf8).write(to: blocker)
+        let store = NotifyPreferencesStore(url: blocker.appendingPathComponent("notify.json"))
+        #expect(!store.save(NotifyPreferences(enabled: true)))
     }
 }

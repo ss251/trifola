@@ -28,10 +28,27 @@ final class MenuBarPresence: ObservableObject {
             // loop. The scene binds through `boundEnabled` (below), which filters
             // no-op writes so @Published never even republishes on an unchanged
             // value; this guard is the belt to that binding's braces.
-            guard oldValue != enabled, !Self.envOverridden else { return }
-            MenuBarPreferencesStore().save(MenuBarPreferences(enabled: enabled))
+            guard oldValue != enabled, !Self.envOverridden, !restoring else { return }
+            let requested = enabled
+            guard store.save(MenuBarPreferences(enabled: requested)) else {
+                pendingEnabled = requested
+                restoring = true
+                enabled = oldValue
+                restoring = false
+                persistenceError = "Menu-bar visibility was not saved at \(store.url.path)."
+                return
+            }
+            pendingEnabled = nil
+            persistenceError = nil
         }
     }
+
+    @Published private(set) var persistenceError: String?
+    private let store: MenuBarPreferencesStore
+    private var pendingEnabled: Bool?
+    private var restoring = false
+
+    var persistenceLocation: URL { store.url.deletingLastPathComponent() }
 
     /// A binding that drops redundant writes. `MenuBarExtra(isInserted:)` and any
     /// other scene-level binder must go through this — a plain `$enabled` lets a
@@ -51,11 +68,25 @@ final class MenuBarPresence: ObservableObject {
     /// True when an environment key pinned the value for this launch (don't persist flips).
     static let envOverridden = environmentValue != nil
 
-    init() {
+    init(store: MenuBarPreferencesStore = MenuBarPreferencesStore()) {
+        self.store = store
         switch Self.environmentValue {
         case "0": enabled = false
         case "1": enabled = true
-        default: enabled = MenuBarPreferencesStore().load().enabled
+        default: enabled = store.load().enabled
         }
+    }
+
+    func retryPersistence() {
+        guard let pendingEnabled else { return }
+        guard store.save(MenuBarPreferences(enabled: pendingEnabled)) else {
+            persistenceError = "Menu-bar visibility still could not be saved at \(store.url.path)."
+            return
+        }
+        restoring = true
+        enabled = pendingEnabled
+        restoring = false
+        self.pendingEnabled = nil
+        persistenceError = nil
     }
 }

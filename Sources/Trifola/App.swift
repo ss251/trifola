@@ -1,6 +1,52 @@
 import SwiftUI
 import TrifolaKit
 
+/// One registry owns every navigation/open key equivalent and the glyph shown
+/// for it. Scene commands, the rail and the command palette all consume this
+/// map, so a painted shortcut can never exist without a registered command.
+struct AppCommandSpec {
+    let title: String
+    let key: KeyEquivalent
+    let modifiers: EventModifiers
+    let glyph: String
+
+    var shortcut: KeyboardShortcut { KeyboardShortcut(key, modifiers: modifiers) }
+}
+
+enum AppCommandMap {
+    static let openMain = AppCommandSpec(
+        title: "Open Trifola", key: "o", modifiers: .command, glyph: "⌘O")
+    static let refresh = AppCommandSpec(
+        title: "Refresh Data", key: "r", modifiers: .command, glyph: "⌘R")
+    static let palette = AppCommandSpec(
+        title: "Command Palette", key: "k", modifiers: .command, glyph: "⌘K")
+
+    static func navigation(for section: AppSection) -> AppCommandSpec {
+        switch section {
+        case .overview:
+            AppCommandSpec(title: section.title, key: "1", modifiers: .command, glyph: "⌘1")
+        case .live:
+            AppCommandSpec(title: section.title, key: "2", modifiers: .command, glyph: "⌘2")
+        case .fleet:
+            AppCommandSpec(title: section.title, key: "3", modifiers: .command, glyph: "⌘3")
+        case .deadlines:
+            AppCommandSpec(title: section.title, key: "d", modifiers: .command, glyph: "⌘D")
+        case .sessions:
+            AppCommandSpec(title: section.title, key: "4", modifiers: .command, glyph: "⌘4")
+        case .spend:
+            AppCommandSpec(title: section.title, key: "5", modifiers: .command, glyph: "⌘5")
+        case .audit:
+            AppCommandSpec(title: section.title, key: "6", modifiers: .command, glyph: "⌘6")
+        case .ledger:
+            AppCommandSpec(title: section.title, key: "7", modifiers: .command, glyph: "⌘7")
+        case .launch:
+            AppCommandSpec(title: section.title, key: "8", modifiers: .command, glyph: "⌘8")
+        case .stack:
+            AppCommandSpec(title: section.title, key: "9", modifiers: .command, glyph: "⌘9")
+        }
+    }
+}
+
 /// Forces the main window frontmost at launch. Without this the app runs but
 /// never reliably presents (snapshot.sh captures whatever was already on
 /// screen), so every launch-time hook that can win the activation race is here:
@@ -72,6 +118,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private struct TrifolaSceneCommands: Commands {
+    @ObservedObject var services: AppServices
+    @ObservedObject var menuPresence: MenuBarPresence
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .toolbar) {
+            Button(AppCommandMap.refresh.title) { services.refreshAll() }
+                .keyboardShortcut(AppCommandMap.refresh.key,
+                                  modifiers: AppCommandMap.refresh.modifiers)
+            Button(AppCommandMap.palette.title) { services.showPalette.toggle() }
+                .keyboardShortcut(AppCommandMap.palette.key,
+                                  modifiers: AppCommandMap.palette.modifiers)
+            Button(menuPresence.enabled ? "Hide Menu-Bar Strip" : "Show Menu-Bar Strip") {
+                menuPresence.enabled.toggle()
+            }
+        }
+
+        CommandMenu("Navigate") {
+            Button(AppCommandMap.openMain.title) { presentMainWindow() }
+                .keyboardShortcut(AppCommandMap.openMain.key,
+                                  modifiers: AppCommandMap.openMain.modifiers)
+            Divider()
+            ForEach(AppSection.allCases) { section in
+                let command = AppCommandMap.navigation(for: section)
+                Button(command.title) {
+                    services.select(section, origin: .keyboard)
+                    presentMainWindow()
+                }
+                .keyboardShortcut(command.key, modifiers: command.modifiers)
+            }
+        }
+    }
+
+    private func presentMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "main")
+    }
+}
+
 struct TrifolaApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var services = AppServices()
@@ -92,20 +178,7 @@ struct TrifolaApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1440, height: 900)
         .commands {
-            CommandGroup(after: .toolbar) {
-                Button("Refresh Data") { services.refreshAll() }
-                    .keyboardShortcut("r", modifiers: .command)
-                // The command palette's front door (VISION 3.4) — everything
-                // reachable in three keystrokes.
-                Button("Command Palette") { services.showPalette.toggle() }
-                    .keyboardShortcut("k", modifiers: .command)
-                // The road back when the strip is hidden: the dropdown's own
-                // toggle is unreachable once the item leaves the bar, so the
-                // main window's View menu always carries the switch.
-                Button(menuPresence.enabled ? "Hide Menu-Bar Strip" : "Show Menu-Bar Strip") {
-                    menuPresence.enabled.toggle()
-                }
-            }
+            TrifolaSceneCommands(services: services, menuPresence: menuPresence)
         }
 
         // MENU-BAR PRESENCE (plan 03): the judgment strip. `isInserted:` gates
@@ -126,7 +199,8 @@ struct TrifolaApp: App {
             TrifolaSettingsView(menuPresence: menuPresence,
                                 notifier: services.notifier,
                                 preferences: services.preferences,
-                                machines: services.machines)
+                                machines: services.machines,
+                                agency: services.agency)
         }
     }
 }
@@ -255,7 +329,9 @@ struct MenuBarContent: View {
                 HStack {
                     Text("open trifola").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
-                    Text("⌘O").font(.caption2).foregroundStyle(Theme.faint)
+                    Text(AppCommandMap.openMain.glyph)
+                        .font(.caption2)
+                        .foregroundStyle(Theme.muted)
                 }
                 .frame(minHeight: Theme.compactRowHeight)
             }
@@ -299,7 +375,7 @@ struct MenuBarContent: View {
                         .lineLimit(1)
                     Text("\(state.label.lowercased()) \(fmtAgeShort(row.age)) · \(row.tierLabel)")
                         .font(.caption2)
-                        .foregroundStyle(Theme.faint)
+                        .foregroundStyle(Theme.muted)
                 }
                 Spacer()
             }

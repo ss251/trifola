@@ -181,8 +181,11 @@ struct SeatMark: View {
     var ringWidth: CGFloat? = nil
     /// Retained for source compatibility; the Door Light is always ring-and-core.
     var gapped: Bool = true
-    /// Lockups keep an ink core while their ring carries the fleet's worst state.
+    /// Brand lockups keep a neutral ring; the core alone carries live state color.
     var coreUsesState = true
+    /// The masthead spends color only on its core, including during pulse/echo
+    /// phases. Smaller operational marks retain their state-colored effects.
+    var stateEffectsUseColor = true
     /// Menu-bar marks opt out; every in-window mark may spend the one-shot draw
     /// supplied by its launch/section reveal context.
     var firstAppearanceDraw = true
@@ -212,6 +215,9 @@ struct SeatMark: View {
         if coreUsesState, let state { return state.color }
         return fill
     }
+    private var stateEffectColor: Color {
+        stateEffectsUseColor ? (state?.color ?? effectiveRing) : effectiveRing
+    }
     private var showsCore: Bool {
         filled && state != .idle
     }
@@ -224,7 +230,7 @@ struct SeatMark: View {
             let pulse = blockedPulse(at: context.date)
             ZStack {
                 Circle()
-                    .stroke((state?.color ?? effectiveRing).opacity(0.35),
+                    .stroke(stateEffectColor.opacity(0.35),
                             lineWidth: effectiveRingWidth)
                     .scaleEffect(1 + 0.35 * echoProgress)
                     .opacity(0.35 * (1 - echoProgress))
@@ -232,7 +238,8 @@ struct SeatMark: View {
                 if pulse > 0 {
                     DoorLightRing(trim: 1,
                                   inset: effectiveRingWidth / 2 - pulse / max(displayScale, 1))
-                        .stroke(Theme.red.opacity(0.35 * (1 - pulse)), lineWidth: effectiveRingWidth)
+                        .stroke(stateEffectColor.opacity(0.35 * (1 - pulse)),
+                                lineWidth: effectiveRingWidth)
                 }
                 DoorLightRing(trim: ringTrim, inset: effectiveRingWidth / 2)
                     .stroke(effectiveRing, lineWidth: effectiveRingWidth)
@@ -359,6 +366,17 @@ enum AppBrand {
     enum Geometry {
         static let coreRatio: CGFloat = 0.5
 
+        // The icon composition is authored once on a 512-point reference
+        // canvas. Every raster size (Dock, .icns masters and documentation
+        // artwork) scales these values through this geometry rather than
+        // recreating a look-alike in a render-only path.
+        static let iconReferenceSize: CGFloat = 512
+        static let iconTileInset: CGFloat = 40
+        static let iconTileCornerRadius: CGFloat = 108
+        static let iconMarkDiameter: CGFloat = 320
+        static let iconRimInset: CGFloat = 1
+        static let iconRimLineWidth: CGFloat = 2
+
         static func ringWidth(displayScale: CGFloat) -> CGFloat {
             displayScale >= 2 ? 1.5 : 1
         }
@@ -370,6 +388,14 @@ enum AppBrand {
         static func coreRect(in rect: CGRect) -> CGRect {
             let d = min(rect.width, rect.height) * coreRatio
             return CGRect(x: rect.midX - d / 2, y: rect.midY - d / 2, width: d, height: d)
+        }
+
+        static func iconScale(in rect: CGRect) -> CGFloat {
+            min(rect.width, rect.height) / iconReferenceSize
+        }
+
+        static func scaledIconValue(_ value: CGFloat, in rect: CGRect) -> CGFloat {
+            value * iconScale(in: rect)
         }
     }
 
@@ -398,9 +424,12 @@ enum AppBrand {
         NSApp.dockTile.display()
     }
 
-    private static func drawMark(in rect: NSRect, state: MarkState, color: NSColor,
-                                 displayScale: CGFloat = 2) {
-        let lineWidth = Geometry.ringWidth(displayScale: displayScale)
+    /// Draw the shared Door Light into any AppKit raster context. Callers may
+    /// supply a scaled line width for large artwork; normal UI marks retain the
+    /// display-scale-aware one/device-pixel treatment.
+    static func drawMark(in rect: NSRect, state: MarkState, color: NSColor,
+                         displayScale: CGFloat = 2, lineWidth: CGFloat? = nil) {
+        let lineWidth = lineWidth ?? Geometry.ringWidth(displayScale: displayScale)
         let ringColor = color.withAlphaComponent(color.alphaComponent * 0.35)
         ringColor.setStroke()
         let ring = NSBezierPath(ovalIn: Geometry.ringRect(in: rect, lineWidth: lineWidth))
@@ -421,22 +450,39 @@ enum AppBrand {
         return image
     }
 
-    static func appIcon() -> NSImage {
-        NSImage(size: NSSize(width: 512, height: 512), flipped: false) { rect in
-            let inset = rect.insetBy(dx: 40, dy: 40)
-            let tile = NSBezierPath(roundedRect: inset, xRadius: 108, yRadius: 108)
-            NSGradient(colors: [NSColor(srgbRed: 0.19, green: 0.31, blue: 0.29, alpha: 1),
-                                NSColor(srgbRed: 0.09, green: 0.14, blue: 0.14, alpha: 1)])?
-                .draw(in: tile, angle: -90)
-            let markRect = NSRect(x: rect.midX - 160, y: rect.midY - 160,
-                                  width: 320, height: 320)
-            drawMark(in: markRect, state: .needsYou,
-                     color: NSColor.white.withAlphaComponent(0.94), displayScale: 2)
-            NSColor.white.withAlphaComponent(0.12).setStroke()
-            let rim = NSBezierPath(roundedRect: inset.insetBy(dx: 1, dy: 1),
-                                   xRadius: 107, yRadius: 107)
-            rim.lineWidth = 2
-            rim.stroke()
+    /// Paint the canonical app-icon composition in an arbitrary destination
+    /// rect. This is the single source used by the runtime Dock icon and the
+    /// headless icon/banner export path.
+    static func drawAppIcon(in rect: NSRect) {
+        let scale = Geometry.iconScale(in: rect)
+        let tileInset = Geometry.scaledIconValue(Geometry.iconTileInset, in: rect)
+        let tileRadius = Geometry.scaledIconValue(Geometry.iconTileCornerRadius, in: rect)
+        let inset = rect.insetBy(dx: tileInset, dy: tileInset)
+        let tile = NSBezierPath(roundedRect: inset, xRadius: tileRadius, yRadius: tileRadius)
+        NSGradient(colors: [NSColor(srgbRed: 0.19, green: 0.31, blue: 0.29, alpha: 1),
+                            NSColor(srgbRed: 0.09, green: 0.14, blue: 0.14, alpha: 1)])?
+            .draw(in: tile, angle: -90)
+        let markDiameter = Geometry.scaledIconValue(Geometry.iconMarkDiameter, in: rect)
+        let markRect = NSRect(x: rect.midX - markDiameter / 2,
+                              y: rect.midY - markDiameter / 2,
+                              width: markDiameter, height: markDiameter)
+        drawMark(in: markRect, state: .needsYou,
+                 color: NSColor.white.withAlphaComponent(0.94),
+                 displayScale: 2,
+                 lineWidth: max(1, Geometry.ringWidth(displayScale: 2) * scale))
+        NSColor.white.withAlphaComponent(0.12).setStroke()
+        let rimInset = Geometry.scaledIconValue(Geometry.iconRimInset, in: rect)
+        let rim = NSBezierPath(roundedRect: inset.insetBy(dx: rimInset, dy: rimInset),
+                               xRadius: max(0, tileRadius - rimInset),
+                               yRadius: max(0, tileRadius - rimInset))
+        rim.lineWidth = max(0.5,
+                            Geometry.scaledIconValue(Geometry.iconRimLineWidth, in: rect))
+        rim.stroke()
+    }
+
+    static func appIcon(size: CGFloat = Geometry.iconReferenceSize) -> NSImage {
+        NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            drawAppIcon(in: rect)
             return true
         }
     }
@@ -546,10 +592,10 @@ struct RemoteStatusLine: View {
         HStack(spacing: 6) {
             Image(systemName: status.isOnline ? "desktopcomputer" : "desktopcomputer.trianglebadge.exclamationmark")
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(status.isOnline ? Theme.muted : Theme.faint)
+                .foregroundStyle(Theme.muted)
             Text(status.indicator)
                 .font(.caption2)
-                .foregroundStyle(status.isOnline ? Theme.muted : Theme.faint)
+                .foregroundStyle(Theme.muted)
                 .lineLimit(1)
         }
     }
@@ -584,7 +630,7 @@ struct StatTile: View {
             if let sub {
                 Text(sub)
                     .font(.system(size: 11))
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
                     .lineLimit(1)
             }
         }
@@ -783,7 +829,7 @@ struct TapButton<Label: View>: View {
                         if isEnabled { pressed = true }
                     }
             )
-            .focusable()
+            .focusable(isEnabled)
             .focused($isFocused)
             .focusEffectDisabled()
             .background {
@@ -807,6 +853,11 @@ struct TapButton<Label: View>: View {
                 (keyboardAction ?? action)()
                 return .handled
             }
+            .onKeyPress(.space) {
+                guard isEnabled else { return .ignored }
+                (keyboardAction ?? action)()
+                return .handled
+            }
             .background {
                 if let shortcut {
                     Button("", action: keyboardAction ?? action)
@@ -818,6 +869,11 @@ struct TapButton<Label: View>: View {
                 }
             }
             .accessibilityAddTraits(.isButton)
+            .accessibilityRespondsToUserInteraction(true, isEnabled: isEnabled)
+            .accessibilityAction {
+                guard isEnabled else { return }
+                (keyboardAction ?? action)()
+            }
     }
 }
 
@@ -884,6 +940,7 @@ struct ProminentTapButton<Label: View>: View {
     let action: () -> Void
     @ViewBuilder let label: () -> Label
     @Environment(\.isEnabled) private var isEnabled
+    @GestureState private var isPressed = false
     @State private var hovering = false
     @FocusState private var isFocused: Bool
 
@@ -931,12 +988,24 @@ struct ProminentTapButton<Label: View>: View {
             .brightness((hovering || isFocused) && isEnabled ? 0.06 : 0)
             .opacity(isEnabled ? 1 : 0.45)
             .contentShape(Capsule())
+            .pressedMotion(isPressed: isPressed && isEnabled, visual: .capsule)
             .onTapGesture { if isEnabled { action() } }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($isPressed) { _, pressed, _ in
+                        if isEnabled { pressed = true }
+                    }
+            )
             .onHover { h in hovering = h }
-            .focusable()
+            .focusable(isEnabled)
             .focused($isFocused)
             .focusEffectDisabled()
             .onKeyPress(.return) {
+                guard isEnabled else { return .ignored }
+                action()
+                return .handled
+            }
+            .onKeyPress(.space) {
                 guard isEnabled else { return .ignored }
                 action()
                 return .handled
@@ -952,6 +1021,11 @@ struct ProminentTapButton<Label: View>: View {
                 }
             }
             .accessibilityAddTraits(.isButton)
+            .accessibilityRespondsToUserInteraction(true, isEnabled: isEnabled)
+            .accessibilityAction {
+                guard isEnabled else { return }
+                action()
+            }
     }
 }
 
@@ -1000,7 +1074,7 @@ struct TapToggle<L: View>: View {
         .opacity(isEnabled ? 1 : 0.5)
         .contentShape(Rectangle())
         .onTapGesture { if isEnabled { flip() } }
-        .focusable()
+        .focusable(isEnabled)
         .focused($isFocused)
         .focusEffectDisabled()
         .brightness(isFocused && isEnabled ? 0.06 : 0)
@@ -1011,8 +1085,19 @@ struct TapToggle<L: View>: View {
             flip()
             return .handled
         }
-        .accessibilityAddTraits(.isButton)
-        .accessibilityValue(isOn ? "on" : "off")
+        .onKeyPress(.space) {
+            guard isEnabled else { return .ignored }
+            flip()
+            return .handled
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityRespondsToUserInteraction(true, isEnabled: isEnabled)
+        .accessibilityAction {
+            guard isEnabled else { return }
+            flip()
+        }
     }
 }
 
@@ -1175,10 +1260,10 @@ struct IdentityCell: View {
 
     private var captionText: Text {
         if let id {
-            return Text(caption).font(.caption2).foregroundStyle(Theme.faint)
+            return Text(caption).font(.caption2).foregroundStyle(Theme.muted)
                 + Text(" · \(id)").font(.system(.caption2, design: .monospaced)).foregroundStyle(Theme.faint)
         }
-        return Text(caption).font(.caption2).foregroundStyle(Theme.faint)
+        return Text(caption).font(.caption2).foregroundStyle(Theme.muted)
     }
 }
 

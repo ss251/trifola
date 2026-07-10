@@ -2,6 +2,53 @@ import SwiftUI
 import AppKit
 import TrifolaKit
 
+enum SessionOpenActionPresentation: Equatable {
+    case iTerm2
+    case terminal
+    case transcript
+    case session
+
+    init(resolution: TerminalLinkResolution) {
+        switch resolution {
+        case .target(let target):
+            switch target.ownerApplication {
+            case .iTerm2?: self = .iTerm2
+            case .terminal?: self = .terminal
+            case .ghostty?, .other?: self = .session
+            case nil: self = .transcript
+            }
+        case .notLive, .ambiguous, .failed:
+            self = .transcript
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .iTerm2: return "Open in iTerm2"
+        case .terminal: return "Open Terminal"
+        case .transcript: return "Show transcript"
+        case .session: return "Open session"
+        }
+    }
+
+    var icon: String {
+        self == .transcript ? "doc.text" : "terminal"
+    }
+
+    var help: String {
+        switch self {
+        case .iTerm2:
+            return "Bring this exact live iTerm2 session forward; show its transcript if unavailable"
+        case .terminal:
+            return "Bring this exact live Terminal session forward; show its transcript if unavailable"
+        case .transcript:
+            return "Show this session's local read-only transcript"
+        case .session:
+            return "Open the terminal app that owns this session; show its transcript if unavailable"
+        }
+    }
+}
+
 /// The action cluster attached to every session: copy the `claude --resume`
 /// one-liner, reveal the transcript in Finder.
 struct SessionActions: View {
@@ -21,6 +68,8 @@ struct SessionActions: View {
                 Label(compact ? "Copy" : "Copy resume", systemImage: "doc.on.doc")
                     .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
             }
+            .accessibilityLabel("Copy resume command")
+            .accessibilityHint("Copy the claude resume command for this session")
             .help("Copy `claude --resume \(session.shortID)…` to the clipboard")
 
             if !compact {

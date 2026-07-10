@@ -38,7 +38,7 @@ func parseDate(_ s: String?) -> Date? {
 // saw it — matching how the burn governor (default `.current` calendar) reads the
 // key back. Shared to avoid per-line allocation; DateFormatter is thread-safe for
 // read-only `string(from:)` here.
-nonisolated(unsafe) private let localDayFormatter: DateFormatter = {
+private let localDayFormatter: DateFormatter = {
     let f = DateFormatter()
     f.locale = Locale(identifier: "en_US_POSIX")
     f.timeZone = TimeZone.current
@@ -81,6 +81,9 @@ public struct SessionAccumulator: Sendable, Codable {
         var model: String
         var day: String
         var usesUnsupportedPricingMode: Bool = false
+        /// Copied-history reconciliation prefers a canonical non-sidechain row
+        /// when the same message/request pair appears in multiple transcripts.
+        var isSidechain: Bool = false
         var tier: ModelTier { ModelTier(raw: model) }
     }
     /// Billed usage keyed per assistant message ("<message.id>:<requestId>").
@@ -451,6 +454,13 @@ public struct SessionAccumulator: Sendable, Codable {
                     cacheCreateTokens: cw, cacheReadTokens: cr,
                     cacheCreate1hTokens: cw1h
                 )
+                // Copied/replayed transcript history can append a zeroed usage
+                // placeholder for an earlier message after its real cumulative
+                // row. It is not a billable chunk and must not erase the last
+                // non-zero row for that message/request pair (CodexBar skips the
+                // same shape before in-file dedup). Keep rawUsageBlocks honest,
+                // but leave keyed usage and context weight untouched.
+                guard msgUsage.total > 0 else { return }
                 // Attribute THIS message's usage to the model that actually billed
                 // it, not to whichever model happens to answer last in the file —
                 // recorded as the NORMALIZED id the pricing catalog keys on.
@@ -474,7 +484,8 @@ public struct SessionAccumulator: Sendable, Codable {
                 }
                 usageByKey[key] = KeyedUsage(
                     usage: msgUsage, model: msgModel, day: dayKey,
-                    usesUnsupportedPricingMode: usesUnsupportedPricingMode)
+                    usesUnsupportedPricingMode: usesUnsupportedPricingMode,
+                    isSidechain: (obj["isSidechain"] as? Bool) == true)
                 // context weight = what the MOST RECENT message resent (the "$20 hey"
                 // metric). The last streaming chunk carries the full cumulative usage,
                 // so the last line processed is the right one — set unconditionally.
@@ -509,9 +520,15 @@ public struct SessionAccumulator: Sendable, Codable {
     /// Snapshot into a SessionSummary. A trailing unterminated line is parsed
     /// provisionally (matching the original whole-file scan) without advancing
     /// the durable byte offset, so a later append can re-deliver it safely.
-    public func summary(filePath: String) -> SessionSummary {
+    public func summary(filePath: String,
+                        excludingUsageKeys: Set<String> = []) -> SessionSummary {
         var snap = self
         if !snap.pending.isEmpty { snap.consume(line: snap.pending) }
+        if !excludingUsageKeys.isEmpty {
+            snap.usageByKey = snap.usageByKey.filter {
+                !excludingUsageKeys.contains($0.key)
+            }
+        }
         let project = snap.cwd.isEmpty ? "—" : (snap.cwd as NSString).lastPathComponent
         // Subagent transcripts inherit the parent's sessionId, so `sid` alone is
         // NOT unique across files — duplicate Identifiable ids make SwiftUI
@@ -687,10 +704,12 @@ public struct SessionIndex: Sendable {
                                                 totalEstimate: total,
                                                 isInProgress: true))
         if work.isEmpty {
-            onProgress?(reused, SessionScanProgress(scanned: total,
+            var result = reused
+            result.reconcileCrossFileUsage()
+            onProgress?(result, SessionScanProgress(scanned: total,
                                                     totalEstimate: total,
                                                     isInProgress: false))
-            return reused
+            return result
         }
 
         // Pass 2 — parse the changed/new files across all cores.
@@ -712,11 +731,60 @@ public struct SessionIndex: Sendable {
                 }
             }
         }
-        let result = state.withLock { $0.merged }
+        var result = state.withLock { $0.merged }
+        result.reconcileCrossFileUsage()
         onProgress?(result, SessionScanProgress(scanned: total,
                                                 totalEstimate: total,
                                                 isInProgress: false))
         return result
+    }
+
+    /// Claude can copy a prior conversation into another top-level transcript.
+    /// The same stable message.id/requestId then exists in more than one file;
+    /// per-file streaming dedup alone counts it twice. Match CodexBar's canonical
+    /// choice: non-sidechain, then parent transcript, then lexicographic path.
+    /// Accumulators retain every raw row for correct incremental appends; only
+    /// materialized summaries exclude non-canonical copies.
+    mutating func reconcileCrossFileUsage() {
+        struct Candidate {
+            let path: String
+            let isSidechain: Bool
+
+            var rank: (Int, Int, String) {
+                (isSidechain ? 1 : 0,
+                 path.contains("/subagents/") ? 1 : 0,
+                 path)
+            }
+        }
+
+        var winners: [String: Candidate] = [:]
+        for path in entries.keys.sorted() {
+            guard let entry = entries[path] else { continue }
+            for (key, usage) in entry.acc.usageByKey where !key.hasPrefix("#") {
+                let candidate = Candidate(path: path, isSidechain: usage.isSidechain)
+                if let current = winners[key] {
+                    if candidate.rank < current.rank { winners[key] = candidate }
+                } else {
+                    winners[key] = candidate
+                }
+            }
+        }
+
+        var exclusions: [String: Set<String>] = [:]
+        for (path, entry) in entries {
+            for key in entry.acc.usageByKey.keys where !key.hasPrefix("#") {
+                if winners[key]?.path != path {
+                    exclusions[path, default: []].insert(key)
+                }
+            }
+        }
+        for path in entries.keys {
+            guard var entry = entries[path] else { continue }
+            entry.summary = entry.acc.summary(
+                filePath: path,
+                excludingUsageKeys: exclusions[path] ?? [])
+            entries[path] = entry
+        }
     }
 
     /// Parse a single changed/new file: incremental tail-read when it only grew,
@@ -755,7 +823,8 @@ public struct SessionIndex: Sendable {
 public final class SessionStore: ObservableObject {
     @Published public private(set) var sessions: [SessionSummary] = []
     /// Name sources outside the transcripts (live PID registry + /rename history).
-    private let nameResolver = SessionNameResolver()
+    private let nameResolver: SessionNameResolver
+    private let paths: ClaudePaths
     @Published public private(set) var lastRefresh: Date = Date()
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var scanProgress: SessionScanProgress = .idle
@@ -783,11 +852,13 @@ public final class SessionStore: ObservableObject {
     /// exactly the same parser over a dir that looks like a second `~/.claude/projects`.
     public var remoteSources: [RemoteSource] = []
 
-    public init() {}
+    public init(paths: ClaudePaths = .process) {
+        self.paths = paths
+        self.nameResolver = SessionNameResolver(claudeDir: paths.root.path)
+    }
 
     public var projectsDir: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
+        paths.projects
     }
 
     public func refresh() { Task { await refreshNow() } }
@@ -810,8 +881,9 @@ public final class SessionStore: ObservableObject {
 
         if !triedCache {
             triedCache = true
+            let cacheURL = paths.sessionIndexCacheURL
             if let cached = await Task.detached(priority: .userInitiated, operation: {
-                Self.loadIndexCache()
+                Self.loadIndexCache(from: cacheURL)
             }).value {
                 index = cached
                 apply(cached, gen: gen)
@@ -861,7 +933,8 @@ public final class SessionStore: ObservableObject {
         scanPresentation = SessionScanPresentationReducer.reduce(
             scanPresentation, event: .scanSettled)
         isRefreshing = false
-        Task.detached(priority: .utility) { Self.saveIndexCache(result) }
+        let cacheURL = paths.sessionIndexCacheURL
+        Task.detached(priority: .utility) { Self.saveIndexCache(result, to: cacheURL) }
         if refreshQueued { refreshQueued = false; await refreshNow() }
     }
 
@@ -976,10 +1049,31 @@ public final class SessionStore: ObservableObject {
 
     /// Cache-backed scan (`--selfcheck`): identical output to `scan`, but reuses and
     /// re-primes the same on-disk index the GUI warm-starts from.
-    public nonisolated static func cachedScan(_ dir: URL) -> [SessionSummary] {
-        let idx = SessionIndex.update(loadIndexCache() ?? SessionIndex(), dir: dir)
-        saveIndexCache(idx)
+    public nonisolated static func cachedScan(
+        _ dir: URL,
+        cacheURL: URL = ClaudePaths.process.sessionIndexCacheURL
+    ) -> [SessionSummary] {
+        let paths = ClaudePaths.process
+        let resolved = resolvedProjectsDirectory(dir, paths: paths)
+        let idx = SessionIndex.update(
+            loadIndexCache(from: cacheURL) ?? SessionIndex(),
+            dir: resolved)
+        saveIndexCache(idx, to: cacheURL)
         return idx.summaries
+    }
+
+    /// CLI/selfcheck compatibility seam: their historical call site passes the
+    /// literal default projects directory. A process override replaces only that
+    /// default; an explicitly supplied fixture/custom directory remains explicit.
+    public nonisolated static func resolvedProjectsDirectory(
+        _ requested: URL,
+        paths: ClaudePaths,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        let legacyDefault = home.appendingPathComponent(".claude/projects")
+            .standardizedFileURL
+        return requested.standardizedFileURL == legacyDefault
+            ? paths.projects : requested
     }
 
     // MARK: Index cache (instant warm launches)
@@ -1053,7 +1147,10 @@ public final class SessionStore: ObservableObject {
     // one intentional reparse to derive its ai-title/summary/first-prompt handle.
     // v16: N1 model-pin evidence — pending Agent call declarations and completed
     // parent→subagent invocation joins (agentId/requested/resolved model).
-    private nonisolated static let cacheVersion = 16
+    // v17: keyed usage retains `isSidechain`, and final indexes reconcile the
+    // same message.id/requestId copied across transcript files to one canonical
+    // row. Old caches cannot choose that winner without a one-time reparse.
+    private nonisolated static let cacheVersion = 17
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1075,6 +1172,7 @@ public final class SessionStore: ObservableObject {
                 size: e.size, mtime: e.mtime, acc: e.acc,
                 summary: e.acc.summary(filePath: e.path))
         }
+        idx.reconcileCrossFileUsage()
         return idx
     }
 
@@ -1193,11 +1291,10 @@ public final class RoutingAudit: ObservableObject {
     @Published public private(set) var defaultModel: String = "—"
     @Published public private(set) var flags: [RoutingFlag] = []
 
-    public init() {}
+    private let settingsFile: URL
 
-    private var settingsFile: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/settings.json")
+    public init(paths: ClaudePaths = .process) {
+        self.settingsFile = paths.settingsJSON
     }
 
     public func refresh(sessions: [SessionSummary]) {

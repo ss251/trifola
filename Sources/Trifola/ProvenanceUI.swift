@@ -130,12 +130,12 @@ struct ReconcilePanel: View {
                 if case .loaded(let cache) = state, let scan = cache.lastScan {
                     Text("CodexBar last scanned \(fmtAgo(scan))")
                         .font(.caption2)
-                        .foregroundStyle(Theme.faint)
+                        .foregroundStyle(Theme.muted)
                 }
             }
             Text("CodexBar computes the same per-model-day API-rate estimate independently from the same transcripts. Green = |Δ| ≤ max($0.01, 0.5%). Today accrues on both sides until each next scan.")
                 .font(.caption2)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             ArtifactPill(icon: "externaldrive", name: "CodexBar cache", help: "Read-only comparison file") {
                 let path = ("~/Library/Caches/CodexBar/cost-usage/claude-v4.json" as NSString).expandingTildeInPath
@@ -206,7 +206,7 @@ struct ReconcilePanel: View {
                     if isToday {
                         Text("today · accruing")
                             .font(.caption2)
-                            .foregroundStyle(Theme.faint)
+                            .foregroundStyle(Theme.muted)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -233,6 +233,10 @@ struct ReconcilePanel: View {
                                 .font(.caption.weight(.medium))
                                 .foregroundStyle(Theme.muted)
                         }
+                        .accessibilityLabel(expandedDay == row.day
+                            ? "Hide per-model reconciliation for \(row.day)"
+                            : "Show per-model reconciliation for \(row.day)")
+                        .accessibilityHint("Review the model-level difference for this day")
                         .help("Per-model drill-in")
                     }
                 }

@@ -43,6 +43,17 @@ struct SettingsPreferencesTests {
         let preferences = AppPreferences(defaultSnoozeDurationMinutes: 90)
         #expect(preferences.defaultSnoozeExpiry(from: start) == start.addingTimeInterval(5_400))
     }
+
+    @Test func saveReportsFailureInsteadOfPretendingSettingsPersisted() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-settings-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let blocker = directory.appendingPathComponent("not-a-directory")
+        try Data("x".utf8).write(to: blocker)
+        let store = AppPreferencesStore(url: blocker.appendingPathComponent("settings.json"))
+        #expect(!store.save(AppPreferences(defaultSnoozeDurationMinutes: 30)))
+    }
 }
 
 @Suite("Quiet hours")
@@ -173,5 +184,70 @@ struct ClaudeConfigLocationTests {
         #expect(location.url.path == "/tmp/team-claude")
         #expect(location.source == .environmentOverride)
         #expect(location.explainer.contains("CLAUDE_CONFIG_DIR"))
+    }
+
+    @Test func oneResolvedRootDerivesEveryClaudeSurface() {
+        let home = URL(fileURLWithPath: "/Users/dev/", isDirectory: true)
+        let paths = ClaudePaths.resolve(
+            home: home,
+            environment: [
+                "CLAUDE_CONFIG_DIR": "/tmp/team-claude",
+                "TRIFOLA_SESSION_INDEX_CACHE": "/tmp/team-index.json",
+            ])
+        #expect(paths.root.path == "/tmp/team-claude")
+        #expect(paths.projects.path == "/tmp/team-claude/projects")
+        #expect(paths.sessions.path == "/tmp/team-claude/sessions")
+        #expect(paths.settingsJSON.path == "/tmp/team-claude/settings.json")
+        #expect(paths.globalClaudeMD.path == "/tmp/team-claude/CLAUDE.md")
+        #expect(paths.agents.path == "/tmp/team-claude/agents")
+        #expect(paths.skills.path == "/tmp/team-claude/skills")
+        #expect(paths.pluginCache.path == "/tmp/team-claude/plugins/cache")
+        #expect(paths.sessionIndexCacheURL.path == "/tmp/team-index.json")
+    }
+
+    @Test func cliProcessReadsOnlyTheOverriddenCorpus() throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-path-process-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let projects = fixture.appendingPathComponent("projects/project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projects,
+                                                withIntermediateDirectories: true)
+        let transcript = #"{"type":"assistant","sessionId":"override-only","cwd":"/fixture/override-only","requestId":"override-request","timestamp":"2026-01-01T10:00:00.000Z","message":{"id":"override-message","model":"claude-opus-4-8","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#
+        try (transcript + "\n").write(
+            to: projects.appendingPathComponent("override-only.jsonl"),
+            atomically: true, encoding: .utf8)
+
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let executable = repository.appendingPathComponent(".build/debug/Trifola")
+        #expect(FileManager.default.isExecutableFile(atPath: executable.path))
+        let cache = fixture.appendingPathComponent("override-index.json")
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["--spend-by-model", "2026-01-01"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["CLAUDE_CONFIG_DIR"] = fixture.path
+        environment["TRIFOLA_SESSION_INDEX_CACHE"] = cache.path
+        process.environment = environment
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+        let output = String(
+            data: stdout.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        let errors = String(
+            data: stderr.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        #expect(process.terminationStatus == 0, "\(errors)")
+        #expect(output.contains("claude-opus-4-8"))
+        #expect(output.contains("in=    1000000"))
+        #expect(output.contains("TOTAL $5.00"))
+        #expect(FileManager.default.fileExists(atPath: cache.path))
     }
 }

@@ -91,6 +91,33 @@ public enum CodexBarCacheState: Sendable {
     case unreadable(String)
 }
 
+public enum ReconcileModelStatus: String, Sendable, Equatable {
+    case matched
+    case knownDifference
+    case unexplained
+}
+
+/// One model row with a machine-readable verdict and a human explanation. The
+/// day headline remains strict; explanations make a red row diagnosable instead
+/// of silently hand-waving every delta as "rate or dedup".
+public struct ReconcileModelRow: Identifiable, Sendable, Equatable {
+    public var id: String { model }
+    public let model: String
+    public let ours: Double
+    public let theirs: Double
+    public let status: ReconcileModelStatus
+    public let explanation: String
+
+    public init(model: String, ours: Double, theirs: Double,
+                status: ReconcileModelStatus, explanation: String) {
+        self.model = model
+        self.ours = ours
+        self.theirs = theirs
+        self.status = status
+        self.explanation = explanation
+    }
+}
+
 /// One day's reconciliation: our per-model-day dollars vs CodexBar's.
 public struct ReconcileDay: Identifiable, Sendable, Equatable {
     public var id: String { day }
@@ -100,20 +127,94 @@ public struct ReconcileDay: Identifiable, Sendable, Equatable {
     /// Per-model drill-in (normalized model id → dollars).
     public let ourModels: [String: Double]
     public let theirModels: [String: Double]
+    public let ourUsage: [String: SessionUsage]
+    public let theirRows: [String: CodexBarModelDay]
 
     public init(day: String, ours: Double, theirs: Double,
-                ourModels: [String: Double], theirModels: [String: Double]) {
+                ourModels: [String: Double], theirModels: [String: Double],
+                ourUsage: [String: SessionUsage] = [:],
+                theirRows: [String: CodexBarModelDay] = [:]) {
         self.day = day
         self.ours = ours
         self.theirs = theirs
         self.ourModels = ourModels
         self.theirModels = theirModels
+        self.ourUsage = ourUsage
+        self.theirRows = theirRows
     }
 
     public var delta: Double { ours - theirs }
 
     /// The green rule: |Δ| ≤ max($0.01, 0.5% of the larger figure).
     public var matches: Bool { CodexBarReconcile.withinTolerance(ours: ours, theirs: theirs) }
+
+    public func modelRows(lastScan: Date? = nil,
+                          scanSinceKey: String? = nil,
+                          scanUntilKey: String? = nil) -> [ReconcileModelRow] {
+        let models = Set(ourModels.keys).union(theirModels.keys)
+        return models.sorted().map { model in
+            let ours = ourModels[model] ?? 0
+            let theirs = theirModels[model] ?? 0
+            if CodexBarReconcile.withinTolerance(ours: ours, theirs: theirs) {
+                return ReconcileModelRow(
+                    model: model, ours: ours, theirs: theirs,
+                    status: .matched,
+                    explanation: "within max($0.01, 0.5%) tolerance")
+            }
+            if theirRows[model] == nil {
+                let outsideWindow = scanSinceKey.map { day < $0 } == true
+                    || scanUntilKey.map { day > $0 } == true
+                let lagging = lastScan.map {
+                    CostProvenance.dayKey(for: $0) <= day
+                } == true
+                if outsideWindow || lagging {
+                    return ReconcileModelRow(
+                        model: model, ours: ours, theirs: theirs,
+                        status: .knownDifference,
+                        explanation: outsideWindow
+                            ? "CodexBar has no row because the day is outside its cached scan window"
+                            : "CodexBar has no row yet because its last scan predates the closed day")
+                }
+                return ReconcileModelRow(
+                    model: model, ours: ours, theirs: theirs,
+                    status: .unexplained,
+                    explanation: "Trifola has usage but CodexBar has no model row in a fully scanned day")
+            }
+            guard let oursUsage = ourUsage[model], let theirsRow = theirRows[model] else {
+                return ReconcileModelRow(
+                    model: model, ours: ours, theirs: theirs,
+                    status: .unexplained,
+                    explanation: "one side lacks token-category evidence for this model row")
+            }
+            if theirsRow.costPricedCount < theirsRow.rowCount {
+                return ReconcileModelRow(
+                    model: model, ours: ours, theirs: theirs,
+                    status: .knownDifference,
+                    explanation: "CodexBar priced \(theirsRow.costPricedCount) of \(theirsRow.rowCount) rows; unpriced rows explain a semantic cost difference")
+            }
+            let tokenPairs: [(String, Int, Int)] = [
+                ("input", oursUsage.inputTokens, theirsRow.input),
+                ("cache-read", oursUsage.cacheReadTokens, theirsRow.cacheRead),
+                ("cache-create", oursUsage.cacheCreateTokens, theirsRow.cacheCreate),
+                ("1h cache-create", oursUsage.cacheCreate1hTokens, theirsRow.cacheCreate1h),
+                ("output", oursUsage.outputTokens, theirsRow.output),
+            ]
+            let tokenGaps = tokenPairs.filter { $0.1 != $0.2 }
+            if tokenGaps.isEmpty {
+                return ReconcileModelRow(
+                    model: model, ours: ours, theirs: theirs,
+                    status: .knownDifference,
+                    explanation: "token categories match exactly; the remaining difference is pricing-catalog/rate semantics")
+            }
+            let details = tokenGaps.map {
+                "\($0.0) ours \($0.1) vs CodexBar \($0.2)"
+            }.joined(separator: "; ")
+            return ReconcileModelRow(
+                model: model, ours: ours, theirs: theirs,
+                status: .unexplained,
+                explanation: "token categories differ (\(details)); investigate copied-history dedup or day attribution")
+        }
+    }
 
     /// A CALM likely cause for a visible Δ — never panic language, always the
     /// most probable mechanical explanation first:
@@ -138,7 +239,10 @@ public struct ReconcileDay: Identifiable, Sendable, Equatable {
         }) {
             let o = ourModels[worst] ?? 0, t = theirModels[worst] ?? 0
             let name = worst.isEmpty ? "(unknown model)" : worst
-            return "largest gap on \(name): ours \(String(format: "$%.2f", o)) vs CodexBar \(String(format: "$%.2f", t)) — likely a rate or dedup difference on that model"
+            let rowExplanation = modelRows(lastScan: lastScan)
+                .first { $0.model == worst }?.explanation
+                ?? "rate or dedup difference"
+            return "largest gap on \(name): ours \(String(format: "$%.2f", o)) vs CodexBar \(String(format: "$%.2f", t)) — \(rowExplanation) (rate or dedup difference)"
         }
         return nil
     }
@@ -194,14 +298,20 @@ public enum CodexBarReconcile {
     /// OUR per-model dollars for one LOCAL day — the exact `--spend-by-model`
     /// aggregation: Σ every session's (model, day) slice, priced at the
     /// catalog's date-aware rate. The same code path as every headline dollar.
-    public static func ourModelDollars(sessions: [SessionSummary], day: String,
-                                       catalog: PricingCatalog = .current) -> [String: Double] {
+    public static func ourModelUsage(sessions: [SessionSummary], day: String)
+        -> [String: SessionUsage] {
         var byModel: [String: SessionUsage] = [:]
         for s in sessions {
             for (model, u) in s.usageByModelDay[day] ?? [:] {
                 byModel[model] = (byModel[model] ?? SessionUsage()) + u
             }
         }
+        return byModel
+    }
+
+    public static func ourModelDollars(sessions: [SessionSummary], day: String,
+                                       catalog: PricingCatalog = .current) -> [String: Double] {
+        let byModel = ourModelUsage(sessions: sessions, day: day)
         var out: [String: Double] = [:]
         for (model, u) in byModel where u.total > 0 {
             out[model] = u.cost(rate: catalog.resolvedRate(model: model, onDay: day))
@@ -215,12 +325,19 @@ public enum CodexBarReconcile {
                                days: [String],
                                catalog: PricingCatalog = .current) -> [ReconcileDay] {
         days.map { day in
-            let ours = ourModelDollars(sessions: sessions, day: day, catalog: catalog)
-            let theirs = (cache.days[day] ?? [:]).mapValues(\.dollars)
+            let usage = ourModelUsage(sessions: sessions, day: day)
+            var ours: [String: Double] = [:]
+            for (model, value) in usage where value.total > 0 {
+                ours[model] = value.cost(
+                    rate: catalog.resolvedRate(model: model, onDay: day))
+            }
+            let theirRows = cache.days[day] ?? [:]
+            let theirs = theirRows.mapValues(\.dollars)
             return ReconcileDay(day: day,
                                 ours: ours.values.reduce(0, +),
                                 theirs: theirs.values.reduce(0, +),
-                                ourModels: ours, theirModels: theirs)
+                                ourModels: ours, theirModels: theirs,
+                                ourUsage: usage, theirRows: theirRows)
         }
     }
 
@@ -238,5 +355,40 @@ public enum CodexBarReconcile {
     /// 0.5% band for big ones — |Δ| ≤ max($0.01, 0.5% of the larger figure).
     public static func withinTolerance(ours: Double, theirs: Double) -> Bool {
         abs(ours - theirs) <= max(0.01, 0.005 * max(abs(ours), abs(theirs)))
+    }
+}
+
+public struct ReconcileGateResult: Sendable, Equatable {
+    public let passed: Bool
+    public let checkedDays: Int
+    public let mismatchedDays: [String]
+    public let rows: [ReconcileModelRow]
+
+    public init(passed: Bool, checkedDays: Int,
+                mismatchedDays: [String], rows: [ReconcileModelRow]) {
+        self.passed = passed
+        self.checkedDays = checkedDays
+        self.mismatchedDays = mismatchedDays
+        self.rows = rows
+    }
+}
+
+/// Strict fixture/selfcheck gate. Known differences remain explained, but they
+/// do not turn a numeric mismatch green; a passing gate means every day is
+/// actually within the published tolerance.
+public enum ReconcileGate {
+    public static func evaluate(_ days: [ReconcileDay], cache: CodexBarCache)
+        -> ReconcileGateResult {
+        let mismatched = days.filter { !$0.matches }
+        let rows = mismatched.flatMap {
+            $0.modelRows(lastScan: cache.lastScan,
+                         scanSinceKey: cache.scanSinceKey,
+                         scanUntilKey: cache.scanUntilKey)
+        }
+        return ReconcileGateResult(
+            passed: !days.isEmpty && mismatched.isEmpty,
+            checkedDays: days.count,
+            mismatchedDays: mismatched.map(\.day),
+            rows: rows)
     }
 }

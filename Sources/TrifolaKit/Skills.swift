@@ -22,8 +22,8 @@ public enum SkillSource: Sendable, Hashable {
         }
         public var subtitle: String {
             switch self {
-            case .user: return "~/.claude/skills"
-            case .plugin: return "~/.claude/plugins/cache"
+            case .user: return "Claude user skills"
+            case .plugin: return "Claude plugin cache"
             case .project: return ".claude/skills"
             }
         }
@@ -219,11 +219,11 @@ public enum SkillFrontmatter {
 public enum SkillCatalog {
 
     public static var defaultDirectory: String {
-        ("~/.claude/skills" as NSString).expandingTildeInPath
+        ClaudePaths.process.skills.path
     }
 
     public static var pluginCacheDirectory: String {
-        ("~/.claude/plugins/cache" as NSString).expandingTildeInPath
+        ClaudePaths.process.pluginCache.path
     }
 
     /// Scan the skills directory. Pure + synchronous; callers run it off the
@@ -364,21 +364,31 @@ public final class SkillsStore: ObservableObject {
     @Published public private(set) var lastScan: Date? = nil
 
     private let directory: String
+    private let pluginCacheDirectory: String
     /// Project `.claude/skills` dirs to fold into the project lane (set by the app
     /// from active session cwds).
     public var projectDirs: [String] = []
 
-    public init(directory: String = SkillCatalog.defaultDirectory) {
+    public init(directory: String = SkillCatalog.defaultDirectory,
+                pluginCacheDirectory: String = SkillCatalog.pluginCacheDirectory) {
         self.directory = directory
+        self.pluginCacheDirectory = pluginCacheDirectory
+    }
+
+    public convenience init(paths: ClaudePaths) {
+        self.init(directory: paths.skills.path,
+                  pluginCacheDirectory: paths.pluginCache.path)
     }
 
     public func refreshNow() async {
         guard !loading else { return }
         loading = true
         let dir = directory
+        let cache = pluginCacheDirectory
         let projects = projectDirs
         let all = await Task.detached(priority: .userInitiated) {
-            SkillCatalog.scanAll(userDir: dir, projectDirs: projects)
+            SkillCatalog.scanAll(userDir: dir, cacheDir: cache,
+                                 projectDirs: projects)
         }.value
         // Compare-before-assign (W6 wave 4): a rescan that found the same catalog
         // must not republish — it would drop tree selection hover + re-render the

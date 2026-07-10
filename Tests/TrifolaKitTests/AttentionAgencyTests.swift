@@ -134,6 +134,17 @@ struct AttentionSuppressionStoreTests {
         #expect(AttentionSuppressionStore.defaultURL.path
             .contains("Application Support/Trifola/attention-suppression.json"))
     }
+
+    @Test func saveReportsFailureInsteadOfPretendingAgencyPersisted() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("attention-agency-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let blocker = directory.appendingPathComponent("not-a-directory")
+        try Data("x".utf8).write(to: blocker)
+        let store = AttentionSuppressionStore(url: blocker.appendingPathComponent("state.json"))
+        #expect(!store.save(AttentionSuppressionState(mutedProjectKeys: ["webapp"])))
+    }
 }
 
 @Suite("Blocked to running acknowledgment")

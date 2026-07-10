@@ -62,7 +62,7 @@ struct TranscriptView: View {
             }
             if store.startedMidFile || store.droppedHead {
                 Text("· tail of file")
-                    .font(.caption2).foregroundStyle(Theme.faint)
+                    .font(.caption2).foregroundStyle(Theme.muted)
             }
             Spacer()
             if !filePath.isEmpty {
@@ -71,7 +71,7 @@ struct TranscriptView: View {
                 }
             }
             Text("\(store.events.count) events")
-                .font(.caption2).foregroundStyle(Theme.faint)
+                .font(.caption2).foregroundStyle(Theme.muted)
         }
         .padding(.horizontal, Theme.codePadding)
         .padding(.vertical, Theme.rhythm)

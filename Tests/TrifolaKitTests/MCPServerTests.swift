@@ -57,9 +57,13 @@ private func corpus() -> [SessionSummary] {
     ]
 }
 
+private let registeredSelfID = "aaaa1111-0000-0000-0000-000000000001"
+
 private func server(quota: MCPQuotaOutcome = .unavailable("no credentials found (test)"),
-                    sessions: [SessionSummary]? = nil) -> MCPIntrospectionServer {
-    MCPIntrospectionServer(sessions: { sessions ?? corpus() }, quota: { quota }, now: { fixedNow })
+                    sessions: [SessionSummary]? = nil,
+                    registeredSessionID: String? = registeredSelfID) -> MCPIntrospectionServer {
+    MCPIntrospectionServer(sessions: { sessions ?? corpus() }, quota: { quota },
+                           now: { fixedNow }, registeredSessionID: registeredSessionID)
 }
 
 // MARK: - decode helpers
@@ -121,6 +125,9 @@ struct MCPProtocolTests {
         // The self-introspection calling convention is documented ON the tools.
         let brief = tools?.first { $0["name"] as? String == "session_brief" }
         #expect((brief?["description"] as? String)?.contains("UUID filename of your own transcript") == true)
+        let properties = (brief?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+        #expect(properties?["use_newest"] != nil)
+        #expect((brief?["description"] as? String)?.contains("usually you") == false)
     }
 
     @Test func pingAndNotificationsAndClientResponses() {
@@ -157,17 +164,34 @@ struct MCPProtocolTests {
 @Suite("MCP — session resolution (the introspect-YOURSELF seam)")
 struct MCPResolutionTests {
 
-    @Test func defaultResolvesMostRecentlyActiveMainNeverASubagent() {
-        // The subagent is the most recent overall — the default must skip it.
+    @Test func registeredIdentityResolvesWithoutAnArgument() {
         let json = toolJSON(call(server(), "session_brief"))
         #expect(json?["session_id"] as? String == "aaaa1111-0000-0000-0000-000000000001")
+        #expect(json?["resolved_session_id"] as? String == registeredSelfID)
+        #expect(json?["session_resolution"] as? String == "registered")
         #expect(json?["is_subagent"] as? Bool == false)
+    }
+
+    @Test func omissionWithoutRegistrationIsAnErrorAndNewestRequiresOptIn() {
+        let unregistered = server(registeredSessionID: nil)
+        let missing = result(call(unregistered, "session_brief"))
+        #expect(missing?["isError"] as? Bool == true)
+        let missingText = (missing?["content"] as? [[String: Any]])?.first?["text"] as? String
+        #expect(missingText?.contains("session_id is required") == true)
+
+        let newest = toolJSON(call(unregistered, "session_brief",
+                                   args: #"{"use_newest":true}"#))
+        #expect(newest?["resolved_session_id"] as? String == registeredSelfID)
+        #expect(newest?["session_resolution"] as? String == "newest_opt_in")
+        #expect(newest?["is_subagent"] as? Bool == false)
     }
 
     @Test func exactIDPrefixAndPathFormsResolve() {
         let srv = server()
         let byID = toolJSON(call(srv, "session_brief", args: #"{"session_id":"bbbb2222-0000-0000-0000-000000000002"}"#))
         #expect(byID?["project"] as? String == "p")
+        #expect(byID?["resolved_session_id"] as? String == "bbbb2222-0000-0000-0000-000000000002")
+        #expect(byID?["session_resolution"] as? String == "argument")
         let byPrefix = toolJSON(call(srv, "session_brief", args: #"{"session_id":"aaaa1111"}"#))
         #expect(byPrefix?["session_id"] as? String == "aaaa1111-0000-0000-0000-000000000001")
         let byPath = toolJSON(call(srv, "session_brief", args: #"{"session_id":"/x/p/bbbb2222-0000-0000-0000-000000000002.jsonl"}"#))

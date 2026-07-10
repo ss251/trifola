@@ -12,11 +12,12 @@ import Combine
 // {thinking,text,tool_use}; a `tool_use` block carries `.id` (toolu_…). Its result
 // arrives later inside a `user` message as a `tool_result` block whose
 // `.tool_use_id` == that id. A `tool_use` at the very tail with no later matching
-// `tool_result` is a dangling tool call — almost always a permission prompt /
-// AskUserQuestion / human gate.
+// `tool_result` is a dangling tool call. That proves only that work has not
+// returned yet; a separate explicit signal is required before it can mean a
+// permission prompt / AskUserQuestion / human gate.
 
 public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
-    case blocked   // 🔴 dangling tool_use >30s — permission prompt / human gate / silent stall
+    case blocked   // 🔴 explicit permission prompt / human gate
     case waiting   // 🟡 turn ended (assistant text, stop_reason end_turn) — ball in your court
     case running   // 🟢 work streaming — recent tool activity
     case idle      // ⚪ gone quiet (>15m)
@@ -47,10 +48,8 @@ public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
     public var needsAttention: Bool { self == .blocked || self == .waiting }
 
     // Spec thresholds. Kept simple and named so tests and UI share one source.
-    /// A dangling tool_use younger than this is a tool still executing (RUNNING);
-    /// older than this it is almost certainly a human gate (BLOCKED).
-    /// Caveat: a genuinely long-running Bash can look blocked past 30s — the spec
-    /// accepts that trade for a signal a human cannot get by staring at a terminal.
+    /// Human-gate evidence younger than this is allowed to settle before BLOCKED.
+    /// Elapsed time alone never upgrades an ordinary tool call into a human gate.
     public static let blockedThreshold: TimeInterval = 30
     /// No activity for longer than this ⇒ the session has gone quiet (IDLE),
     /// reusing the existing `isActive` 15-minute window.
@@ -76,6 +75,15 @@ public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
                 reason: "no meaningful transcript event")
         }
         let age = now.timeIntervalSince(last)
+        let permissionEvidence = s.hasPermissionGate
+        let promptEvidence = AttentionSignals.humanPromptEvidence(in: s.lastAssistantText)
+            ?? AttentionSignals.humanPromptEvidence(in: s.lastToolDetail)
+
+        if s.hasPermissionGate, age > blockedThreshold {
+            return AttentionClassification(
+                state: .blocked, confidence: .high,
+                reason: "unanswered permission record")
+        }
 
         if s.hasDanglingToolUse {
             if AttentionSignals.isSubagentTool(s.lastToolName) {
@@ -83,18 +91,23 @@ public enum AttentionState: String, Sendable, Codable, CaseIterable, Hashable {
                     state: .running, confidence: .high,
                     reason: "in-flight subagent call \(s.lastToolName ?? "unknown")")
             }
-            // A non-subagent dangling call can be waiting at Claude's permission
-            // gate. Explicit human-question tools are high confidence; other tool
-            // calls retain the existing permission-safe behavior at medium
-            // confidence, with the ambiguity made visible in the reason string.
             if age > blockedThreshold {
                 let explicitHumanGate = AttentionSignals.isExplicitHumanGateTool(s.lastToolName)
+                if explicitHumanGate || permissionEvidence || promptEvidence != nil {
+                    let reason: String
+                    if explicitHumanGate {
+                        reason = "unanswered human gate \(s.lastToolName ?? "unknown")"
+                    } else if permissionEvidence {
+                        reason = "unanswered permission record"
+                    } else {
+                        reason = "tool call carries \(promptEvidence!.reason) evidence"
+                    }
+                    return AttentionClassification(
+                        state: .blocked, confidence: .high, reason: reason)
+                }
                 return AttentionClassification(
-                    state: .blocked,
-                    confidence: explicitHumanGate ? .high : .medium,
-                    reason: explicitHumanGate
-                        ? "unanswered human gate \(s.lastToolName ?? "unknown")"
-                        : "unresolved \(s.lastToolName ?? "tool") may be awaiting permission")
+                    state: .running, confidence: .high,
+                    reason: "\(s.lastToolName ?? "tool") still running after \(Int(max(0, age)))s; no human-gate evidence")
             }
             return AttentionClassification(
                 state: .running, confidence: .medium,
@@ -184,12 +197,16 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
     /// the transcript parser's `toolDetail` so the board's now-line and the live
     /// feed read identically. Empty/nil when the tool carried no detail.
     public var lastToolDetail: String?
+    /// Positive transcript record that Claude Code is waiting at a permission
+    /// boundary. A mere `permission-mode` setting is not a gate.
+    public var hasPermissionGate: Bool
 
     public init(lastEventAt: Date? = nil, lastKind: LastKind = .none,
                 lastStopReason: String? = nil, hasDanglingToolUse: Bool = false,
                 danglingToolUseAt: Date? = nil, lastToolActivityAt: Date? = nil,
                 lastToolName: String? = nil, lastToolDetail: String? = nil,
-                lastAssistantText: String? = nil) {
+                lastAssistantText: String? = nil,
+                hasPermissionGate: Bool = false) {
         self.lastEventAt = lastEventAt
         self.lastKind = lastKind
         self.lastStopReason = lastStopReason
@@ -199,6 +216,7 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
         self.lastToolActivityAt = lastToolActivityAt
         self.lastToolName = lastToolName
         self.lastToolDetail = lastToolDetail
+        self.hasPermissionGate = hasPermissionGate
     }
 
     /// Claude has used both `Task` and `Agent`; `TaskOutput` is the blocking
@@ -268,6 +286,7 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
         var lastToolName: String? = nil     // freshest tool_use in the tail → now-line
         var lastToolDetail: String? = nil
         var lastAssistantText: String? = nil
+        var hasPermissionGate = false
 
         for line in lines {
             guard let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
@@ -318,6 +337,9 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
                     lastAssistantText = assistantTexts.isEmpty
                         ? nil
                         : assistantTexts.joined(separator: "\n")
+                    // Any later assistant activity proves an earlier permission
+                    // record is no longer the tail gate.
+                    hasPermissionGate = false
                 }
 
             case "user":
@@ -340,11 +362,13 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
                         lastKind = .toolResult
                         lastEventAt = ts
                         lastToolActivityAt = ts
+                        hasPermissionGate = false
                     }
                     if sawText {                 // a typed prompt outranks the auto tool_result wrapper
                         lastKind = .userPrompt
                         lastEventAt = ts
                         lastStop = nil
+                        hasPermissionGate = false
                     }
                 } else if let s = msg["content"] as? String, !s.isEmpty {
                     lastKind = .userPrompt
@@ -355,6 +379,17 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
             case "system":
                 lastKind = .system
                 lastEventAt = ts
+
+            case "permission-request", "permission_request":
+                // Future- and fixture-safe support for Claude's explicit pending
+                // permission records. Resolved/denied records are not pending.
+                let decision = ((obj["decision"] as? String)
+                    ?? (obj["status"] as? String) ?? "pending").lowercased()
+                hasPermissionGate = ["pending", "requested", "waiting"].contains(decision)
+                if hasPermissionGate {
+                    lastKind = .system
+                    lastEventAt = ts
+                }
 
             default:
                 break                            // summary / queue-op / snapshot / progress
@@ -374,7 +409,8 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
             lastToolActivityAt: lastToolActivityAt,
             lastToolName: lastToolName,
             lastToolDetail: lastToolDetail,
-            lastAssistantText: lastAssistantText
+            lastAssistantText: lastAssistantText,
+            hasPermissionGate: hasPermissionGate
         )
     }
 

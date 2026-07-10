@@ -198,4 +198,21 @@ import Testing
         #expect(path.contains("Trifola/recipes"))
         #expect(!path.contains("/.claude/"))
     }
+
+    @Test func saveThrowsInsteadOfPretendingTheRecipePersisted() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mck-recipes-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let blocker = directory.appendingPathComponent("not-a-directory")
+        try Data("x".utf8).write(to: blocker)
+        let repo = RecipeRepository(directory: blocker.appendingPathComponent("recipes"))
+        var didThrow = false
+        do {
+            try repo.save(Recipe(id: "failure", name: "failure", cwd: "/tmp"))
+        } catch {
+            didThrow = true
+        }
+        #expect(didThrow)
+    }
 }

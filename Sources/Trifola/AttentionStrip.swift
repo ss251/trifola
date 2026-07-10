@@ -186,7 +186,7 @@ private struct AttentionChip: View {
                         Spacer(minLength: 0)
                         Text(item.session.tier.label)
                             .font(.caption2)
-                            .foregroundStyle(Theme.faint)
+                            .foregroundStyle(Theme.muted)
                         if item.session.isRemote {
                             MachineChip(machineID: item.session.machineID, compact: true)
                         }
@@ -194,13 +194,13 @@ private struct AttentionChip: View {
                     HStack(spacing: Theme.rhythm) {
                         Text(item.session.displayTitle)
                             .font(.caption2)
-                            .foregroundStyle(Theme.faint)
+                            .foregroundStyle(Theme.muted)
                             .lineLimit(1)
                             .layoutPriority(1)
                         if let ask {
                             Text("· \(ask)")
                                 .font(.caption2)
-                                .foregroundStyle(Theme.faint)
+                                .foregroundStyle(Theme.muted)
                                 .lineLimit(1)
                         }
                     }
@@ -269,14 +269,14 @@ private struct AttentionLegend: View {
                             .liveNumericTransition(value: "\(n)")
                         Text(state.label.lowercased())
                             .font(.caption2)
-                            .foregroundStyle(Theme.faint)
+                            .foregroundStyle(Theme.muted)
                     }
                 }
             }
             if suppressedCount > 0 {
                 Text("· \(suppressedCount) snoozed")
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
                     .liveNumericTransition(value: "\(suppressedCount)")
             }
         }

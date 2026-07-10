@@ -23,9 +23,9 @@ struct QuotaSection: View {
                 // Status caption: the source token (`file`/`keychain`) reads
                 // mono — it is an identifier, not prose.
                 if let source, let snapshot, !snapshot.isEmpty {
-                    (Text("ok · ").font(.caption)
-                        + Text(source.rawValue).font(.caption.monospaced()))
-                        .foregroundStyle(Theme.faint)
+                    Text("ok · ").font(.caption).foregroundStyle(Theme.muted)
+                        + Text(source.rawValue).font(.caption.monospaced())
+                            .foregroundStyle(Theme.faint)
                 } else {
                     QuietTapButton("Retry", action: onRetry)
                 }
@@ -39,7 +39,7 @@ struct QuotaSection: View {
                 }
                 Text("plan rate-limit windows · OAuth usage endpoint · read-only — not dollars")
                     .font(.caption)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             } else {
                 // Graceful degradation: ONE calm explanatory line. No spinner,
                 // no alert — the app is fully functional without this surface.
@@ -105,7 +105,7 @@ private struct QuotaWindowRow: View {
                 .frame(width: Theme.microColWidth, alignment: .trailing)
             Text(resetLabel)
                 .font(.callout)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
                 .frame(width: 90, alignment: .trailing)
         }
     }

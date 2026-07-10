@@ -16,6 +16,10 @@ private func iso(_ off: TimeInterval) -> String {
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return f.string(from: t0.addingTimeInterval(off))
 }
+private func succeeded<Success, Failure: Error>(_ result: Result<Success, Failure>) -> Bool {
+    if case .success = result { return true }
+    return false
+}
 
 // A plain summary tagged to a machine (default local), for the pure merge tests.
 // `cost` drives the usage so `.cost` equals it exactly (fresh Opus input, no output/
@@ -186,20 +190,28 @@ struct CrossMachineGracefulTests {
 
     @Test func offlineIndicatorIsCalmAndFactual() {
         let dev = Machine(id: "workstation", name: "workstation", isLocal: false)
-        // Never synced → "offline — not yet synced".
+        // Never synced and not probed → explicitly unverified, never online.
         let neverSynced = RemoteStatus(machine: dev, reachable: .unknown, hasMirror: false,
                                        lastSynced: nil, lastError: nil, sessionCount: 0)
         #expect(!neverSynced.isOnline)
-        #expect(neverSynced.indicator.contains("offline"))
-        #expect(neverSynced.indicator.contains("not yet synced"))
+        #expect(neverSynced.indicator.contains("unverified"))
+        #expect(neverSynced.indicator.contains("no local mirror"))
 
-        // Was synced but now unreachable → "offline — last synced …".
+        // Was mirrored but now unreachable → local freshness stays separate.
         let wentDown = RemoteStatus(machine: dev, reachable: .unreachable, hasMirror: true,
                                     lastSynced: Date().addingTimeInterval(-720), lastError: "unreachable",
                                     sessionCount: 12)
         #expect(!wentDown.isOnline)
-        #expect(wentDown.indicator.contains("offline"))
-        #expect(wentDown.indicator.contains("last synced"))
+        #expect(wentDown.indicator.contains("unreachable"))
+        #expect(wentDown.indicator.contains("local mirror updated"))
+
+        // Retained mirror after restart + unknown reachability is still NOT online.
+        let retained = RemoteStatus(machine: dev, reachable: .unknown, hasMirror: true,
+                                    lastSynced: Date().addingTimeInterval(-3600), lastError: nil,
+                                    sessionCount: 12)
+        #expect(!retained.isOnline)
+        #expect(retained.indicator.contains("unverified"))
+        #expect(retained.indicator.contains("local mirror updated"))
 
         // Online → session count surfaces, no "offline".
         let online = RemoteStatus(machine: dev, reachable: .reachable, hasMirror: true,
@@ -293,6 +305,116 @@ struct CrossMachineSyncTests {
 
 @Suite("Cross-machine config + bays")
 struct CrossMachineConfigTests {
+
+    @Test func configAndRuntimeReceiptsRoundTripAndReportWriteFailure() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-machine-state-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let configURL = dir.appendingPathComponent("machines.json")
+        let stateURL = dir.appendingPathComponent("runtime.json")
+        let config = MachinesConfig(remotes: [
+            RemoteConfig(name: "buildbox", host: "buildbox", user: "dev")
+        ])
+        let stamp = Date(timeIntervalSince1970: 1_780_000_000)
+        let state = MachinesRuntimeState(remotes: [
+            "buildbox": RemoteMirrorPersistence(
+                lastAttempt: stamp.addingTimeInterval(-30),
+                lastSuccess: stamp,
+                lastError: nil,
+                mirrorFreshness: stamp.addingTimeInterval(-5))
+        ])
+
+        #expect(succeeded(MachinePaths.saveConfig(config, to: configURL)))
+        #expect(MachinePaths.loadConfig(from: configURL) == config)
+        #expect(succeeded(MachinePaths.saveRuntimeState(state, to: stateURL)))
+        #expect(MachinePaths.loadRuntimeState(from: stateURL) == state)
+
+        // A regular file cannot become the parent directory of another file.
+        let blocker = dir.appendingPathComponent("not-a-directory")
+        try Data("x".utf8).write(to: blocker)
+        let impossible = blocker.appendingPathComponent("state.json")
+        #expect(!succeeded(MachinePaths.saveConfig(config, to: impossible)))
+        #expect(!succeeded(MachinePaths.saveRuntimeState(state, to: impossible)))
+    }
+
+    @Test func mirrorFootprintFreshnessAndRemovalAreComputedFromLocalFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-mirror-footprint-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mirror = try MachinePaths.validatedMirror(for: "buildbox", root: root)
+        try FileManager.default.createDirectory(at: mirror, withIntermediateDirectories: true)
+        let older = mirror.appendingPathComponent("older.jsonl")
+        let newest = mirror.appendingPathComponent("newest.jsonl")
+        try Data(repeating: 1, count: 10).write(to: older)
+        try Data(repeating: 2, count: 25).write(to: newest)
+        let oldDate = Date(timeIntervalSince1970: 1_780_000_000)
+        let newDate = oldDate.addingTimeInterval(60)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: older.path)
+        try FileManager.default.setAttributes([.modificationDate: newDate], ofItemAtPath: newest.path)
+        let list = try MachinePaths.validatedSyncListFile(for: "buildbox", root: root)
+        try Data("newest.jsonl".utf8).write(to: list)
+
+        #expect(MachinePaths.mirrorHasContent(for: "buildbox", root: root))
+        #expect(MachinePaths.mirrorSize(for: "buildbox", root: root) == 35)
+        let freshness = try #require(MachinePaths.mirrorFreshness(for: "buildbox", root: root))
+        #expect(abs(freshness.timeIntervalSince(newDate)) < 0.01)
+
+        #expect(succeeded(MachinePaths.removeMirror(for: "buildbox", root: root)))
+        #expect(!FileManager.default.fileExists(atPath: mirror.path))
+        #expect(!FileManager.default.fileExists(atPath: list.path))
+    }
+
+    @Test func machineNamesUseStrictASCIIPathSlugs() {
+        for valid in ["buildbox", "Mac-2", "build_box", "host.example", "A1"] {
+            #expect(MachineNameSlug.isValid(valid))
+        }
+        for invalid in [
+            "", ".", "..", "../../outside", "host/name", #"host\name"#,
+            "-leading", "_leading", ".leading", "two words", "màc",
+        ] {
+            #expect(!MachineNameSlug.isValid(invalid))
+        }
+    }
+
+    @Test func machinesConfigRejectsInvalidNamesOnInitAndMutation() {
+        let safe = RemoteConfig(name: "workstation-1", host: "safe", user: "dev")
+        let escaped = RemoteConfig(name: "../../outside", host: "unsafe", user: "dev")
+        var config = MachinesConfig(remotes: [safe, escaped])
+        #expect(config.remotes.map(\.name) == ["workstation-1"])
+        config.remotes.append(escaped)
+        #expect(config.remotes.map(\.name) == ["workstation-1"])
+    }
+
+    @Test func traversalCannotEscapeTheStandardizedRemotesRoot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-machine-paths-\(UUID().uuidString)")
+            .appendingPathComponent("remotes", isDirectory: true)
+        let safe = try MachinePaths.validatedMirror(for: "buildbox", root: root)
+        #expect(safe.path == root.appendingPathComponent("buildbox").standardizedFileURL.path)
+
+        #expect(throws: MachinePaths.PathError.invalidMachineName("../../outside")) {
+            _ = try MachinePaths.validatedMirror(for: "../../outside", root: root)
+        }
+        #expect(throws: MachinePaths.PathError.escapedRemotesRoot(
+            root.appendingPathComponent("../../outside").standardizedFileURL.path)) {
+            _ = try MachinePaths.contained(
+                root.appendingPathComponent("../../outside"), under: root)
+        }
+    }
+
+    @Test func rsyncPlanRejectsAnyDestinationOutsideRemotesRoot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-plan-paths-\(UUID().uuidString)")
+            .appendingPathComponent("remotes", isDirectory: true)
+        let remote = RemoteConfig(name: "buildbox", host: "buildbox", user: "dev")
+        let list = try MachinePaths.validatedSyncListFile(for: remote.name, root: root)
+        let outside = root.appendingPathComponent("../../outside").standardizedFileURL
+
+        #expect(throws: MachinePaths.PathError.escapedRemotesRoot(outside.path)) {
+            _ = try RemoteSync.validatedPlan(
+                remote: remote, mirror: outside, listFile: list, remotesRoot: root)
+        }
+    }
 
     @Test func seededConfigCarriesEmptyRemotes() {
         let cfg = MachinesConfig.seeded

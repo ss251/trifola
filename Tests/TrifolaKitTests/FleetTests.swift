@@ -41,7 +41,8 @@ private func subagent(_ stem: String, parent: String, cwd: String, ageSecs: Time
 private func blockedSig(ageSecs: TimeInterval) -> AttentionSignals {
     AttentionSignals(lastEventAt: at(-ageSecs), lastKind: .toolUse,
                      hasDanglingToolUse: true, danglingToolUseAt: at(-ageSecs),
-                     lastToolName: "Bash", lastToolDetail: "approval")
+                     lastToolName: "Bash", lastToolDetail: "approval",
+                     hasPermissionGate: true)
 }
 
 // MARK: - Arrival-order stability (the whole point)

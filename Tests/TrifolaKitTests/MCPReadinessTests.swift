@@ -19,7 +19,8 @@ struct MCPReadinessTests {
 
         #expect(info["name"] as? String == "trifola")
         #expect(info["title"] as? String == "trifola — session self-introspection")
-        #expect(instructions.contains("never mutates ~/.claude or external systems"))
+        #expect(info["version"] as? String == ReleaseIdentity.version)
+        #expect(instructions.contains("never mutates the Claude config root or external systems"))
         #expect(instructions.contains("app-local session index"))
     }
 }

@@ -301,11 +301,11 @@ private struct FleetBayView: View {
                         SeatMark(state: .idle, size: 8,
                                  revealIndex: revealIndex + tokenIndex + 1)
                         if snoozed || muted { SuppressionMark() }
-                        Text(t.session.tier.label).font(.caption).foregroundStyle(Theme.faint)
+                        Text(t.session.tier.label).font(.caption).foregroundStyle(Theme.muted)
                         if let q = t.taskQuote {
-                            Text("last: \(q)").font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
+                            Text("last: \(q)").font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
                         } else {
-                            Text(t.session.displayTitle).font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
+                            Text(t.session.displayTitle).font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
                         }
                         Spacer(minLength: 8)
                         Text(fmtUSD(t.session.cost)).font(.caption).foregroundStyle(Theme.muted)
@@ -407,7 +407,7 @@ private struct BayHeader: View {
     @ViewBuilder private var trailing: some View {
         HStack(spacing: 6) {
             if bay.isIdle {
-                Text("idle \(fmtAgeShort(bay.age))").font(.caption).foregroundStyle(Theme.faint)
+                Text("idle \(fmtAgeShort(bay.age))").font(.caption).foregroundStyle(Theme.muted)
             } else if bay.blockedCount > 0 {
                 Text("\(bay.blockedCount) blocked").font(.caption.weight(.medium)).foregroundStyle(Theme.ink)
                 Text("· \(fmtUSD(bay.costSubtotal)) today").font(.caption).foregroundStyle(Theme.muted)
@@ -512,7 +512,7 @@ private struct FleetTokenView: View {
                     .frame(width: 58, alignment: .leading)
                 Text("\(token.session.displayTitle) · \(fmtAgeShort(token.age))")
                     .font(.caption)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
                     .lineLimit(1)
                     .frame(minWidth: 160, alignment: .leading)
                     .layoutPriority(1)
@@ -593,7 +593,7 @@ private struct FleetTokenView: View {
             } else if let q = token.taskQuote {
                 Text("“\(q)”").font(.footnote).foregroundStyle(Theme.muted).lineLimit(1)
             } else {
-                Text(token.state.label.lowercased()).font(.caption).foregroundStyle(Theme.faint)
+                Text(token.state.label.lowercased()).font(.caption).foregroundStyle(Theme.muted)
             }
         }
         .frame(maxWidth: 420, alignment: .leading)

@@ -27,24 +27,24 @@ struct RerouteReceiptView: View {
             }
             Text("runs that landed on a different model than you configured")
                 .font(.caption2)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
             ForEach(receipt.silentFlips.prefix(Self.maxRows)) { flip in
                 flipRow(flip)
             }
             if receipt.silentFlips.count > Self.maxRows {
                 Text("+\(receipt.silentFlips.count - Self.maxRows) more")
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             }
             if let note = receipt.switchNote {
                 Text(note)
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             }
             if !receipt.silentFlips.isEmpty {
                 Text(RerouteReport.semantics)
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -86,7 +86,7 @@ struct RerouteTrendRow: View {
                 Eyebrow("Reroutes")
                 Text("runs that landed on a different model than you configured")
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
                 RerouteTrendSparkline(series: report.trend(window: 14, now: now))
                     .frame(width: 112)
                 Text("\(report.totalSilent) without a recorded /model command · \(report.receipts.count) session\(report.receipts.count == 1 ? "" : "s")")
@@ -96,15 +96,15 @@ struct RerouteTrendRow: View {
                 if let top = report.pairs.first {
                     Text("top \(compactPair(top.pair)) ×\(top.count)")
                         .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(Theme.faint)
+                        .foregroundStyle(Theme.muted)
                         .lineLimit(1)
-                        .frame(minWidth: 132, alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false)
                         .layoutPriority(1)
                 }
                 Spacer(minLength: 0)
                 Text("14d · /model switches excluded (\(report.totalUserSwitches))")
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             }
         }
     }

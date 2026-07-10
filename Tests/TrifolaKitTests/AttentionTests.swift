@@ -115,6 +115,30 @@ struct AttentionSignalsTests {
         #expect(sig.lastKind == .none)
         #expect(!sig.hasDanglingToolUse)
     }
+
+    @Test func explicitPendingPermissionRecordIsCapturedButModeSettingIsNot() {
+        let sig = AttentionSignals.extract(fromTailLines: lines([
+            #"{"type":"permission-mode","permissionMode":"default","timestamp":"\#(iso(0))"}"#,
+            #"{"type":"permission-request","status":"pending","timestamp":"\#(iso(1))"}"#,
+        ]))
+        #expect(sig.hasPermissionGate)
+        #expect(sig.lastEventAt == at(1))
+
+        let modeOnly = AttentionSignals.extract(fromTailLines: lines([
+            #"{"type":"permission-mode","permissionMode":"default","timestamp":"\#(iso(0))"}"#,
+        ]))
+        #expect(!modeOnly.hasPermissionGate)
+    }
+
+    @Test func laterToolResultClearsAnEarlierPermissionRecord() {
+        let sig = AttentionSignals.extract(fromTailLines: lines([
+            #"{"type":"permission-request","status":"pending","timestamp":"\#(iso(1))"}"#,
+            #"{"type":"user","timestamp":"\#(iso(2))","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}"#,
+        ]))
+        #expect(!sig.hasPermissionGate)
+        #expect(sig.lastKind == .toolResult)
+        #expect(AttentionState.classify(sig, now: at(100)) == .running)
+    }
 }
 
 // MARK: - Classifier (time-dependent)
@@ -122,11 +146,11 @@ struct AttentionSignalsTests {
 @Suite("Attention classifier")
 struct AttentionClassifyTests {
 
-    @Test func blockedWhenDanglingPastThirtySeconds() {
+    @Test func explicitHumanGateBlocksPastThirtySeconds() {
         let sig = AttentionSignals(lastEventAt: at(0), lastKind: .toolUse,
                                    lastStopReason: "tool_use", hasDanglingToolUse: true,
-                                   danglingToolUseAt: at(0))
-        // 45s later, still no result → BLOCKED.
+                                   danglingToolUseAt: at(0),
+                                   lastToolName: "AskUserQuestion")
         #expect(AttentionState.classify(sig, now: at(45)) == .blocked)
     }
 
@@ -138,11 +162,23 @@ struct AttentionClassifyTests {
         #expect(AttentionState.classify(sig, now: at(10)) == .running)
     }
 
-    @Test func blockedThresholdIsStrictlyGreaterThanThirty() {
+    @Test func humanGateThresholdIsStrictlyGreaterThanThirty() {
         let sig = AttentionSignals(lastEventAt: at(0), lastKind: .toolUse,
-                                   hasDanglingToolUse: true, danglingToolUseAt: at(0))
+                                   hasDanglingToolUse: true, danglingToolUseAt: at(0),
+                                   lastToolName: "ExitPlanMode")
         #expect(AttentionState.classify(sig, now: at(30)) == .running)   // exactly 30s: not yet
         #expect(AttentionState.classify(sig, now: at(31)) == .blocked)   // 31s: blocked
+    }
+
+    @Test func bashAtThirtyOneSecondsStaysRunningWithElapsedReason() {
+        let sig = AttentionSignals(lastEventAt: at(0), lastKind: .toolUse,
+                                   hasDanglingToolUse: true, danglingToolUseAt: at(0),
+                                   lastToolName: "Bash",
+                                   lastToolDetail: "swift test --disable-sandbox")
+        let result = AttentionState.classifyDetailed(sig, now: at(31))
+        #expect(result.state == .running)
+        #expect(result.reason.contains("31s"))
+        #expect(result.reason.contains("no human-gate evidence"))
     }
 
     @Test func waitingWhenTurnEndedOnAssistantText() {
@@ -187,7 +223,8 @@ struct AttentionClassifyTests {
         // Stuck on a permission prompt for 20 minutes: BLOCKED still needs you —
         // it must win over the 15-minute IDLE rule.
         let sig = AttentionSignals(lastEventAt: at(0), lastKind: .toolUse,
-                                   hasDanglingToolUse: true, danglingToolUseAt: at(0))
+                                   hasDanglingToolUse: true, danglingToolUseAt: at(0),
+                                   hasPermissionGate: true)
         #expect(AttentionState.classify(sig, now: at(20 * 60)) == .blocked)
     }
 
@@ -196,7 +233,7 @@ struct AttentionClassifyTests {
         let sig = AttentionSignals.extract(fromTailLines: lines([
             userPrompt("deploy to prod", at: 0),
             assistantText("I'll run the deploy", stop: "tool_use", at: 4),
-            assistantToolUse(id: "toolu_deploy", name: "Bash", at: 5),
+            assistantToolUse(id: "toolu_deploy", name: "AskUserQuestion", at: 5),
         ]))
         #expect(AttentionState.classify(sig, now: at(5 + 40)) == .blocked)
         #expect(AttentionState.classify(sig, now: at(5 + 10)) == .running)
@@ -229,7 +266,8 @@ struct AttentionBoardTests {
     @Test func sortsBlockedFirstThenWaitingRunningIdleThenRecency() {
         let blockedSig = AttentionSignals(lastEventAt: at(0).addingTimeInterval(-45),
                                           lastKind: .toolUse, hasDanglingToolUse: true,
-                                          danglingToolUseAt: at(0).addingTimeInterval(-45))
+                                          danglingToolUseAt: at(0).addingTimeInterval(-45),
+                                          lastToolName: "AskUserQuestion")
         let waitingSig = AttentionSignals(lastEventAt: at(0).addingTimeInterval(-120),
                                           lastKind: .assistantText, lastStopReason: "end_turn",
                                           lastAssistantText: "Do you want me to proceed? yes/no")
@@ -260,7 +298,8 @@ struct AttentionBoardTests {
         func blocked(_ ageSecs: TimeInterval) -> AttentionSignals {
             AttentionSignals(lastEventAt: at(0).addingTimeInterval(-ageSecs), lastKind: .toolUse,
                              hasDanglingToolUse: true,
-                             danglingToolUseAt: at(0).addingTimeInterval(-ageSecs))
+                             danglingToolUseAt: at(0).addingTimeInterval(-ageSecs),
+                             hasPermissionGate: true)
         }
         let sessions = [session("stale", ageSecs: 300), session("fresh", ageSecs: 40)]
         let board = AttentionBoard.build(

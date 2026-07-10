@@ -3,13 +3,26 @@ import Testing
 @testable import TrifolaKit
 
 private let modelPinDay = "2026-07-10"
+private let modelPinRoot: URL = {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("trifola-model-pin-contract-\(UUID().uuidString)")
+    let agents = root.appendingPathComponent(".claude/agents", isDirectory: true)
+    try! FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+    try! "---\nname: Explore\n---\n".write(
+        to: agents.appendingPathComponent("Explore.md"),
+        atomically: true, encoding: .utf8)
+    return root
+}()
 
 private func modelPinPolicy(source: DeclaredPolicySource = .claude) -> ClaudeSettings {
     ClaudeSettings(
         model: "opus", effort: .high,
         declaredPolicies: [DeclaredRoutingPolicy(
             source: source, model: "sonnet", selector: "execute",
-            filePath: "/repo/CLAUDE.md")])
+            filePath: modelPinRoot.appendingPathComponent("CLAUDE.md").path,
+            scopePath: modelPinRoot.path,
+            targetPath: modelPinRoot.appendingPathComponent(
+                ".claude/agents/Explore.md").path)])
 }
 
 private func modelPinParent(
@@ -17,9 +30,9 @@ private func modelPinParent(
     id: String = "P"
 ) -> SessionSummary {
     SessionSummary(
-        id: id, project: "trifola", cwd: "/repo", model: "claude-opus-4-8",
+        id: id, project: "trifola", cwd: modelPinRoot.path, model: "claude-opus-4-8",
         lastActivity: Date(), messageCount: 5, usage: SessionUsage(),
-        contextWeight: 0, filePath: "/repo/\(id).jsonl",
+        contextWeight: 0, filePath: modelPinRoot.appendingPathComponent("\(id).jsonl").path,
         agentCalls: invocations.count, subagentInvocations: invocations)
 }
 
@@ -32,10 +45,11 @@ private func modelPinChild(
     let usage = SessionUsage(inputTokens: input)
     let tier = ModelTier(raw: model)
     return SessionSummary(
-        id: "\(parentID)/agent-\(agentID)", project: "trifola", cwd: "/repo",
+        id: "\(parentID)/agent-\(agentID)", project: "trifola", cwd: modelPinRoot.path,
         model: model, lastActivity: Date(), messageCount: 3, usage: usage,
         contextWeight: 0,
-        filePath: "/repo/\(parentID)/subagents/agent-\(agentID).jsonl",
+        filePath: modelPinRoot.appendingPathComponent(
+            "\(parentID)/subagents/agent-\(agentID).jsonl").path,
         usageByTier: [tier: usage])
 }
 
@@ -172,7 +186,33 @@ struct ModelPinLessonContractTests {
         #expect(lesson.candidate.copyText == "model: sonnet")
         #expect(lesson.candidate.afterText == "model: sonnet")
         #expect(lesson.candidate.revealTargets.map(\.path)
-                == ["/repo/.claude/agents/Explore.md"])
+                == [modelPinRoot.appendingPathComponent(
+                    ".claude/agents/Explore.md").path])
+    }
+
+    @Test func missingDefinitionEmitsPolicyUnresolvedInsteadOfCopyEdit() throws {
+        let missing = modelPinRoot.appendingPathComponent("missing/Explore.md").path
+        let settings = ClaudeSettings(declaredPolicies: [DeclaredRoutingPolicy(
+            source: .claude, model: "sonnet", selector: "Explore",
+            filePath: modelPinRoot.appendingPathComponent("CLAUDE.md").path,
+            scopePath: modelPinRoot.path, targetPath: missing)])
+        let lesson = try #require(LessonMiner.modelPin(
+            sessions: firingSessions(), settings: settings,
+            fallbackDay: modelPinDay))
+        #expect(lesson.candidate.action == .copyReview)
+        #expect(lesson.candidate.summary.contains("policy unresolved"))
+        #expect(lesson.candidate.copyText.contains("policy unresolved"))
+        #expect(lesson.candidate.revealTargets.isEmpty)
+    }
+
+    @Test func sessionDefaultAloneIsNotInventedAsSubagentPolicy() throws {
+        let lesson = try #require(LessonMiner.modelPin(
+            sessions: firingSessions(),
+            settings: ClaudeSettings(model: "sonnet"),
+            fallbackDay: modelPinDay))
+        #expect(lesson.candidate.action == .copyReview)
+        #expect(lesson.candidate.summary.contains("policy unresolved"))
+        #expect(lesson.candidate.copyText.contains("declared sonnet") == false)
     }
 
     @Test func semanticPriorityOrderingIsRestored() {
@@ -185,6 +225,70 @@ struct ModelPinLessonContractTests {
 
 @Suite("Ledger L-001 — declared-policy parsing")
 struct DeclaredPolicyParsingTests {
+    @Test func nearestAncestorClaudeMDAndExistingAgentDefinitionResolve() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-pin-ancestor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("config", isDirectory: true)
+        let project = root.appendingPathComponent("workspace/project", isDirectory: true)
+        let nested = project.appendingPathComponent("Sources/Feature", isDirectory: true)
+        let agents = project.appendingPathComponent(".claude/agents", isDirectory: true)
+        try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        try "subagent Explore model: sonnet\n".write(
+            to: project.appendingPathComponent("CLAUDE.md"),
+            atomically: true, encoding: .utf8)
+        let target = agents.appendingPathComponent("Explore.md")
+        try "---\nname: Explore\n---\n".write(to: target, atomically: true, encoding: .utf8)
+        let paths = ClaudePaths(root: config, source: .environmentOverride)
+        let settings = ClaudeSettings.load(paths: paths)
+        let leg = SubagentModelLeg(
+            sessionID: "P/agent-x", project: "project", cwd: nested.path,
+            filePath: nested.appendingPathComponent("agent-x.jsonl").path,
+            agentType: "Explore", requestedModel: nil,
+            resolvedModel: "claude-opus-4-8",
+            usage: SessionUsage(inputTokens: 1_000_000),
+            usageByModelDay: [:], actualCost: 5)
+
+        guard case .resolved(let policy, let resolvedTarget) =
+                settings.policyResolution(for: leg) else {
+            Issue.record("Expected the ancestor policy to resolve")
+            return
+        }
+        #expect(policy.model == "sonnet")
+        #expect(policy.filePath == project.appendingPathComponent("CLAUDE.md").path)
+        #expect(resolvedTarget == target.path)
+    }
+
+    @Test func agentDefinitionFrontmatterOutranksAncestorProse() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-pin-agent-definition-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("config", isDirectory: true)
+        let project = root.appendingPathComponent("project", isDirectory: true)
+        let agents = project.appendingPathComponent(".claude/agents", isDirectory: true)
+        try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        try "subagent Explore model: sonnet\n".write(
+            to: project.appendingPathComponent("CLAUDE.md"), atomically: true,
+            encoding: .utf8)
+        let target = agents.appendingPathComponent("Explore.md")
+        try "---\nmodel: haiku\n---\n".write(to: target, atomically: true,
+                                                encoding: .utf8)
+        let settings = ClaudeSettings.load(paths: ClaudePaths(
+            root: config, source: .environmentOverride))
+        let leg = SubagentModelLeg(
+            sessionID: "P/agent-x", project: "project", cwd: project.path,
+            filePath: target.path, agentType: "Explore", requestedModel: nil,
+            resolvedModel: "claude-opus-4-8", usage: SessionUsage(),
+            usageByModelDay: [:], actualCost: 0)
+        guard case .resolved(let policy, _) = settings.policyResolution(for: leg)
+        else { Issue.record("Expected agent definition policy"); return }
+        #expect(policy.model == "haiku")
+        #expect(policy.filePath == target.path)
+    }
+
     @Test func settingsAndParseableClaudeMDPinsAreProviderTagged() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("model-pin-policy-\(UUID().uuidString)")

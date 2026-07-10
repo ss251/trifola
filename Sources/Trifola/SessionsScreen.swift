@@ -11,12 +11,16 @@ struct SessionsScreen: View {
         var id: String { rawValue }
     }
 
-    @State private var query = ""
-    @State private var tierFilter: ModelTier? = nil
-    @State private var machineFilter: String? = nil
-    @State private var activeOnly = false
-    @State private var heavyOnly = false
-    @State private var sort: SortKey = .recent
+    @AppStorage(AppRestorationKeys.sessionsQuery) private var query = ""
+    @AppStorage(AppRestorationKeys.sessionsTier) private var tierFilterRaw = ""
+    @AppStorage(AppRestorationKeys.sessionsMachine) private var machineFilterRaw = ""
+    @AppStorage(AppRestorationKeys.sessionsActiveOnly) private var activeOnly = false
+    @AppStorage(AppRestorationKeys.sessionsHeavyOnly) private var heavyOnly = false
+    @AppStorage(AppRestorationKeys.sessionsSort) private var sortRaw = SortKey.recent.rawValue
+
+    private var tierFilter: ModelTier? { ModelTier(rawValue: tierFilterRaw) }
+    private var machineFilter: String? { machineFilterRaw.isEmpty ? nil : machineFilterRaw }
+    private var sort: SortKey { SortKey(rawValue: sortRaw) ?? .recent }
 
     private var filtered: [SessionSummary] {
         var out = services.sessions.sessions
@@ -124,13 +128,13 @@ struct SessionsScreen: View {
                             if services.isCrossMachine {
                                 ForEach(services.sessions.fleetMachines) { m in
                                     FilterChip(label: m.chipLabel, isOn: machineFilter == m.id) {
-                                        machineFilter = machineFilter == m.id ? nil : m.id
+                                        machineFilterRaw = machineFilter == m.id ? "" : m.id
                                     }
                                 }
                             }
                             ForEach(ModelTier.allCases.filter { $0 != .other }, id: \.self) { tier in
                                 FilterChip(label: tier.label, isOn: tierFilter == tier) {
-                                    tierFilter = tierFilter == tier ? nil : tier
+                                    tierFilterRaw = tierFilter == tier ? "" : tier.rawValue
                                 }
                             }
                         }
@@ -142,7 +146,10 @@ struct SessionsScreen: View {
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
                         Spacer()
-                        Picker("", selection: $sort) {
+                        Picker("Sort sessions", selection: Binding(
+                            get: { sort },
+                            set: { sortRaw = $0.rawValue }
+                        )) {
                             ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
                         }
                         .pickerStyle(.menu)
@@ -169,7 +176,7 @@ struct SessionsScreen: View {
                         if filtered.count > 400 {
                             Text("Showing first 400 — refine the search to narrow down.")
                                 .font(.caption)
-                                .foregroundStyle(Theme.faint)
+                                .foregroundStyle(Theme.muted)
                                 .padding(.vertical, Theme.codePadding)
                         }
                     }
@@ -193,6 +200,22 @@ struct SessionsScreen: View {
                 }
             }
             .launchReveal(.content)
+        }
+        .onChange(of: services.sessions.scanProgress.isInProgress, initial: true) { _, _ in
+            clearStaleRestorationIfIndexReady()
+        }
+    }
+
+    private func clearStaleRestorationIfIndexReady() {
+        guard services.sessions.scanPresentation == .liveRefreshing,
+              !services.sessions.scanProgress.isInProgress else { return }
+        if !tierFilterRaw.isEmpty, ModelTier(rawValue: tierFilterRaw) == nil {
+            tierFilterRaw = ""
+        }
+        if SortKey(rawValue: sortRaw) == nil { sortRaw = SortKey.recent.rawValue }
+        if !machineFilterRaw.isEmpty,
+           !services.sessions.fleetMachines.contains(where: { $0.id == machineFilterRaw }) {
+            machineFilterRaw = ""
         }
     }
 
@@ -292,6 +315,7 @@ private struct SessionInspector: View {
     let session: SessionSummary
 
     var body: some View {
+        let openAction = services.sessionOpenAction(for: session)
         VStack(alignment: .leading, spacing: Theme.cardPadding) {
             // header
             VStack(alignment: .leading, spacing: Theme.rhythm) {
@@ -324,9 +348,9 @@ private struct SessionInspector: View {
                             }
                         }) {
                             HStack(spacing: Theme.rhythm) {
-                                Image(systemName: session.isRemote ? "doc.text" : "terminal")
+                                Image(systemName: openAction.icon)
                                     .font(.caption.weight(.medium))
-                                Text(session.isRemote ? "Transcript" : "Terminal")
+                                Text(openAction.label)
                                     .font(.caption.weight(.medium))
                             }
                             .foregroundStyle(Theme.ink)
@@ -335,9 +359,9 @@ private struct SessionInspector: View {
                             .background(Theme.cardFill,
                                         in: RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous))
                         }
-                        .help(session.isRemote
-                              ? "Show the mirrored transcript — ⌘↩"
-                              : "Open the exact live terminal session — ⌘↩")
+                        .accessibilityLabel(openAction.label)
+                        .accessibilityHint(openAction.help)
+                        .help("\(openAction.help) — ⌘↩")
                 }
                 Text(session.id)
                     .font(.system(.caption2, design: .monospaced))
@@ -370,7 +394,7 @@ private struct SessionInspector: View {
             }
             Text("Estimated from public API rates for recorded usage — not your bill or subscription charge.")
                 .font(.caption2)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
 
             // CONTEXT-TAX GAUGE (spree #1): what the next message re-sends,
             // priced warm/cold at this session's own model rates. The advisor
@@ -411,6 +435,12 @@ private struct SessionInspector: View {
             }
         }
         .motion(Theme.Motion.move, value: services.terminalTranscriptReveal?.generation)
+        .task(id: session.id) {
+            services.prepareSessionOpenAction(for: session)
+        }
+        .onChange(of: services.sessions.lastRefresh) { _, _ in
+            services.prepareSessionOpenAction(for: session)
+        }
     }
 
     private var transcriptRevealGeneration: Int {

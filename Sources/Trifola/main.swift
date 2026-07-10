@@ -1,6 +1,48 @@
 import Foundation
 import TrifolaKit
-import Security
+
+let cliArguments = Array(CommandLine.arguments.dropFirst())
+let unknownHeadlessFlags = TrifolaCommandLine.unknownHeadlessFlags(in: cliArguments)
+if !unknownHeadlessFlags.isEmpty {
+    FileHandle.standardError.write(Data(
+        "trifola: unknown option \(unknownHeadlessFlags.joined(separator: ", "))\n\n\(TrifolaCommandLine.usage)\n".utf8))
+    exit(64)
+}
+
+if cliArguments.contains("--help") || cliArguments.contains("-h") {
+    print(TrifolaCommandLine.usage)
+    exit(0)
+}
+
+let isSelfCheck = TrifolaCommandLine.isSelfCheck(cliArguments)
+
+// `--render-icon <dir>` exports every macOS iconset raster from AppBrand's
+// canonical geometry and refreshes the checked-in documentation banner through
+// that same render path.
+if let i = CommandLine.arguments.firstIndex(of: "--render-icon") {
+    guard i + 1 < CommandLine.arguments.count,
+          !CommandLine.arguments[i + 1].hasPrefix("--") else {
+        FileHandle.standardError.write(Data(
+            "trifola: --render-icon requires an iconset output directory\n".utf8))
+        exit(64)
+    }
+    let iconset = URL(fileURLWithPath: CommandLine.arguments[i + 1],
+                      isDirectory: true)
+    let banner = URL(fileURLWithPath: FileManager.default.currentDirectoryPath,
+                     isDirectory: true)
+        .appendingPathComponent("docs/assets/banner.png")
+    do {
+        let outputs = try MainActor.assumeIsolated {
+            try BrandAssetRender.run(iconsetDirectory: iconset, bannerURL: banner)
+        }
+        for output in outputs { print("RENDER: \(output.path)") }
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data(
+            "trifola: brand asset render failed: \(error)\n".utf8))
+        exit(1)
+    }
+}
 
 // `--render-layout <base>` permanently rasterizes the production rail and shared
 // Overview composition at 1440×900 and 1680×900, dark + light.
@@ -117,7 +159,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-palette") {
 }
 
 // `--render-identity <base>` rasterizes THE SIGNATURE — the door light: the
-// sidebar lockup (mark + wordmark, ring tinted by the fleet's worst live state) at
+// sidebar lockup (mark + wordmark, state-colored core for the fleet's worst live state) at
 // every state, the menu-bar template glyph's three honest states, and the dock
 // tile — so the app's identity can be Read + judged without a window/Space.
 if let i = CommandLine.arguments.firstIndex(of: "--render-identity") {
@@ -243,7 +285,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-quota") {
 // cost. Also prints what the flat pre-W2 tier pricing would have said, so a
 // pricing-rule change is explainable line by line.
 if let i = CommandLine.arguments.firstIndex(of: "--spend-by-model") {
-    let home = FileManager.default.homeDirectoryForCurrentUser
+    let paths = ClaudePaths.process
     var days = CommandLine.arguments.dropFirst(i + 1).filter { $0.count == 10 && $0.contains("-") }
     if days.isEmpty {
         let f = DateFormatter()
@@ -251,7 +293,8 @@ if let i = CommandLine.arguments.firstIndex(of: "--spend-by-model") {
         f.dateFormat = "yyyy-MM-dd"
         days = [f.string(from: Date(timeIntervalSinceNow: -86400)), f.string(from: Date())]
     }
-    let sessions = SessionStore.cachedScan(home.appendingPathComponent(".claude/projects"))
+    let sessions = SessionStore.cachedScan(
+        paths.projects, cacheURL: paths.sessionIndexCacheURL)
     let catalog = PricingCatalog.current
     print("pricing: \(catalog.sourceLabel)")
     for day in days {
@@ -283,26 +326,6 @@ if let i = CommandLine.arguments.firstIndex(of: "--spend-by-model") {
     exit(0)
 }
 
-// Headless modes must NEVER hang on a keychain ACL prompt: every rebuild
-// changes this binary's code hash, the legacy file keychain then wants a GUI
-// "Allow" click before releasing items (SecItemCopyMatching parks inside
-// securityd's mach_msg forever), and an MCP server spawned by Claude Code —
-// or a selfcheck piped through CI — has no GUI to click. Flip the global
-// interaction switch off so those reads fail fast with
-// errSecInteractionNotAllowed; every caller already treats a failed read as
-// "not configured" and degrades gracefully. GUI launches keep their prompts.
-// Every headless entry point — `--mcp`, `--selfcheck`, and the `--render-*` snapshot
-// commands — has no GUI to click, so a parked ACL prompt froze the process (renders
-// blocked on the "enter your login keychain password" dialog). Suppress interaction
-// for ALL of them so keychain reads fail fast → "not configured". GUI launches (no
-// headless flag) keep their prompts.
-let headlessFlags = CommandLine.arguments.contains { arg in
-    arg == "--mcp" || arg == "--selfcheck" || arg.hasPrefix("--render")
-}
-if headlessFlags {
-    SecKeychainSetUserInteractionAllowed(false)
-}
-
 // `--mcp` runs the SELF-INTROSPECTION MCP ENDPOINT (spree #4 — rauchg,
 // RESEARCH_top_voices #20): a stdio JSON-RPC 2.0 MCP server (protocol
 // 2025-06-18) exposing the app's already-built forensics — session_brief /
@@ -323,14 +346,16 @@ if CommandLine.arguments.contains("--mcp") {
     exit(0)
 }
 
-// Entry point. `--selfcheck` runs the real data layer headlessly (no GUI) so the
+// Entry point. `--selfcheck` / `--self-check` run the real data layer headlessly so the
 // parsing/aggregation can be verified in environments without Screen Recording perms.
-if CommandLine.arguments.contains("--selfcheck") {
+if isSelfCheck {
+    let paths = ClaudePaths.process
     let home = FileManager.default.homeDirectoryForCurrentUser
     let t0 = Date()
     // cachedScan shares the GUI's on-disk index: verifies the exact warm-start
     // path the app uses, and primes it so the next launch paints instantly.
-    let sessions = SessionStore.cachedScan(home.appendingPathComponent(".claude/projects"))
+    let sessions = SessionStore.cachedScan(
+        paths.projects, cacheURL: paths.sessionIndexCacheURL)
         .sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
     let scanSecs = Date().timeIntervalSince(t0)
 
@@ -712,14 +737,14 @@ if CommandLine.arguments.contains("--selfcheck") {
     // real GUI-fallback PATH resolver. HONEST LIMIT: a resolving command means the
     // binary/script is PRESENT — not that the MCP server actually handshakes (phase
     // 1 checks presence/executability only).
-    func data(_ path: String) -> Data { (try? Data(contentsOf: home.appendingPathComponent(path))) ?? Data() }
-    let mcpHealth = MCPConfig.classify(MCPConfig.parse(data(".claude.json")),
+    func data(_ url: URL) -> Data { (try? Data(contentsOf: url)) ?? Data() }
+    let mcpHealth = MCPConfig.classify(MCPConfig.parse(data(paths.mcpConfigJSON)),
                                        resolves: ProbePrimitives.commandResolves)
     let (mcpPresent, mcpMissing, mcpRemote) = MCPConfig.summary(mcpHealth)
-    let hookHealth = HooksConfig.classify(HooksConfig.parse(data(".claude/settings.json")),
+    let hookHealth = HooksConfig.classify(HooksConfig.parse(data(paths.settingsJSON)),
                                           resolves: ProbePrimitives.commandResolves)
     let (hookPresent, hookBuiltin, hookMissing, hookEvents) = HooksConfig.summary(hookHealth)
-    let plugins = PluginsConfig.parse(data(".claude/plugins/installed_plugins.json"))
+    let plugins = PluginsConfig.parse(data(paths.installedPluginsJSON))
     let (plugInstalled, plugStale) = PluginsConfig.summary(plugins)
     print("=== CONFIG-SURFACE HEALTH (VISION 2.4) ===")
     print("  MCP servers:  \(mcpHealth.count) configured · \(mcpPresent) binary present · \(mcpMissing) missing · \(mcpRemote) remote  (presence only, not a live handshake)")
@@ -742,13 +767,14 @@ if CommandLine.arguments.contains("--selfcheck") {
     // Parse deadlines from the SAME sources the app reads (MEMORY.md + per-project
     // NOTES.md/README), pick the operative deadline per project, fold in any user
     // `.toml` override, JOIN with live per-project activity, and print the jeopardy-
-    // sorted board + the leader. "Linear key present" reads the real Keychain (never a
-    // file); the live sync itself is verified by the user with their own key.
+    // sorted board + the leader. Keychain access stays disabled in this headless
+    // diagnostic; the GUI performs the live read when the user opens the surface.
     let dlNow = Date()
     let dlHints = Array(Set(sessions.filter { !$0.isSubagent }.map(\.project))).sorted()
     var dlParsed: [ParsedDeadline] = []
     let memSlug = home.path.replacingOccurrences(of: "/", with: "-")
-    let memPath = home.appendingPathComponent(".claude/projects/\(memSlug)/memory/MEMORY.md").path
+    let memPath = paths.projects
+        .appendingPathComponent("\(memSlug)/memory/MEMORY.md").path
     if let memText = try? String(contentsOfFile: memPath, encoding: .utf8) {
         dlParsed += DeadlineParser.parse(text: memText, file: "MEMORY.md", projectHints: dlHints, now: dlNow)
     }
@@ -765,13 +791,14 @@ if CommandLine.arguments.contains("--selfcheck") {
     }
     let dlOperative = DeadlineParser.operativeDeadlines(dlParsed, now: dlNow)
     var dlOverrides: [DeadlineOverride] = []
-    let dlToml = home.appendingPathComponent(".claude/mission-control/deadlines.toml").path
+    let dlToml = paths.root.appendingPathComponent("mission-control/deadlines.toml").path
     if let t = try? String(contentsOfFile: dlToml, encoding: .utf8) { dlOverrides = DeadlineTOML.parse(t) }
     let dlRecords = DeadlineMerge.resolve(
         parsed: dlOperative, persisted: DeadlineRecordStore().load(), overrides: dlOverrides)
     let dlActivity = DeadlineActivity.summarize(sessions, now: dlNow)
     let dlCards = DeadlineBoard.build(records: dlRecords, activity: dlActivity, now: dlNow)
-    let keyPresent = KeychainLinearStore().readKey() != nil
+    // A self-check is intentionally noninteractive. The GUI performs the real
+    // keychain presence/read when the user opens the Linear surface.
     let linMap = LinearMapStore().load()
     let linSettings = LinearSettingsStore().load()
     print("=== THE DEADLINE BOARD (docs/DEADLINE_BOARD.md) ===")
@@ -786,7 +813,7 @@ if CommandLine.arguments.contains("--selfcheck") {
         print("  jeopardy leader:      \(leader.projectKey) — \(leader.state.label) · \(fmtCountdown(leader.runway)) left · untouched \(leader.lastActivity == nil ? "—" : fmtAgeShort(leader.idle)) · jeopardy \(String(format: "%.2f", leader.jeopardy))")
     }
     print("--- Linear one-way exporter (§8) ---")
-    print("  Linear key present:   \(keyPresent ? "yes (Keychain: \(KeychainLinearStore.service)/\(KeychainLinearStore.account))" : "no")  ·  team: \(linSettings.teamName ?? "not picked")  ·  mapped projects: \(linMap.count)")
+    print("  Linear key present:   not checked (headless)  ·  team: \(linSettings.teamName ?? "not picked")  ·  mapped projects: \(linMap.count)")
     let dlEligible = dlCards.filter { LinearEligibility.isSyncable($0) }.count
     print("  sync-eligible:        \(dlEligible) of \(dlCards.count) card(s) confirmed — unconfirmed parses are findings and stay local")
     print("  builders self-test:   \(deadlineBuilderSelfTest())")
@@ -956,12 +983,13 @@ if CommandLine.arguments.contains("--selfcheck") {
     // --- SELF-INTROSPECTION MCP ENDPOINT (spree #4 — rauchg #20) ---
     // Spin the MCP loop in-process on the REAL corpus: the exact handleLine
     // path `--mcp` drives, minus the pipe. Full initialize handshake,
-    // tools/list, one tools/call per tool (default self-resolution), and a
+    // tools/list, one tools/call per tool (explicit newest-session fallback), and a
     // malformed line — every reply must be well-formed JSON-RPC with non-empty,
     // parseable content. Quota may honestly degrade (no creds/offline) — that
     // is still a well-formed result, which is the contract.
     let mcp = MCPIntrospectionServer(sessions: { sessions },
-                                     quota: { MCPIntrospectionServer.blockingQuotaFetch() })
+                                     quota: { MCPIntrospectionServer.blockingQuotaFetch(
+                                        configDirectory: paths.root) })
     func mcpCall(_ line: String) -> [String: Any]? {
         guard let out = mcp.handleLine(line) else { return nil }
         return (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [String: Any]
@@ -977,7 +1005,7 @@ if CommandLine.arguments.contains("--selfcheck") {
     var mcpAllOK = hsOK && noteAbsorbed && tools.count == 5
     for (i, tool) in tools.enumerated() {
         guard let name = tool["name"] as? String else { mcpAllOK = false; continue }
-        let res = mcpCall(#"{"jsonrpc":"2.0","id":\#(i + 2),"method":"tools/call","params":{"name":"\#(name)","arguments":{}}}"#)?["result"] as? [String: Any]
+        let res = mcpCall(#"{"jsonrpc":"2.0","id":\#(i + 2),"method":"tools/call","params":{"name":"\#(name)","arguments":{"use_newest":true}}}"#)?["result"] as? [String: Any]
         let text = (res?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
         let parsed = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
         let ok = (res?["isError"] as? Bool) == false && !(parsed?.isEmpty ?? true)

@@ -92,7 +92,7 @@ struct ContextTaxGaugeView: View {
                 .foregroundStyle(Theme.ink)
             Text("· \(fmtPct(gauge.cacheHitRate)) cached · warm = cache valid · cold = cache expired (>5m idle) · not your bill")
                 .font(.caption)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
                 .lineLimit(1)
             Spacer(minLength: 0)
             if !gauge.modelID.isEmpty {
@@ -113,7 +113,7 @@ struct ContextTaxGaugeView: View {
         Text(c.line)
             .font(.caption2)
             .monospacedDigit()
-            .foregroundStyle(Theme.faint)
+            .foregroundStyle(Theme.muted)
             .lineLimit(1)
     }
 
@@ -132,7 +132,7 @@ struct ContextTaxGaugeView: View {
                 .foregroundStyle(Theme.ink)
             Text("\(fmtPct(gauge.cacheHitRate)) cached")
                 .font(.caption2)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
             Spacer(minLength: 0)
         }
     }

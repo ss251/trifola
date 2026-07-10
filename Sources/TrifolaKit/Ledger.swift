@@ -43,14 +43,27 @@ public struct DeclaredRoutingPolicy: Sendable, Codable, Hashable {
     public let model: String
     public let selector: String
     public let filePath: String
+    /// Filesystem scope governed by this declaration. nil means process/global.
+    public let scopePath: String?
+    /// Existing custom-agent definition that can honestly receive `model:`.
+    /// A policy source is not automatically an editable target.
+    public let targetPath: String?
 
     public init(source: DeclaredPolicySource, model: String,
-                selector: String = "session-default", filePath: String) {
+                selector: String = "session-default", filePath: String,
+                scopePath: String? = nil, targetPath: String? = nil) {
         self.source = source
         self.model = model
         self.selector = selector
         self.filePath = filePath
+        self.scopePath = scopePath
+        self.targetPath = targetPath
     }
+}
+
+public enum DeclaredPolicyResolution: Sendable, Equatable {
+    case resolved(policy: DeclaredRoutingPolicy, targetPath: String)
+    case unresolved(reason: String)
 }
 
 /// The two persisted-default facts the Ledger reads from `~/.claude/settings.json`
@@ -64,39 +77,59 @@ public struct ClaudeSettings: Sendable, Equatable {
     /// Provider-tagged routing declarations: settings.json default plus narrow,
     /// parseable CLAUDE.md subagent pins.
     public let declaredPolicies: [DeclaredRoutingPolicy]
+    /// Read-only discovery root retained so L-001 can resolve the project/ancestor
+    /// policy for the actual leg cwd, including CLI/selfcheck call sites that do
+    /// not have an app layer available to precompute project contexts.
+    public let paths: ClaudePaths?
 
     public init(model: String = "—", effort: EffortLevel = .doctrineDefault,
                 effortRaw: String? = nil,
-                declaredPolicies: [DeclaredRoutingPolicy]? = nil) {
+                declaredPolicies: [DeclaredRoutingPolicy]? = nil,
+                paths: ClaudePaths? = nil) {
         self.model = model
         self.effort = effort
         self.effortRaw = effortRaw ?? effort.rawValue
+        self.paths = paths
         if let declaredPolicies {
             self.declaredPolicies = declaredPolicies
         } else if model != "—", !model.isEmpty {
             self.declaredPolicies = [DeclaredRoutingPolicy(
                 source: .claude, model: model, selector: "session-default",
-                filePath: Self.defaultURL.path)]
+                filePath: ClaudePaths.process.settingsJSON.path)]
         } else {
             self.declaredPolicies = []
         }
     }
 
     public static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/settings.json")
+        ClaudePaths.process.settingsJSON
     }
 
     public static var defaultClaudeMDURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/CLAUDE.md")
+        ClaudePaths.process.globalClaudeMD
+    }
+
+    public static func load(
+        paths: ClaudePaths,
+        claudeMDURLs: [URL]? = nil
+    ) -> ClaudeSettings {
+        load(paths.settingsJSON,
+             claudeMDURLs: claudeMDURLs ?? [paths.globalClaudeMD],
+             paths: paths)
+    }
+
+    /// Process entry points (notably `--selfcheck`) resolve through the same
+    /// singleton as the app instead of reconstructing a default home path.
+    public static func load() -> ClaudeSettings {
+        load(paths: .process)
     }
 
     /// Read model + effortLevel. Missing file / keys degrade to the doctrine
     /// default — never a crash, never a fabricated value.
     public static func load(
-        _ url: URL = defaultURL,
-        claudeMDURLs: [URL]? = nil
+        _ url: URL,
+        claudeMDURLs: [URL]? = nil,
+        paths: ClaudePaths? = nil
     ) -> ClaudeSettings {
         let obj: [String: Any] = FileManager.default.contents(atPath: url.path)
             .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
@@ -111,17 +144,21 @@ public struct ClaudeSettings: Sendable, Equatable {
         }
         for claudeMDURL in claudeMDURLs ?? [defaultClaudeMDURL] {
             guard let text = try? String(contentsOf: claudeMDURL, encoding: .utf8) else { continue }
-            policies.append(contentsOf: parseClaudeMDPolicies(text, filePath: claudeMDURL.path))
+            policies.append(contentsOf: parseClaudeMDPolicies(
+                text, filePath: claudeMDURL.path,
+                scopePath: paths == nil ? claudeMDURL.deletingLastPathComponent().path : nil))
         }
         return ClaudeSettings(model: model, effort: effort, effortRaw: raw ?? effort.rawValue,
-                              declaredPolicies: policies)
+                              declaredPolicies: policies, paths: paths)
     }
 
     /// Parse only explicit, one-line subagent model declarations. Generic
     /// `model:` examples and prose such as "use a cheaper model" stay ignored.
     public static func parseClaudeMDPolicies(
         _ text: String,
-        filePath: String
+        filePath: String,
+        scopePath: String? = nil,
+        targetPath: String? = nil
     ) -> [DeclaredRoutingPolicy] {
         var out: [DeclaredRoutingPolicy] = []
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -132,7 +169,8 @@ public struct ClaudeSettings: Sendable, Equatable {
                 out.append(DeclaredRoutingPolicy(
                     source: .claude, model: captures[1],
                     selector: captures[0].isEmpty ? "*" : captures[0],
-                    filePath: filePath))
+                    filePath: filePath, scopePath: scopePath,
+                    targetPath: targetPath))
                 continue
             }
             if line.range(of: #"(?i)\bdefault\s+pins?\s*:"#,
@@ -143,7 +181,8 @@ public struct ClaudeSettings: Sendable, Equatable {
                     for selector in selectors {
                         out.append(DeclaredRoutingPolicy(
                             source: .claude, model: captures[0], selector: String(selector),
-                            filePath: filePath))
+                            filePath: filePath, scopePath: scopePath,
+                            targetPath: targetPath))
                     }
                 }
             }
@@ -158,6 +197,176 @@ public struct ClaudeSettings: Sendable, Equatable {
             .sorted { policyScore($0.selector, agentType: type) < policyScore($1.selector, agentType: type) }
             .first { policyScore($0.selector, agentType: type) < Int.max }
         return specific ?? declaredPolicies.first { $0.selector == "session-default" }
+    }
+
+    /// Resolve the policy that actually governs one subagent leg. Discovery is
+    /// deliberately filesystem-grounded: every ancestor CLAUDE.md is considered,
+    /// custom-agent frontmatter is read, and the returned edit target must already
+    /// exist. Absence or same-precedence conflict is an explicit unresolved result.
+    public func policyResolution(for leg: SubagentModelLeg,
+                                 fileManager: FileManager = .default)
+        -> DeclaredPolicyResolution {
+        guard let rawType = leg.agentType?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawType.isEmpty else {
+            return .unresolved(reason: "agent type is missing")
+        }
+        let cwd = URL(fileURLWithPath: leg.cwd.isEmpty ? "/" : leg.cwd)
+            .standardizedFileURL
+        let discovery = discoverPolicies(
+            cwd: cwd, agentType: rawType, fileManager: fileManager)
+        let policies = deduplicatedPolicies(declaredPolicies + discovery.policies)
+            // settings.json's top-level model is a session default, not proof
+            // of a subagent's governing policy. Treating it as one produced the
+            // live corpus's 180 fictional L-001 candidates.
+            .filter { $0.selector != "session-default" }
+            .filter { policyScore($0.selector, agentType: rawType.lowercased()) < Int.max }
+            .filter { policy in
+                guard let scope = policy.scopePath else { return true }
+                return Self.isContained(cwd.path, under: scope)
+            }
+
+        guard !policies.isEmpty else {
+            return .unresolved(reason: "no applicable model declaration")
+        }
+        let ranked = policies.sorted {
+            policyRank($0, agentType: rawType, cwd: cwd)
+                .lexicographicallyPrecedes(policyRank($1, agentType: rawType, cwd: cwd))
+        }
+        guard let best = ranked.first else {
+            return .unresolved(reason: "no applicable model declaration")
+        }
+        let bestRank = policyRank(best, agentType: rawType, cwd: cwd)
+        let peers = ranked.filter {
+            policyRank($0, agentType: rawType, cwd: cwd) == bestRank
+        }
+        let peerModels = Set(peers.map { PricingCatalog.normalize($0.model) })
+        guard peerModels.count == 1 else {
+            return .unresolved(reason: "conflicting declarations at the governing scope")
+        }
+
+        let target = best.targetPath ?? discovery.targetPath
+        guard let target,
+              Self.existingFile(URL(fileURLWithPath: target),
+                                fileManager: fileManager) else {
+            return .unresolved(reason: "custom-agent definition target does not exist")
+        }
+        return .resolved(policy: best, targetPath: target)
+    }
+
+    private func discoverPolicies(
+        cwd: URL,
+        agentType: String,
+        fileManager: FileManager
+    ) -> (policies: [DeclaredRoutingPolicy], targetPath: String?) {
+        let safeType = Self.safeAgentType(agentType)
+        var policies: [DeclaredRoutingPolicy] = []
+        var definitionPaths: [String] = []
+        var cursor = cwd
+        while true {
+            let instructionURLs = [
+                cursor.appendingPathComponent("CLAUDE.md"),
+                cursor.appendingPathComponent(".claude/CLAUDE.md"),
+            ]
+            for url in instructionURLs {
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                policies += Self.parseClaudeMDPolicies(
+                    text, filePath: url.path, scopePath: cursor.path)
+            }
+            let definition = cursor
+                .appendingPathComponent(".claude/agents", isDirectory: true)
+                .appendingPathComponent("\(safeType).md")
+            if Self.existingFile(definition, fileManager: fileManager) {
+                definitionPaths.append(definition.path)
+                if let model = Self.agentDefinitionModel(at: definition) {
+                    policies.append(DeclaredRoutingPolicy(
+                        source: .claude, model: model, selector: agentType,
+                        filePath: definition.path, scopePath: cursor.path,
+                        targetPath: definition.path))
+                }
+            }
+            let parent = cursor.deletingLastPathComponent()
+            if parent.path == cursor.path { break }
+            cursor = parent
+        }
+
+        if let paths {
+            if let text = try? String(contentsOf: paths.globalClaudeMD, encoding: .utf8) {
+                policies += Self.parseClaudeMDPolicies(
+                    text, filePath: paths.globalClaudeMD.path)
+            }
+            let globalDefinition = paths.agents.appendingPathComponent("\(safeType).md")
+            if Self.existingFile(globalDefinition, fileManager: fileManager) {
+                definitionPaths.append(globalDefinition.path)
+                if let model = Self.agentDefinitionModel(at: globalDefinition) {
+                    policies.append(DeclaredRoutingPolicy(
+                        source: .claude, model: model, selector: agentType,
+                        filePath: globalDefinition.path,
+                        targetPath: globalDefinition.path))
+                }
+            }
+        }
+        return (policies, definitionPaths.first)
+    }
+
+    private func deduplicatedPolicies(_ policies: [DeclaredRoutingPolicy])
+        -> [DeclaredRoutingPolicy] {
+        var seen = Set<DeclaredRoutingPolicy>()
+        return policies.filter { seen.insert($0).inserted }
+    }
+
+    /// Sort tuple encoded as an array: origin, inverse scope depth, selector
+    /// specificity, then stable path tie-break components.
+    private func policyRank(_ policy: DeclaredRoutingPolicy,
+                            agentType: String, cwd: URL) -> [Int] {
+        let isAgentDefinition = policy.targetPath == policy.filePath
+            && policy.filePath.contains("/agents/")
+        let origin: Int
+        if isAgentDefinition { origin = 0 }
+        else if policy.scopePath != nil { origin = 1 }
+        else if policy.selector != "session-default" { origin = 2 }
+        else { origin = 3 }
+        let depth = policy.scopePath.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.pathComponents.count
+        } ?? 0
+        return [origin, -depth,
+                policyScore(policy.selector, agentType: agentType.lowercased())]
+    }
+
+    private static func safeAgentType(_ raw: String) -> String {
+        String(raw.map {
+            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_")
+                ? $0 : "-"
+        })
+    }
+
+    private static func isContained(_ path: String, under root: String) -> Bool {
+        let candidate = URL(fileURLWithPath: path).standardizedFileURL.path
+        let base = URL(fileURLWithPath: root).standardizedFileURL.path
+        return candidate == base || candidate.hasPrefix(base + "/")
+    }
+
+    private static func agentDefinitionModel(at url: URL) -> String? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              text.hasPrefix("---") else { return nil }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count > 2 else { return nil }
+        for raw in lines.dropFirst() {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line == "---" { break }
+            guard line.lowercased().hasPrefix("model:") else { continue }
+            let value = line.dropFirst("model:".count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    private static func existingFile(_ url: URL,
+                                     fileManager: FileManager) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && !isDirectory.boolValue
     }
 
     private func policyScore(_ selector: String, agentType: String) -> Int {
@@ -501,13 +710,52 @@ public enum LessonMiner {
         limit: Int = 12,
         fallbackDay: String? = nil
     ) -> (top: [ModelPinMismatch], total: Double, count: Int) {
+        let result = modelPinAnalysis(
+            legs: legs, settings: settings, limit: limit,
+            fallbackDay: fallbackDay)
+        return (result.top, result.total, result.count)
+    }
+
+    private struct UnresolvedModelPinLeg {
+        let leg: SubagentModelLeg
+        let reason: String
+    }
+
+    private struct ModelPinAnalysis {
+        let top: [ModelPinMismatch]
+        let total: Double
+        let count: Int
+        let unresolved: [UnresolvedModelPinLeg]
+    }
+
+    private static func modelPinAnalysis(
+        legs: [SubagentModelLeg],
+        settings: ClaudeSettings,
+        limit: Int = 12,
+        fallbackDay: String? = nil
+    ) -> ModelPinAnalysis {
         var mismatches: [ModelPinMismatch] = []
+        var unresolved: [UnresolvedModelPinLeg] = []
         var total = 0.0
+        var resolutionCache: [String: DeclaredPolicyResolution] = [:]
 
         for leg in legs {
-            guard !leg.hasExplicitModelOverride,
-                  let policy = settings.policy(forSubagentType: leg.agentType),
-                  !modelsMatch(declared: policy.model, resolved: leg.resolvedModel)
+            guard !leg.hasExplicitModelOverride else { continue }
+            let policy: DeclaredRoutingPolicy
+            let target: String
+            let resolutionKey = "\(leg.cwd)\u{1f}\(leg.agentType ?? "")"
+            let resolution = resolutionCache[resolutionKey]
+                ?? settings.policyResolution(for: leg)
+            resolutionCache[resolutionKey] = resolution
+            switch resolution {
+            case .unresolved(let reason):
+                unresolved.append(UnresolvedModelPinLeg(leg: leg, reason: reason))
+                continue
+            case .resolved(let resolvedPolicy, let targetPath):
+                policy = resolvedPolicy
+                target = targetPath
+            }
+            guard !modelsMatch(declared: policy.model, resolved: leg.resolvedModel)
             else { continue }
 
             let repriced = repricedCost(leg, at: policy.model, fallbackDay: fallbackDay)
@@ -523,7 +771,7 @@ public enum LessonMiner {
                 resolvedModel: leg.resolvedModel,
                 deltaDollars: delta,
                 filePath: leg.filePath,
-                targetPath: targetPath(policy: policy, leg: leg)))
+                targetPath: target))
         }
 
         mismatches.sort {
@@ -531,7 +779,9 @@ public enum LessonMiner {
                 ? $0.deltaDollars > $1.deltaDollars
                 : $0.sessionID < $1.sessionID
         }
-        return (Array(mismatches.prefix(limit)), total, mismatches.count)
+        return ModelPinAnalysis(
+            top: Array(mismatches.prefix(limit)), total: total,
+            count: mismatches.count, unresolved: unresolved)
     }
 
     static func modelPin(sessions: [SessionSummary], settings: ClaudeSettings,
@@ -543,8 +793,11 @@ public enum LessonMiner {
 
     static func modelPin(legs: [SubagentModelLeg], settings: ClaudeSettings,
                          fallbackDay: String? = nil) -> Lesson? {
-        let result = modelPinMismatches(
+        let result = modelPinAnalysis(
             legs: legs, settings: settings, fallbackDay: fallbackDay)
+        if !result.unresolved.isEmpty {
+            return unresolvedModelPinLesson(result.unresolved)
+        }
         guard result.count > 0, let lead = result.top.first else { return nil }
         let top = max(lead.deltaDollars, 0.0001)
         let evidence = result.top.prefix(6).map { mismatch in
@@ -575,8 +828,41 @@ public enum LessonMiner {
             why: "\(result.count) subagent legs resolved above declared policy — ≈\(fmtUSD(result.total)) API-rate difference when repriced at the declared model.",
             evidence: Array(evidence),
             candidate: candidate,
-            detectorVersion: "detector v1.1",
+            detectorVersion: "detector v1.2",
             impact: result.total)
+    }
+
+    private static func unresolvedModelPinLesson(
+        _ unresolved: [UnresolvedModelPinLeg]
+    ) -> Lesson {
+        let evidence = unresolved.prefix(6).map { item in
+            LessonEvidence(
+                label: item.leg.project,
+                detail: "\(item.leg.agentType ?? "subagent") · policy unresolved — \(item.reason)",
+                value: "review",
+                barFraction: 1,
+                navPath: item.leg.filePath,
+                nav: item.leg.filePath.isEmpty ? .none : .inspect)
+        }
+        let review = unresolved.prefix(12).map { item in
+            "- \(item.leg.project) / \(item.leg.agentType ?? "unknown agent"): policy unresolved (\(item.reason))"
+        }.joined(separator: "\n")
+        let candidate = CandidateFix(
+            action: .copyReview,
+            summary: "policy unresolved — no model-pin edit was generated.",
+            copyText: "policy unresolved\n\(review)",
+            copyLabel: "Copy review",
+            revealTargets: [],
+            note: "Trifola will not invent a declared model or a target file. Add or clarify the governing project/ancestor CLAUDE.md and an existing custom-agent definition, then rescan.")
+        return Lesson(
+            kind: .modelPin,
+            metricValue: Double(unresolved.count),
+            metricLabel: "\(unresolved.count) unresolved policies",
+            why: "\(unresolved.count) silent-inheritance legs have no uniquely resolved, editable governing policy.",
+            evidence: Array(evidence),
+            candidate: candidate,
+            detectorVersion: "detector v1.2",
+            impact: 0)
     }
 
     private static func modelsMatch(declared: String, resolved: String) -> Bool {
@@ -612,26 +898,6 @@ public enum LessonMiner {
         }
         return leg.usage.cost(rate: catalog.resolvedRate(
             model: pricedModel, onDay: fallbackDay))
-    }
-
-    private static func targetPath(
-        policy: DeclaredRoutingPolicy,
-        leg: SubagentModelLeg
-    ) -> String {
-        // `model:` is valid custom-agent frontmatter, not a standalone settings
-        // or CLAUDE.md edit. Point at the concrete project agent definition when
-        // its type is known; only fall back to the policy source without a type.
-        guard let agentType = leg.agentType, !agentType.isEmpty else {
-            return policy.filePath
-        }
-        let safeType = agentType.map {
-            $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "-"
-        }
-        let root = leg.cwd.isEmpty
-            ? (policy.filePath as NSString).deletingLastPathComponent
-            : leg.cwd
-        return (root as NSString).appendingPathComponent(
-            ".claude/agents/\(String(safeType)).md")
     }
 
     // MARK: L-002 — dead-skill archive
@@ -820,7 +1086,7 @@ public enum LessonMiner {
             metricLabel: settings.effort.label,
             why: "settings.json persists effortLevel = \(settings.effortRaw), above the recommended High default, so every session requests extra compute.",
             evidence: [LessonEvidence(
-                label: "~/.claude/settings.json",
+                label: "Claude settings.json",
                 detail: "persisted default · effortLevel = \(settings.effortRaw)",
                 value: settings.effort.label,
                 barFraction: 1.0,

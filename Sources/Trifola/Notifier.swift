@@ -13,6 +13,31 @@ enum RemoteControlDeepLink {
     static func url(forSession id: String) -> URL? { nil }
 }
 
+enum NotificationPermissionState: String, Sendable, Equatable {
+    case notDetermined
+    case allowed
+    case denied
+    case unavailable
+
+    var label: String {
+        switch self {
+        case .notDetermined: "Not Determined"
+        case .allowed: "Allowed"
+        case .denied: "Denied"
+        case .unavailable: "Unavailable"
+        }
+    }
+
+    init(_ status: UNAuthorizationStatus) {
+        switch status {
+        case .notDetermined: self = .notDetermined
+        case .denied: self = .denied
+        case .authorized, .provisional, .ephemeral: self = .allowed
+        @unknown default: self = .unavailable
+        }
+    }
+}
+
 /// Walk-Away Notify (frontier #2): the ONE allowed notification (VISION "Not a
 /// nag"). Each refresh cycle AND heartbeat tick it diffs the live board's BLOCKED
 /// set against what it last notified (the pure `BlockedNotifier.plan`) and, on a
@@ -20,20 +45,17 @@ enum RemoteControlDeepLink {
 /// multi-hour walk-away loops knows a session needs them without watching the window.
 ///
 /// All the policy is in the pure Kit core; this class owns only the side effects:
-/// authorization (requested once, silent on denial), posting, the click→activate
+/// authorization (requested only by explicit opt-in, with denial reflected), posting, the click→activate
 /// handoff, and the opt-in toggle persisted to the app's own dir.
 @MainActor
 final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
-    /// The opt-in toggle, mirrored to disk. Published so a SwiftUI Toggle binds to it.
-    @Published var enabled: Bool {
-        didSet {
-            guard enabled != oldValue else { return }
-            prefsStore.save(NotifyPreferences(enabled: enabled))
-            if let notificationCenter {
-                optIn.activateIfEnabled(enabled, on: notificationCenter)
-            }
-        }
-    }
+    /// The opt-in toggle is published only after its app-owned preference save
+    /// succeeds. macOS denial immediately returns it to off instead of implying
+    /// that banners can be delivered.
+    @Published private(set) var enabled: Bool
+    @Published private(set) var authorizationStatus: NotificationPermissionState
+    @Published private(set) var authorizationNote: String?
+    @Published private(set) var persistenceError: String?
 
     /// The rising-edge tracker — the blocked ids seen last cycle. Adopted from every
     /// plan (even while disabled) so toggling on mid-block never fires for sessions
@@ -42,6 +64,8 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
     private let prefsStore: NotifyPreferencesStore
     private let optIn = BlockedNotificationOptIn()
     private var notificationCenter: NotificationAuthorizationCenter?
+    private var nativeCenter: UNUserNotificationCenter?
+    private var pendingEnabled: Bool?
     /// Whether we can safely touch UNUserNotificationCenter: it requires a real app
     /// bundle. Run via `swift run` / `--selfcheck` there is no bundle identifier, so
     /// every UN call is skipped (degrade silently — the dock badge carries the signal).
@@ -55,17 +79,116 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
     /// persistence without adding another high-frequency observation path here.
     var preferencesProvider: () -> AppPreferences = { AppPreferencesStore().load() }
 
+    var persistenceLocation: URL { prefsStore.url.deletingLastPathComponent() }
+
     init(prefsStore: NotifyPreferencesStore = NotifyPreferencesStore()) {
+        let isBundled = Bundle.main.bundleIdentifier != nil
         self.prefsStore = prefsStore
-        self.bundled = Bundle.main.bundleIdentifier != nil
+        self.bundled = isBundled
         self.enabled = prefsStore.load().enabled
+        self.authorizationStatus = isBundled ? .notDetermined : .unavailable
         super.init()
         if bundled {
             let center = UNUserNotificationCenter.current()
             center.delegate = self
-            let adapter = UNCategoryCenterAdapter(center: center)
+            nativeCenter = center
+            let adapter = UNCategoryCenterAdapter(center: center) { [weak self] errorMessage in
+                Task { @MainActor in
+                    if let errorMessage {
+                        self?.authorizationNote = "macOS could not update notification permission: \(errorMessage)"
+                    }
+                    self?.refreshAuthorizationStatus()
+                }
+            }
             notificationCenter = adapter
-            optIn.activateIfEnabled(enabled, on: adapter)
+            // A launch may restore a prior opt-in, but launch itself never asks for
+            // system authorization. Registering the category is non-prompting; only
+            // an explicit off→on user action below may call requestAuthorization.
+            if enabled { BlockedNotificationCategory.register(on: adapter) }
+            refreshAuthorizationStatus()
+        }
+    }
+
+    func setEnabled(_ requested: Bool) {
+        guard requested != enabled else {
+            refreshAuthorizationStatus()
+            return
+        }
+        if requested, authorizationStatus == .denied {
+            authorizationNote = "macOS has denied notifications. Allow Trifola in System Settings, then try again."
+            enabled = false
+            return
+        }
+        guard prefsStore.save(NotifyPreferences(enabled: requested)) else {
+            pendingEnabled = requested
+            persistenceError = "Notification preference was not saved at \(prefsStore.url.path)."
+            return
+        }
+        enabled = requested
+        pendingEnabled = nil
+        persistenceError = nil
+        if requested, let notificationCenter {
+            optIn.activateIfEnabled(true, on: notificationCenter)
+        }
+        refreshAuthorizationStatus()
+    }
+
+    func retryPersistence() {
+        guard let pendingEnabled else { return }
+        guard prefsStore.save(NotifyPreferences(enabled: pendingEnabled)) else {
+            persistenceError = "Notification preference still could not be saved at \(prefsStore.url.path)."
+            return
+        }
+        enabled = pendingEnabled
+        self.pendingEnabled = nil
+        persistenceError = nil
+        if pendingEnabled, let notificationCenter {
+            optIn.activateIfEnabled(true, on: notificationCenter)
+        }
+        refreshAuthorizationStatus()
+    }
+
+    func refreshAuthorizationStatus() {
+        guard let nativeCenter else {
+            authorizationStatus = .unavailable
+            return
+        }
+        nativeCenter.getNotificationSettings { [weak self] settings in
+            let state = NotificationPermissionState(settings.authorizationStatus)
+            Task { @MainActor in self?.applyAuthorizationStatus(state) }
+        }
+    }
+
+    @discardableResult
+    func openSystemNotificationSettings() -> Bool {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+        else { return false }
+        return NSWorkspace.shared.open(url)
+    }
+
+    private func applyAuthorizationStatus(_ status: NotificationPermissionState) {
+        authorizationStatus = status
+        switch status {
+        case .allowed:
+            authorizationNote = nil
+        case .denied:
+            authorizationNote = "macOS has denied notifications. The in-app attention signal still works."
+            guard enabled else { return }
+            enabled = false
+            if !prefsStore.save(NotifyPreferences(enabled: false)) {
+                pendingEnabled = false
+                persistenceError = "Notification denial was reflected here, but could not be saved at \(prefsStore.url.path)."
+            } else {
+                pendingEnabled = nil
+                persistenceError = nil
+            }
+        case .notDetermined:
+            if enabled {
+                authorizationNote = "Waiting for macOS notification permission."
+            }
+        case .unavailable:
+            authorizationNote = "Notification permission could not be read."
         }
     }
 
@@ -144,8 +267,13 @@ final class BlockedNotifierService: NSObject, ObservableObject, UNUserNotificati
 /// to UserNotifications.
 private final class UNCategoryCenterAdapter: NotificationAuthorizationCenter {
     private let center: UNUserNotificationCenter
+    private let onAuthorizationRequestFinished: @Sendable (String?) -> Void
 
-    init(center: UNUserNotificationCenter) { self.center = center }
+    init(center: UNUserNotificationCenter,
+         onAuthorizationRequestFinished: @escaping @Sendable (String?) -> Void) {
+        self.center = center
+        self.onAuthorizationRequestFinished = onAuthorizationRequestFinished
+    }
 
     func install(categories: Set<NotificationCategoryDescriptor>) {
         let native = Set(categories.map { category in
@@ -163,8 +291,8 @@ private final class UNCategoryCenterAdapter: NotificationAuthorizationCenter {
     }
 
     func requestAuthorization() {
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in
-            // Degrade silently: the dock badge already carries the signal. Never error.
+        center.requestAuthorization(options: [.alert, .sound]) { [onAuthorizationRequestFinished] _, error in
+            onAuthorizationRequestFinished(error?.localizedDescription)
         }
     }
 }

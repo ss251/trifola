@@ -116,7 +116,7 @@ public enum ProbePrimitives {
         guard fd >= 0 else { return false }
         defer { close(fd) }
 
-        var flags = fcntl(fd, F_GETFL, 0)
+        let flags = fcntl(fd, F_GETFL, 0)
         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
 
         var addr = sockaddr_in()
@@ -204,11 +204,11 @@ public enum ProbePrimitives {
 public struct ClaudeConfigProbe: ToolProbe {
     public let id = "claude"
     public let name = "Claude Code"
-    public let subtitle = "~/.claude · config root"
+    public let subtitle = "Claude config root"
     public let symbolName = "terminal"
     public var directory: String
 
-    public init(directory: String = ("~/.claude" as NSString).expandingTildeInPath) {
+    public init(directory: String = ClaudePaths.process.root.path) {
         self.directory = directory
     }
 
@@ -216,7 +216,7 @@ public struct ClaudeConfigProbe: ToolProbe {
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: directory, isDirectory: &isDir), isDir.boolValue else {
-            return ProbeResult(status: .down, detail: "~/.claude not found — Claude Code isn't set up here")
+            return ProbeResult(status: .down, detail: "Claude config root not found — Claude Code isn't set up here")
         }
         let entries = (try? fm.contentsOfDirectory(atPath: directory)) ?? []
         return ProbeResult(status: .up, detail: "config present",
@@ -228,11 +228,11 @@ public struct ClaudeConfigProbe: ToolProbe {
 public struct SkillsProbe: ToolProbe {
     public let id = "skills"
     public let name = "Skills"
-    public let subtitle = "~/.claude/skills"
+    public let subtitle = "Claude user skills"
     public let symbolName = "wand.and.stars"
     public var directory: String
 
-    public init(directory: String = ("~/.claude/skills" as NSString).expandingTildeInPath) {
+    public init(directory: String = ClaudePaths.process.skills.path) {
         self.directory = directory
     }
 
@@ -406,17 +406,17 @@ public enum MCPConfig {
 public struct MCPServersProbe: ToolProbe {
     public let id = "mcp-servers"
     public let name = "MCP servers"
-    public let subtitle = "~/.claude.json · configured tools"
+    public let subtitle = "Claude MCP config · configured tools"
     public let symbolName = "point.3.connected.trianglepath.dotted"
     public var configFile: String
 
-    public init(configFile: String = ("~/.claude.json" as NSString).expandingTildeInPath) {
+    public init(configFile: String = ClaudePaths.process.mcpConfigJSON.path) {
         self.configFile = configFile
     }
 
     public func check() async -> ProbeResult {
         guard let data = FileManager.default.contents(atPath: configFile) else {
-            return ProbeResult(status: .down, detail: "~/.claude.json unreadable")
+            return ProbeResult(status: .down, detail: "Claude MCP config unreadable")
         }
         let health = MCPConfig.classify(MCPConfig.parse(data),
                                         resolves: ProbePrimitives.commandResolves)
@@ -561,17 +561,17 @@ public enum HooksConfig {
 public struct HooksProbe: ToolProbe {
     public let id = "hooks"
     public let name = "Hooks"
-    public let subtitle = "~/.claude/settings.json · lifecycle"
+    public let subtitle = "Claude settings.json · lifecycle"
     public let symbolName = "arrow.triangle.branch"
     public var settingsFile: String
 
-    public init(settingsFile: String = ("~/.claude/settings.json" as NSString).expandingTildeInPath) {
+    public init(settingsFile: String = ClaudePaths.process.settingsJSON.path) {
         self.settingsFile = settingsFile
     }
 
     public func check() async -> ProbeResult {
         guard let data = FileManager.default.contents(atPath: settingsFile) else {
-            return ProbeResult(status: .down, detail: "~/.claude/settings.json unreadable")
+            return ProbeResult(status: .down, detail: "Claude settings.json unreadable")
         }
         let health = HooksConfig.classify(HooksConfig.parse(data),
                                           resolves: ProbePrimitives.commandResolves)
@@ -673,7 +673,7 @@ public struct PluginsProbe: ToolProbe {
     public var pluginsFile: String
 
     public init(pluginsFile: String =
-                ("~/.claude/plugins/installed_plugins.json" as NSString).expandingTildeInPath) {
+                ClaudePaths.process.installedPluginsJSON.path) {
         self.pluginsFile = pluginsFile
     }
 
@@ -692,6 +692,14 @@ public extension ToolProbeEngine {
     /// config-surface health checks (VISION 2.4): MCP servers, hooks, plugins.
     /// Add a probe: write the struct, append it here — done.
     nonisolated static var defaultProbes: [any ToolProbe] {
-        [ClaudeConfigProbe(), SkillsProbe(), MCPServersProbe(), HooksProbe(), PluginsProbe()]
+        defaultProbes(paths: .process)
+    }
+
+    nonisolated static func defaultProbes(paths: ClaudePaths) -> [any ToolProbe] {
+        [ClaudeConfigProbe(directory: paths.root.path),
+         SkillsProbe(directory: paths.skills.path),
+         MCPServersProbe(configFile: paths.mcpConfigJSON.path),
+         HooksProbe(settingsFile: paths.settingsJSON.path),
+         PluginsProbe(pluginsFile: paths.installedPluginsJSON.path)]
     }
 }

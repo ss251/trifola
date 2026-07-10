@@ -82,8 +82,8 @@ private struct PaletteRow: View {
     let selected: Bool
 
     private var titleColor: Color { selected ? Theme.selectionText : Theme.ink }
-    private var hintColor: Color { selected ? Theme.selectionText : Theme.faint }
-    private var tagColor: Color { selected ? Theme.selectionText.opacity(0.75) : Theme.faint }
+    private var hintColor: Color { selected ? Theme.selectionText : Theme.muted }
+    private var tagColor: Color { selected ? Theme.selectionText.opacity(0.75) : Theme.muted }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -238,7 +238,7 @@ struct PalettePanel<Field: View>: View {
             Spacer()
             Text("\(results.count) result\(results.count == 1 ? "" : "s")")
                 .font(.caption2)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
         }
         .padding(.horizontal, Theme.paneInset)
         .padding(.vertical, Theme.intraCell)
@@ -247,7 +247,7 @@ struct PalettePanel<Field: View>: View {
     private func legendKey(_ key: String, _ label: String) -> some View {
         HStack(spacing: 4) {
             Text(key).font(.system(.caption2, design: .monospaced)).foregroundStyle(Theme.muted)
-            Text(label).font(.caption2).foregroundStyle(Theme.faint)
+            Text(label).font(.caption2).foregroundStyle(Theme.muted)
         }
     }
 }
@@ -388,9 +388,9 @@ enum PaletteEntries {
     // findable by what they DO, not only their title.
     @MainActor private static func screens(_ services: AppServices) -> [PaletteEntry] {
         AppSection.allCases.map { section in
-            let key = String(section.shortcut.character)
+            let command = AppCommandMap.navigation(for: section)
             let id = "screen:\(section.rawValue)"
-            let hint = Text("⌘\(key)").font(.system(.caption2, design: .monospaced))
+            let hint = Text(command.glyph).font(.system(.caption2, design: .monospaced))
                 + Text(" · jump to section").font(.caption2)
             return PaletteEntry(
                 id: id, kind: .screen, title: section.title, hint: hint, icon: section.icon,

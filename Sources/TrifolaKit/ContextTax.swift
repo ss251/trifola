@@ -258,11 +258,11 @@ public enum ContextFootprint {
 
     /// The real global CLAUDE.md path, injectable for tests.
     public static let defaultClaudeMdPath =
-        ("~/.claude/CLAUDE.md" as NSString).expandingTildeInPath
+        ClaudePaths.process.globalClaudeMD.path
     /// The real Claude Code config path — same file `MCPServersProbe` reads,
     /// one source of truth for "how many MCP servers are connected."
     public static let defaultMCPConfigPath =
-        ("~/.claude.json" as NSString).expandingTildeInPath
+        ClaudePaths.process.mcpConfigJSON.path
 
     /// Sum on-disk byte sizes of the given CLAUDE.md paths → ≈token estimate.
     /// Missing/unreadable paths count as 0 bytes (no CLAUDE.md really is zero

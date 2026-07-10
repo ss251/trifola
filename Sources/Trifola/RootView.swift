@@ -146,11 +146,14 @@ struct SidebarSnapshot {
 struct SidebarRail: View {
     let snapshot: SidebarSnapshot
     var onSelect: (AppSection) -> Void = { _ in }
-    var onKeyboardSelect: (AppSection) -> Void = { _ in }
     @Namespace private var selectionNamespace
+    @State private var moreExpanded = false
 
-    private let v1Sections: [AppSection] = [
+    private let primarySections: [AppSection] = [
         .overview, .fleet, .sessions, .spend, .audit, .stack,
+    ]
+    private let moreSections: [AppSection] = [
+        .live, .deadlines, .ledger, .launch,
     ]
 
     var body: some View {
@@ -164,17 +167,52 @@ struct SidebarRail: View {
             Divider()
 
             VStack(spacing: 2) {
-                ForEach(v1Sections) { section in
+                ForEach(primarySections) { section in
                     SidebarItem(section: section,
                                 isSelected: snapshot.selected == section,
                                 badge: snapshot.badge(for: section),
                                 selectionNamespace: selectionNamespace,
-                                action: { onSelect(section) },
-                                keyboardAction: { onKeyboardSelect(section) })
+                                action: { onSelect(section) })
+                }
+
+                TapButton(action: { moreExpanded.toggle() }) {
+                    HStack(spacing: Theme.rhythm) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.faint)
+                            .disclosureChevron(isExpanded: moreExpanded)
+                            .frame(width: 20)
+                        Text("More")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(Theme.muted)
+                        Spacer()
+                    }
+                    .padding(.horizontal, Theme.intraCell)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("More sections")
+                .accessibilityValue(moreExpanded ? "Expanded" : "Collapsed")
+                .accessibilityHint(moreExpanded
+                    ? "Collapse Live Now, Deadlines, Ledger, and Launch"
+                    : "Reveal Live Now, Deadlines, Ledger, and Launch")
+
+                if moreExpanded {
+                    ForEach(moreSections) { section in
+                        SidebarItem(section: section,
+                                    isSelected: snapshot.selected == section,
+                                    badge: snapshot.badge(for: section),
+                                    selectionNamespace: selectionNamespace,
+                                    quiet: true,
+                                    action: { onSelect(section) })
+                    }
                 }
             }
             .padding(.horizontal, Theme.intraCell)
             .padding(.top, Theme.blockGap)
+            .onChange(of: snapshot.selected, initial: true) { _, selected in
+                if moreSections.contains(selected) { moreExpanded = true }
+            }
 
             Spacer()
 
@@ -210,11 +248,6 @@ private struct Sidebar: View {
             machine: Host.current().localizedName ?? "this Mac"),
             onSelect: { section in
                 services.select(section, origin: .pointer)
-                if section != .sessions { services.selectedSessionID = nil }
-            },
-            onKeyboardSelect: { section in
-                services.select(section, origin: .keyboard)
-                if section != .sessions { services.selectedSessionID = nil }
             })
     }
 }
@@ -226,12 +259,13 @@ private struct Wordmark: View {
         HStack(spacing: Theme.intraCell) {
             SeatMark(state: worst.map(DoorLightState.init) ?? .idle,
                      fill: Theme.ink,
-                     ring: worst?.color ?? Theme.ink.opacity(0.35),
-                     size: 10,
-                     coreUsesState: false)
+                     ring: Theme.ink.opacity(0.35),
+                     size: 23,
+                     coreUsesState: true,
+                     stateEffectsUseColor: false)
             VStack(alignment: .leading, spacing: Theme.micro / 2) {
                 Text("Trifola")
-                    .font(.body.weight(.semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(Theme.ink)
                 Text("local · read-only")
                     .font(.footnote)
@@ -246,21 +280,20 @@ private struct SidebarItem: View {
     let isSelected: Bool
     let badge: Int?
     let selectionNamespace: Namespace.ID
+    var quiet = false
     let action: () -> Void
-    let keyboardAction: () -> Void
     @State private var hovering = false
 
     var body: some View {
-        TapButton(shortcut: KeyboardShortcut(section.shortcut, modifiers: .command),
-                  keyboardAction: keyboardAction,
-                  action: action) {
+        TapButton(action: action) {
             HStack(spacing: Theme.codePadding) {
                 Image(systemName: section.icon)
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(size: quiet ? 14 : 16, weight: .medium))
                     .foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
                     .frame(width: 20)
                 Text(section.title)
-                    .font(.body.weight(isSelected ? .semibold : .medium))
+                    .font((quiet ? Font.footnote : Font.body)
+                        .weight(isSelected ? .semibold : .medium))
                     .foregroundStyle(isSelected ? Theme.selectionText : Theme.ink)
                 Spacer()
                 if let badge {
@@ -271,9 +304,12 @@ private struct SidebarItem: View {
                 }
             }
             .padding(.horizontal, Theme.intraCell)
-            .frame(height: 32)
+            .padding(.leading, quiet ? Theme.intraCell : 0)
+            .frame(height: quiet ? 30 : 32)
             .contentShape(Rectangle())
         }
+        .accessibilityLabel(section.title)
+        .accessibilityHint("Open \(section.title), \(AppCommandMap.navigation(for: section).glyph)")
         .background {
             if isSelected {
                 RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
@@ -310,7 +346,7 @@ private struct SidebarFooter: View {
                 }
                 Text("public API rates — not your bill")
                     .font(.caption)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             }
 
             HStack(spacing: Theme.rhythm) {
@@ -321,7 +357,7 @@ private struct SidebarFooter: View {
                 }
             }
             .font(.caption)
-            .foregroundStyle(Theme.faint)
+            .foregroundStyle(Theme.muted)
 
             Divider()
 

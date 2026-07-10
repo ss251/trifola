@@ -160,7 +160,7 @@ public final class SessionNameResolver: @unchecked Sendable {
     private var renameCache: [String: String] = [:]
     private var renameMtime: Date? = nil
 
-    public init(claudeDir: String = (NSHomeDirectory() as NSString).appendingPathComponent(".claude")) {
+    public init(claudeDir: String = ClaudePaths.process.root.path) {
         self.claudeDir = claudeDir
     }
 

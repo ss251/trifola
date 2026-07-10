@@ -440,7 +440,7 @@ struct TerminalLaunchFlowTests {
         )
 
         let outcome = await flow.open(
-            sessionID: "remote", cwd: "/repo", machineID: "devcube"
+            sessionID: "remote", cwd: "/repo", machineID: "buildbox"
         )
 
         #expect(outcome == .notLive)

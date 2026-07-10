@@ -54,6 +54,7 @@ struct OverviewHeroComposition: View {
 /// context-weight offenders and the routing audit — one glance, whole story.
 struct OverviewScreen: View {
     @EnvironmentObject var services: AppServices
+    @State private var refreshRequested = false
 
     private var store: SessionStore { services.sessions }
 
@@ -91,16 +92,32 @@ struct OverviewScreen: View {
         !services.hasLocalClaudeCorpus
     }
 
+    private var isRefreshing: Bool {
+        refreshRequested
+            || (store.scanPresentation == .liveRefreshing
+                && store.scanProgress.isInProgress)
+    }
+
     var body: some View {
         ScreenScaffold(
             title: "Overview",
             subtitle: subtitle
         ) {
-            QuietTapButton(shortcut: KeyboardShortcut("r", modifiers: .command), action: {
+            QuietTapButton(action: {
+                refreshRequested = true
                 services.refreshAll()
             }) {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                HStack(spacing: Theme.rhythm) {
+                    RefreshActivityGlyph(working: isRefreshing)
+                    Text(isRefreshing ? "Refreshing…" : "Refresh")
+                }
             }
+            .disabled(isRefreshing)
+            .accessibilityLabel(isRefreshing ? "Refreshing data" : "Refresh data")
+            .accessibilityHint(isRefreshing
+                ? "A session scan is in progress"
+                : "Rescan sessions, skills, and audit evidence")
+            .help(isRefreshing ? "Refreshing data…" : "Refresh data · \(AppCommandMap.refresh.glyph)")
         } content: {
             let governor = store.burnGovernor(now: services.now)
             verdictLine(governor: governor)
@@ -137,6 +154,9 @@ struct OverviewScreen: View {
                 populatedContent(governor: governor)
                     .opacity(store.scanPresentation.isProvisional ? 0.62 : 1)
             }
+        }
+        .onChange(of: store.scanProgress.isInProgress) { _, inProgress in
+            if !inProgress { refreshRequested = false }
         }
     }
 
@@ -272,6 +292,27 @@ struct OverviewScreen: View {
     }
 }
 
+/// DQ-24: the refresh control remains in place while work runs. Motion-capable
+/// users get a deterministic rotation driven by time (no stateful repeat loop);
+/// Reduce Motion gets a static hourglass swap.
+private struct RefreshActivityGlyph: View {
+    let working: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if working && !reduceMotion {
+            TimelineView(AnimationTimelineSchedule(minimumInterval: 1 / 30)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 0.8) / 0.8
+                Image(systemName: "arrow.clockwise")
+                    .rotationEffect(.degrees(phase * 360))
+            }
+        } else {
+            Image(systemName: working ? "hourglass" : "arrow.clockwise")
+        }
+    }
+}
+
 // MARK: - Tier spend
 
 struct TierSpendSection: View {
@@ -298,7 +339,7 @@ struct TierSpendSection: View {
                             .foregroundStyle(Theme.ink)
                         Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tokens excluding cache reads")
                             .font(.footnote)
-                            .foregroundStyle(Theme.faint)
+                            .foregroundStyle(Theme.muted)
                             .liveNumericTransition(
                                 value: "\(st.sessions)|\(fmtTokens(st.tokens))")
                         Spacer()
@@ -412,7 +453,7 @@ struct LiveNowSection: View {
                                         .liveNumericTransition(value: fmtUSD(s.cost))
                                     Text("API-rate estimate")
                                         .font(.caption2)
-                                        .foregroundStyle(Theme.faint)
+                                        .foregroundStyle(Theme.muted)
                                 }
                             }
                             .padding(.horizontal, Theme.rhythm)
@@ -439,7 +480,7 @@ private struct ContextOffendersSection: View {
                 Spacer()
                 Text("tokens re-sent per message")
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             }
             // contextHeavy already excludes subagent transcripts and sorts by
             // weight; fall back to the heaviest real sessions when nothing
@@ -511,7 +552,7 @@ struct FleetMachinesSection: View {
                 Spacer()
                 Text("one pane over every machine, read-only over Tailscale")
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             }
             // Per-machine roll-up — each contributing machine's slice of the fleet.
             VStack(spacing: Theme.rhythm) {
@@ -529,7 +570,7 @@ struct FleetMachinesSection: View {
                         Spacer()
                         Text("\(r.sessionCount) sessions · \(fmtTokens(r.tokens)) tokens")
                             .font(.caption)
-                            .foregroundStyle(Theme.faint)
+                            .foregroundStyle(Theme.muted)
                         Text(fmtUSD(r.cost))
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(Theme.ink)

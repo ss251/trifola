@@ -39,7 +39,7 @@ public final class MCPIntrospectionServer {
     // MARK: identity + protocol
 
     public static let serverName = "trifola"
-    public static let serverVersion = "1.0.0"
+    public static let serverVersion = ReleaseIdentity.version
     /// Latest revision this server speaks; also the fallback offer when the
     /// client requests a version we don't know (per the MCP version handshake).
     public static let latestProtocolVersion = "2025-06-18"
@@ -53,35 +53,49 @@ public final class MCPIntrospectionServer {
     private let sessionsProvider: () -> [SessionSummary]
     private let quotaProvider: () -> MCPQuotaOutcome
     private let now: () -> Date
+    private let registeredSessionID: String?
 
     public init(sessions: @escaping () -> [SessionSummary],
                 quota: @escaping () -> MCPQuotaOutcome,
-                now: @escaping () -> Date = { Date() }) {
+                now: @escaping () -> Date = { Date() },
+                registeredSessionID: String? = ProcessInfo.processInfo.environment["CLAUDE_SESSION_ID"]) {
         self.sessionsProvider = sessions
         self.quotaProvider = quota
         self.now = now
+        let trimmed = registeredSessionID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.registeredSessionID = trimmed?.isEmpty == false ? trimmed : nil
     }
 
     /// The live server the `--mcp` flag runs: corpus via the SAME cache-backed
     /// scan the GUI warm-starts from (re-scanned at most every `rescanInterval`
     /// so a chatty agent doesn't stat thousands of files per tool call), quota
     /// via the read-only credential + one GET (`ClaudeQuotaFetcher`).
-    public static func live(home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                            rescanInterval: TimeInterval = 15) -> MCPIntrospectionServer {
-        let configRoot = ClaudeCredentialReader.configDirectory(home: home)
-        let dir = configRoot.appendingPathComponent("projects")
+    public static func live(
+        paths: ClaudePaths = .process,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        registeredSessionID: String? = nil,
+        rescanInterval: TimeInterval = 15
+    ) -> MCPIntrospectionServer {
+        let configRoot = paths.root
+        let dir = paths.projects
+        let injectedID = registeredSessionID
+            ?? environment["CLAUDE_SESSION_ID"]
+            ?? environment["TRIFOLA_SESSION_ID"]
         var cache: [SessionSummary] = []
         var scannedAt = Date.distantPast
         return MCPIntrospectionServer(
             sessions: {
                 let t = Date()
                 if cache.isEmpty || t.timeIntervalSince(scannedAt) >= rescanInterval {
-                    cache = SessionStore.cachedScan(dir)
+                    cache = SessionStore.cachedScan(
+                        dir, cacheURL: paths.sessionIndexCacheURL)
                     scannedAt = t
                 }
                 return cache
             },
-            quota: { blockingQuotaFetch(configDirectory: configRoot) })
+            quota: { blockingQuotaFetch(configDirectory: configRoot) },
+            registeredSessionID: injectedID)
     }
 
     /// How long the MCP path waits for the credential-file-or-keychain read.
@@ -190,7 +204,7 @@ public final class MCPIntrospectionServer {
                 + "session_brief, context_tax (next-message warm/cold price + fresh-session advisor), reroutes "
                 + "(silent model flips), cost_today (day spend by model + orchestrator-hog check), quota_windows "
                 + "(real 5h/weekly plan limits). All costs are API-equivalent estimates at catalog rates, not your "
-                + "plan bill. This server never mutates ~/.claude or external systems; it maintains an app-local "
+                + "plan bill. This server never mutates the Claude config root or external systems; it maintains an app-local "
                 + "session index.",
         ]
     }
@@ -208,7 +222,11 @@ public final class MCPIntrospectionServer {
             let sessions = sessionsProvider()
             switch resolveSession(args, sessions: sessions) {
             case .error(let message): return Self.toolErrorReply(id: id, message: message)
-            case .found(let s): return Self.toolReply(id: id, json: build(s, sessions))
+            case .found(let s, let source):
+                var payload = build(s, sessions)
+                payload["resolved_session_id"] = s.id
+                payload["session_resolution"] = source.rawValue
+                return Self.toolReply(id: id, json: payload)
             }
         }
 
@@ -226,42 +244,66 @@ public final class MCPIntrospectionServer {
     // MARK: session resolution (the "introspect YOURSELF" seam)
 
     enum SessionResolution {
-        case found(SessionSummary)
+        case found(SessionSummary, SessionResolutionSource)
         case error(String)
     }
 
+    enum SessionResolutionSource: String {
+        case argument
+        case registered
+        case newestOptIn = "newest_opt_in"
+    }
+
     /// `session_id` accepts the transcript UUID, a unique prefix, or a
-    /// transcript path (the basename is the id). Omitted → the most recently
-    /// active MAIN session on this machine — for a live agent that is almost
-    /// always itself, but passing your own id (documented in every tool
-    /// description) is the precise form.
+    /// transcript path (the basename is the id). Omission is safe only when the
+    /// server has an explicitly registered session id. Falling back to the newest
+    /// main session requires `use_newest: true` and is labeled in the response.
     func resolveSession(_ args: [String: Any], sessions: [SessionSummary]) -> SessionResolution {
         let raw = (args["session_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !raw.isEmpty else {
+            if let registeredSessionID {
+                return resolveSessionID(registeredSessionID, sessions: sessions,
+                                        source: .registered)
+            }
+            guard args["use_newest"] as? Bool == true else {
+                return .error("session_id is required unless the server was registered with a session identity; pass use_newest=true only when newest-session fallback is intentional")
+            }
             let candidate = sessions.filter { !$0.isSubagent }
                 .max { a, b in
                     let (la, lb) = (a.lastActivity ?? .distantPast, b.lastActivity ?? .distantPast)
                     return la != lb ? la < lb : a.id > b.id   // deterministic tiebreak
                 }
             guard let s = candidate else {
-                return .error("no sessions found on this machine (~/.claude/projects is empty or unreadable)")
+                return .error("no main sessions found in the configured Claude projects directory")
             }
-            return .found(s)
+            return .found(s, .newestOptIn)
         }
+        return resolveSessionID(raw, sessions: sessions, source: .argument)
+    }
+
+    private func resolveSessionID(
+        _ raw: String,
+        sessions: [SessionSummary],
+        source: SessionResolutionSource
+    ) -> SessionResolution {
         // A path form (contains "/") resolves by its basename minus ".jsonl".
         var key = raw
         if key.contains("/") { key = (key as NSString).lastPathComponent }
         if key.hasSuffix(".jsonl") { key = String(key.dropLast(".jsonl".count)) }
 
-        if let exact = sessions.first(where: { $0.id == key }) { return .found(exact) }
+        if let exact = sessions.first(where: { $0.id == key }) {
+            return .found(exact, source)
+        }
         let prefixed = sessions.filter { $0.id.hasPrefix(key) }.sorted { $0.id < $1.id }
-        if prefixed.count == 1 { return .found(prefixed[0]) }
+        if prefixed.count == 1 { return .found(prefixed[0], source) }
         if prefixed.count > 1 {
             let shown = prefixed.prefix(5).map(\.shortID).joined(separator: ", ")
             return .error("ambiguous session_id prefix \"\(key)\" — \(prefixed.count) matches (\(shown)\(prefixed.count > 5 ? ", …" : "")); pass more characters")
         }
-        if let byPath = sessions.first(where: { $0.filePath == raw }) { return .found(byPath) }
-        return .error("session \"\(raw)\" not found — pass the transcript UUID (the filename of ~/.claude/projects/<project-dir>/<uuid>.jsonl), a unique prefix of it, or omit session_id for the most recently active main session")
+        if let byPath = sessions.first(where: { $0.filePath == raw }) {
+            return .found(byPath, source)
+        }
+        return .error("session \"\(raw)\" not found — pass the transcript UUID, a unique prefix, or its transcript path")
     }
 
     // MARK: - tool payloads (serialization ONLY — the builders are the app's own)
@@ -463,14 +505,20 @@ public final class MCPIntrospectionServer {
     static let sessionIDDescription =
         "Session id — the transcript UUID. Also accepts a unique id prefix or a transcript path. "
             + "TO INTROSPECT YOURSELF from a live Claude Code session: your session id is the UUID filename of your own transcript "
-            + "(~/.claude/projects/<project-dir>/<uuid>.jsonl); hooks receive it as `session_id`, and some harnesses export it as $CLAUDE_SESSION_ID. "
-            + "Omit to target the most recently active main (non-subagent) session on this machine — for a live caller that is usually you."
+            + "under the configured projects directory; hooks receive it as `session_id`, and some harnesses export it as $CLAUDE_SESSION_ID. "
+            + "Required unless the server registered an explicit session identity. Newest-session fallback is available only with use_newest=true and is disclosed in the result."
 
     public static func toolDescriptors() -> [[String: Any]] {
         func sessionSchema() -> [String: Any] {
             [
                 "type": "object",
-                "properties": ["session_id": ["type": "string", "description": sessionIDDescription]],
+                "properties": [
+                    "session_id": ["type": "string", "description": sessionIDDescription],
+                    "use_newest": [
+                        "type": "boolean",
+                        "description": "Opt in to the newest main session only when no explicit or registered session id is available. The response identifies the resolved session.",
+                    ],
+                ],
                 "required": [String](),
             ]
         }

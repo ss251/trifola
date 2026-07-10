@@ -20,7 +20,7 @@ extension DeadlineState {
         case .onTrack: return Theme.green
         case .atRisk:  return Theme.amber
         case .stalled: return Theme.red
-        case .shipped: return Theme.faint
+        case .shipped: return Theme.muted
         // The worst state never wears the calmest color (UI_GRIND DLN-1/§2.6): a
         // full gray bar read as "track/disabled" everywhere else in the app. Red,
         // stated once — still a fact, not a nag (no banner, no pulse).
@@ -438,7 +438,7 @@ struct DeadlineContent: View {
             VStack(alignment: .leading, spacing: 4) {
                 Eyebrow("Evidence — deadlines sorted by time pressure (idle time ÷ time left)")
                 Text("Usage estimated at public API rates — not your bill")
-                    .font(.caption2).foregroundStyle(Theme.faint)
+                    .font(.caption2).foregroundStyle(Theme.muted)
                 columnsHeader
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(live) { card in
@@ -488,7 +488,7 @@ struct DeadlineContent: View {
     private var shippedRule: some View {
         HStack(spacing: 8) {
             Rectangle().fill(Theme.hairline).frame(height: 1).frame(maxWidth: .infinity)
-            Text("shipped · ember").font(.caption2).foregroundStyle(Theme.faint)
+            Text("shipped · ember").font(.caption2).foregroundStyle(Theme.muted)
         }
     }
 }
@@ -510,7 +510,7 @@ private struct DeadlineStrip: View {
                     .font(.caption).foregroundStyle(Theme.muted)
                 Spacer(minLength: 8)
                 Text("pressure score \(String(format: "%.2f", card.jeopardy))")
-                    .font(.caption).foregroundStyle(Theme.faint).monospacedDigit()
+                    .font(.caption).foregroundStyle(Theme.muted).monospacedDigit()
             }
             .padding(.horizontal, Theme.sectionGap).padding(.vertical, Theme.intraCell)
             .contentShape(Rectangle())
@@ -549,7 +549,7 @@ private struct DeadlineCardRow: View {
         return fmtCountdown(card.runway)
     }
     private var countdownColor: Color {
-        if card.state == .shipped { return Theme.faint }
+        if card.state == .shipped { return Theme.muted }
         if card.runway <= 24 * 3600 { return Theme.red }   // overdue (negative) or ≤24h
         if card.runway <= config.reddenWindow { return Theme.amber }
         return Theme.ink
@@ -602,7 +602,7 @@ private struct DeadlineCardRow: View {
                 .frame(width: Theme.subValueColWidth, alignment: .trailing)
 
             Text(card.sessionCount > 0 ? "\(card.sessionCount)" : "—")
-                .font(.caption).foregroundStyle(Theme.faint).monospacedDigit()
+                .font(.caption).foregroundStyle(Theme.muted).monospacedDigit()
                 .frame(width: Theme.microColWidth, alignment: .trailing)
 
             HStack(spacing: 4) {
@@ -619,7 +619,7 @@ private struct DeadlineCardRow: View {
             Text(fmtDeadlineStamp(card.deadline))
                 .font(.caption).foregroundStyle(Theme.muted)
             Text("· \(card.platform ?? card.kind.label)")
-                .font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
+                .font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
             if card.isLive {
                 Text("· live").font(.caption2).foregroundStyle(Theme.green)
             }
@@ -640,7 +640,7 @@ private struct DeadlineCardRow: View {
             if card.source.confirmed {
                 Text("confirmed")
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             } else {
                 DeadlineConfirmChip { onConfirm(card) }
             }
@@ -758,7 +758,7 @@ struct DeadlineConnectPanel: View {
                     // Headless render: a static field placeholder (SecureField can't rasterize).
                     HStack(spacing: 6) {
                         Image(systemName: "key.fill").font(.caption2.weight(.medium)).foregroundStyle(Theme.faint)
-                        Text("Paste your Linear personal API key").font(.caption).foregroundStyle(Theme.faint)
+                        Text("Paste your Linear personal API key").font(.caption).foregroundStyle(Theme.muted)
                         Spacer()
                     }
                     .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.rhythm).frame(maxWidth: 360)
@@ -771,7 +771,7 @@ struct DeadlineConnectPanel: View {
                     .disabled(onSaveKey == nil || keyDraft.wrappedValue.isEmpty)
             }
             Text("Stored in your macOS Keychain — never in a file, never logged.")
-                .font(.caption2).foregroundStyle(Theme.faint)
+                .font(.caption2).foregroundStyle(Theme.muted)
         }
     }
 
@@ -802,11 +802,11 @@ struct DeadlineConnectPanel: View {
                 }
                 Spacer()
                 if let lastSync {
-                    Text("last synced \(fmtAgo(lastSync))").font(.caption2).foregroundStyle(Theme.faint)
+                    Text("last synced \(fmtAgo(lastSync))").font(.caption2).foregroundStyle(Theme.muted)
                 }
             }
             Text("One-way local→Linear · confirmed deadlines only (unconfirmed parses stay local) · idempotent (never duplicates).")
-                .font(.caption2).foregroundStyle(Theme.faint)
+                .font(.caption2).foregroundStyle(Theme.muted)
         }
     }
 
@@ -839,7 +839,7 @@ struct DeadlineConnectPanel: View {
                 Text("synced →").font(.caption).foregroundStyle(Theme.muted)
                 linkText(row.name, url: row.url, font: .caption.weight(.medium))
                 if row.outcome == .created {
-                    Text("(new project)").font(.caption2).foregroundStyle(Theme.faint)
+                    Text("(new project)").font(.caption2).foregroundStyle(Theme.muted)
                 }
             }
         case .skipped:
@@ -885,7 +885,7 @@ struct DeadlineConnectPanel: View {
     private func rowTone(_ o: LinearSyncRow.Outcome) -> Color {
         switch o {
         case .created, .updated: return Theme.green
-        case .skipped: return Theme.faint
+        case .skipped: return Theme.muted
         case .canceled: return Theme.muted
         case .cancelDenied: return Theme.amber
         }

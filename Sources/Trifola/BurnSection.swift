@@ -33,7 +33,7 @@ struct BurnGovernorSection: View {
                 if showsDisclaimer {
                     Text("public API rates — not your bill")
                         .font(.caption2)
-                        .foregroundStyle(Theme.faint)
+                        .foregroundStyle(Theme.muted)
                 }
             }
 
@@ -71,7 +71,7 @@ struct BurnGovernorSection: View {
                 .foregroundStyle(Theme.ink)
                 .liveNumericTransition(value: fmtUSD(today.cost))
             Text("API-rate estimate")
-                .font(.caption2).foregroundStyle(Theme.faint)
+                .font(.caption2).foregroundStyle(Theme.muted)
             if today.cost > 0 {
                 Text("·").font(.caption).foregroundStyle(Theme.faint)
                 HStack(spacing: 4) {
@@ -86,14 +86,14 @@ struct BurnGovernorSection: View {
                 // The claim and its denominator in ONE sentence (UI_GRIND BRN-2):
                 // "at this pace ≈$2.8k/mo · last 7d, $94/day".
                 Text("at this pace")
-                    .font(.caption).foregroundStyle(Theme.faint)
+                    .font(.caption).foregroundStyle(Theme.muted)
                 Text("≈\(fmtUSD(governor.monthProjection))/mo")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(Theme.ink)
                     .liveNumericTransition(value: fmtUSD(governor.monthProjection))
                 if governor.runRateDays > 0 {
                     Text("· last \(governor.runRateDays)d, \(fmtUSD(governor.dailyRunRate))/day")
-                        .font(.caption).foregroundStyle(Theme.faint)
+                        .font(.caption).foregroundStyle(Theme.muted)
                         .liveNumericTransition(
                             value: "\(governor.runRateDays)|\(fmtUSD(governor.dailyRunRate))")
                 }

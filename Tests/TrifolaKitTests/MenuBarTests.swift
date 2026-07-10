@@ -157,9 +157,7 @@ struct MenuBarJudgmentTests {
                                filePath: "/tmp/p/s.jsonl")
         let board = AttentionBoard(items: [AttentionItem(session: s, state: .blocked, age: 10)],
                                    counts: [.blocked: 1])
-        let hog = OrchestratorHogAlert(day: "2026-07-07", sessionID: "x", project: "p",
-                                       shortID: "x", sessionCost: 30, dayTotal: 35)
-        #expect(MenuBarReducer.titleText(board: board, hogFiring: hog != nil, todayCost: 35) == "1")
+        #expect(MenuBarReducer.titleText(board: board, hogFiring: true, todayCost: 35) == "1")
     }
 
     @Test func quotaLinePicksTheHottestWindowStrictlyOverThreshold() {
@@ -211,6 +209,17 @@ struct MenuBarPreferencesTests {
         #expect(store.save(MenuBarPreferences(enabled: true)))
         #expect(store.load().enabled == true)
         try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
+
+    @Test func saveReportsFailureInsteadOfPretendingPresencePersisted() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mb-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let blocker = dir.appendingPathComponent("not-a-directory")
+        try Data("x".utf8).write(to: blocker)
+        let store = MenuBarPreferencesStore(url: blocker.appendingPathComponent("menubar.json"))
+        #expect(!store.save(MenuBarPreferences(enabled: false)))
     }
 }
 

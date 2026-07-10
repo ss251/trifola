@@ -43,8 +43,7 @@ public protocol TerminalSessionRegistryProviding: Sendable {
 public struct FileTerminalSessionRegistryProvider: TerminalSessionRegistryProviding {
     public let directory: URL
 
-    public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/sessions", isDirectory: true)) {
+    public init(directory: URL = ClaudePaths.process.sessions) {
         self.directory = directory
     }
 

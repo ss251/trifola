@@ -14,6 +14,148 @@ struct RenderCaption: View {
     }
 }
 
+// MARK: - Release brand assets (`--render-icon`)
+
+/// Headless release-artwork exporter. The iconset calls AppBrand.drawAppIcon
+/// directly at every required pixel size; the banner calls the same Door Light
+/// mark geometry. There is no render-only recreation of the tile, ring or core.
+enum BrandAssetRender {
+    enum RenderError: Error, CustomStringConvertible {
+        case bitmap(width: Int, height: Int)
+        case pngEncoding
+
+        var description: String {
+            switch self {
+            case .bitmap(let width, let height):
+                return "could not allocate \(width)×\(height) bitmap"
+            case .pngEncoding:
+                return "could not encode PNG"
+            }
+        }
+    }
+
+    /// Exports the complete macOS iconset plus the repository banner. The two
+    /// destinations are explicit so make-app.sh and focused tests can keep all
+    /// filesystem mutation deterministic.
+    @MainActor
+    static func run(iconsetDirectory: URL, bannerURL: URL) throws -> [URL] {
+        let fm = FileManager.default
+        try fm.createDirectory(at: iconsetDirectory,
+                               withIntermediateDirectories: true)
+
+        var outputs: [URL] = []
+        for entry in BrandAssetManifest.iconset {
+            let png = try renderPNG(width: entry.pixels, height: entry.pixels) { bounds in
+                AppBrand.drawAppIcon(in: bounds)
+            }
+            let output = iconsetDirectory.appendingPathComponent(entry.filename)
+            try png.write(to: output, options: .atomic)
+            outputs.append(output)
+        }
+
+        try fm.createDirectory(at: bannerURL.deletingLastPathComponent(),
+                               withIntermediateDirectories: true)
+        let banner = try renderPNG(width: BrandAssetManifest.bannerWidth,
+                                   height: BrandAssetManifest.bannerHeight,
+                                   draw: drawBanner)
+        try banner.write(to: bannerURL, options: .atomic)
+        outputs.append(bannerURL)
+        return outputs
+    }
+
+    private static func renderPNG(
+        width: Int,
+        height: Int,
+        draw: (NSRect) -> Void
+    ) throws -> Data {
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            throw RenderError.bitmap(width: width, height: height)
+        }
+        bitmap.size = NSSize(width: width, height: height)
+        guard let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+            throw RenderError.bitmap(width: width, height: height)
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = NSImageInterpolation.high
+        let bounds = NSRect(x: 0, y: 0, width: width, height: height)
+        NSColor.clear.setFill()
+        bounds.fill()
+        draw(bounds)
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let png = bitmap.representation(
+            using: NSBitmapImageRep.FileType.png, properties: [:]) else {
+            throw RenderError.pngEncoding
+        }
+        return png
+    }
+
+    /// Dark, warm and deliberately sparse: one Door Light, one wordmark and the
+    /// read-only promise. The green core is the only saturated color.
+    private static func drawBanner(in bounds: NSRect) {
+        let warmGround = NSGradient(colors: [
+            NSColor(srgbRed: 0.12, green: 0.11, blue: 0.09, alpha: 1),
+            NSColor(srgbRed: 0.065, green: 0.067, blue: 0.062, alpha: 1),
+        ])
+        warmGround?.draw(in: bounds, angle: 0)
+
+        let glow = NSGradient(starting: NSColor(srgbRed: 0.39, green: 0.55, blue: 0.42,
+                                                 alpha: 0.12),
+                              ending: NSColor.clear)
+        glow?.draw(in: bounds.insetBy(dx: 70, dy: 24),
+                   relativeCenterPosition: NSPoint(x: -0.58, y: 0))
+
+        let ink = NSColor(srgbRed: 0.93, green: 0.88, blue: 0.78, alpha: 0.94)
+        let mutedInk = ink.withAlphaComponent(0.52)
+        let core = NSColor(srgbRed: 0.34, green: 0.72, blue: 0.48, alpha: 1)
+        let markRect = NSRect(x: 214, y: 112, width: 136, height: 136)
+
+        // AppBrand draws the canonical ring. Its coreRect helper places the one
+        // state-colored element without copying the core-ratio arithmetic here.
+        AppBrand.drawMark(in: markRect, state: .quiet, color: ink,
+                          displayScale: 2, lineWidth: 4)
+        core.setFill()
+        NSBezierPath(ovalIn: AppBrand.Geometry.coreRect(in: markRect)).fill()
+
+        let wordmark: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 78, weight: .semibold),
+            .foregroundColor: ink,
+            .kern: -1.4,
+        ]
+        NSAttributedString(string: "Trifola", attributes: wordmark)
+            .draw(at: NSPoint(x: 404, y: 157))
+
+        let subtitle: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 22, weight: .medium),
+            .foregroundColor: mutedInk,
+            .kern: 0.6,
+        ]
+        NSAttributedString(string: "local · read-only", attributes: subtitle)
+            .draw(at: NSPoint(x: 409, y: 116))
+
+        ink.withAlphaComponent(0.10).setStroke()
+        let hairline = NSBezierPath()
+        hairline.move(to: NSPoint(x: 84, y: 42))
+        hairline.line(to: NSPoint(x: bounds.maxX - 84, y: 42))
+        hairline.lineWidth = 1
+        hairline.stroke()
+    }
+}
+
 // Headless rasterization of the Attention Strip for visual verification. The
 // snapshot harness needs a live window/Space/Screen-Recording; this path needs
 // none of that — it renders the real SwiftUI component with ImageRenderer, and
@@ -1326,7 +1468,7 @@ enum PaletteRender {
 
 // MARK: - Identity render (`--render-identity`)
 // The signature made visible (POLISH II.A): the SIDEBAR LOCKUP (the door light
-// leading the wordmark, its ring tinted by the fleet's worst live state) at every
+// leading the wordmark, its core carrying the fleet's worst live state) at every
 // state, the MENU-BAR template glyph's three honest states, and the dock tile — so
 // the door light can be Read + judged as the app's identity without a window/Space.
 
@@ -1335,16 +1477,21 @@ enum IdentityRender {
     private struct Lockup: View {
         let caption: String
         let state: DoorLightState
-        let ring: Color
         var body: some View {
             VStack(alignment: .leading, spacing: 6) {
                 RenderCaption(caption)
-                HStack(spacing: 9) {
-                    SeatMark(state: state, fill: Theme.ink, ring: ring, size: 10,
-                             coreUsesState: false)
+                HStack(spacing: Theme.intraCell) {
+                    SeatMark(state: state, fill: Theme.ink,
+                             ring: Theme.ink.opacity(0.35), size: 23,
+                             coreUsesState: true,
+                             stateEffectsUseColor: false)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Trifola").font(.headline).foregroundStyle(Theme.ink)
-                        Text("local · read-only").font(.caption).foregroundStyle(Theme.muted)
+                        Text("Trifola")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Theme.ink)
+                        Text("local · read-only")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.muted)
                     }
                     Spacer(minLength: 8)
                 }
@@ -1393,14 +1540,14 @@ enum IdentityRender {
         let dock = AppBrand.dockIcon()
 
         let content = VStack(alignment: .leading, spacing: 20) {
-            RenderCaption("The Door Light — one hand-drawn ring-and-core atom: 10pt masthead, 8pt entity rows, template menu glyph, Dock badge and runtime app icon.")
+            RenderCaption("The Door Light — one ring-and-core atom: 23pt masthead, 8pt entity rows, template menu glyph, packaged app icon and Dock badge.")
 
-            SectionLabel("Sidebar lockup — the mark's ring takes the fleet's worst live state")
+            SectionLabel("Sidebar lockup — the mark's core takes the fleet's worst live state")
             HStack(alignment: .top, spacing: 16) {
-                Lockup(caption: "quiet", state: .idle, ring: Theme.ink.opacity(0.35))
-                Lockup(caption: "running", state: .running, ring: Theme.green)
-                Lockup(caption: "waiting on you", state: .waiting, ring: Theme.amber)
-                Lockup(caption: "blocked", state: .blocked, ring: Theme.red)
+                Lockup(caption: "quiet", state: .idle)
+                Lockup(caption: "running", state: .running)
+                Lockup(caption: "waiting on you", state: .waiting)
+                Lockup(caption: "blocked", state: .blocked)
             }
             Divider()
 

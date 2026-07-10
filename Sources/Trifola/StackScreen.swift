@@ -160,7 +160,7 @@ struct StackScreen: View {
                 if let last = skillsStore.lastScan {
                     Text("scanned \(fmtAgo(last))")
                         .font(.caption2)
-                        .foregroundStyle(Theme.faint)
+                        .foregroundStyle(Theme.muted)
                 }
                 QuietTapButton(action: {
                     Task { await skillsStore.refreshNow() }
@@ -195,7 +195,7 @@ struct StackScreen: View {
                     if !skillQuery.isEmpty {
                         Text("\(filteredSkills.count) match\(filteredSkills.count == 1 ? "" : "es")")
                             .font(.caption2)
-                            .foregroundStyle(Theme.faint)
+                            .foregroundStyle(Theme.muted)
                     }
                 }
                 .padding(.horizontal, Theme.intraCell)
@@ -306,7 +306,7 @@ struct SkillDetail: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(Theme.muted)
                 if !skill.hasManifest {
-                    Text("no manifest").font(.caption2).foregroundStyle(Theme.faint)
+                    Text("no manifest").font(.caption2).foregroundStyle(Theme.muted)
                 }
             }
 
@@ -352,7 +352,7 @@ struct SkillDetail: View {
         HStack(spacing: 5) {
             Text(label)
                 .font(.caption2)
-                .foregroundStyle(Theme.faint)
+                .foregroundStyle(Theme.muted)
             Text(value)
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
@@ -489,7 +489,7 @@ private struct FlowLayout: Layout {
             }
         }
         .font(.caption)
-        .foregroundStyle(Theme.faint)
+        .foregroundStyle(Theme.muted)
     }
 }
 
@@ -533,7 +533,7 @@ struct ProbeCard: View {
 
             Text(result?.detail ?? "waiting for first sweep…")
                 .font(.footnote)
-                .foregroundStyle(result == nil ? Theme.faint : Theme.muted)
+                .foregroundStyle(Theme.muted)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -543,7 +543,7 @@ struct ProbeCard: View {
                         HStack(spacing: 8) {
                             Text(metric.label)
                                 .font(.caption2)
-                                .foregroundStyle(Theme.faint)
+                                .foregroundStyle(Theme.muted)
                             // State color reaches the failing token (UI_GRIND
                             // CFG-1/§2.6): the row that bit wears the amber + a
                             // small glyph — you see WHICH row from across the
@@ -570,7 +570,7 @@ struct ProbeCard: View {
                 // exists to dispel.
                 Text("answered in \(result.latencyMs < 1 ? "<1" : "\(result.latencyMs)") ms")
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(Theme.muted)
             }
         }
         .padding(Theme.cardPadding)
@@ -668,7 +668,7 @@ struct TriggerCollisionsPanel: View {
                     }
                 }
                 if collisions.count > 6 {
-                    Text("+\(collisions.count - 6) more collisions").font(.caption2).foregroundStyle(Theme.faint)
+                    Text("+\(collisions.count - 6) more collisions").font(.caption2).foregroundStyle(Theme.muted)
                 }
             }
         }
@@ -690,14 +690,14 @@ struct SkillLaneView: View {
                 Text(lane.lane.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
                 Text("\(lane.count)").font(.caption).foregroundStyle(Theme.muted)
                 Spacer()
-                Text(lane.lane.subtitle).font(.caption2).foregroundStyle(Theme.faint)
+                Text(lane.lane.subtitle).font(.caption2).foregroundStyle(Theme.muted)
             }
             ForEach(lane.namespaces) { ns in
                 if ns.count > 1 || ns.key == "gstack" || !ns.key.isEmpty {
                     HStack(spacing: 5) {
                         Image(systemName: "chevron.right").font(.caption2.weight(.medium)).foregroundStyle(Theme.faint)
                         Text(ns.displayName).font(.caption.weight(.medium)).foregroundStyle(Theme.muted)
-                        Text("\(ns.count)").font(.caption2).foregroundStyle(Theme.faint)
+                        Text("\(ns.count)").font(.caption2).foregroundStyle(Theme.muted)
                     }
                     .padding(.leading, Theme.micro).padding(.top, Theme.rhythm / 2)
                 }
@@ -765,6 +765,8 @@ struct HierarchySkillRow: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
                 .opacity(hovering || isSelected ? 1 : 0)
+                .accessibilityLabel("Launch \(skill.name)")
+                .accessibilityHint("Seed the Session Builder with /\(skill.qualifiedID)")
                 .help("Seed the Session Builder with /\(skill.qualifiedID)")
         }
         .padding(.horizontal, Theme.intraCell).padding(.vertical, Theme.rowVerticalInset)
@@ -781,7 +783,7 @@ struct HierarchySkillRow: View {
 struct SkillUsageLegend: View {
     var body: some View {
         Text("×N = explicit Skill-tool calls counted from transcripts · unused = in the catalog, never explicitly invoked · — = never seen in a transcript")
-            .font(.caption2).foregroundStyle(Theme.faint)
+            .font(.caption2).foregroundStyle(Theme.muted)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

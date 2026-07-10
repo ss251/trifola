@@ -163,6 +163,84 @@ public enum ClaudeConfigLocationSource: Sendable, Equatable {
     case environmentOverride
 }
 
+/// The single process-wide resolution of Claude Code's read-only filesystem
+/// surface. Callers may inject a value in tests, but production defaults all
+/// converge on `process` so `CLAUDE_CONFIG_DIR` cannot be honored by one feature
+/// and ignored by another.
+public struct ClaudePaths: Sendable, Equatable {
+    public let root: URL
+    public let source: ClaudeConfigLocationSource
+    public let sessionIndexCacheURL: URL
+
+    public var projects: URL { root.appendingPathComponent("projects", isDirectory: true) }
+    public var sessions: URL { root.appendingPathComponent("sessions", isDirectory: true) }
+    public var historyJSONL: URL { root.appendingPathComponent("history.jsonl") }
+    public var settingsJSON: URL { root.appendingPathComponent("settings.json") }
+    public var globalClaudeMD: URL { root.appendingPathComponent("CLAUDE.md") }
+    public var agents: URL { root.appendingPathComponent("agents", isDirectory: true) }
+    public var skills: URL { root.appendingPathComponent("skills", isDirectory: true) }
+    public var pluginCache: URL {
+        root.appendingPathComponent("plugins/cache", isDirectory: true)
+    }
+    public var installedPluginsJSON: URL {
+        root.appendingPathComponent("plugins/installed_plugins.json")
+    }
+    /// Claude Code keeps the user-level MCP registry beside the default config
+    /// directory. Deriving it from the injected root keeps fixture/process
+    /// overrides self-contained instead of silently reaching back into `$HOME`.
+    public var mcpConfigJSON: URL {
+        root.deletingLastPathComponent().appendingPathComponent(".claude.json")
+    }
+
+    public init(root: URL, source: ClaudeConfigLocationSource,
+                sessionIndexCacheURL: URL? = nil) {
+        self.root = root.standardizedFileURL
+        self.source = source
+        self.sessionIndexCacheURL = sessionIndexCacheURL
+            ?? Self.cacheURL(for: self.root, source: source)
+    }
+
+    public static let process = resolve()
+
+    public static func resolve(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> ClaudePaths {
+        let rawOverride = environment["CLAUDE_CONFIG_DIR"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let source: ClaudeConfigLocationSource = rawOverride?.isEmpty == false
+            ? .environmentOverride : .defaultDirectory
+        let root = ClaudeCredentialReader.configDirectory(
+            home: home, environment: environment)
+        let explicitCache = environment["TRIFOLA_SESSION_INDEX_CACHE"]
+            .flatMap { value -> URL? in
+                let path = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return path.isEmpty ? nil : URL(fileURLWithPath: path)
+            }
+        return ClaudePaths(root: root, source: source,
+                           sessionIndexCacheURL: explicitCache)
+    }
+
+    private static func cacheURL(
+        for root: URL,
+        source: ClaudeConfigLocationSource
+    ) -> URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Trifola", isDirectory: true)
+        guard source == .environmentOverride else {
+            return base.appendingPathComponent("session-index.json")
+        }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in root.standardizedFileURL.path.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return base.appendingPathComponent(
+            "session-index-\(String(hash, radix: 16)).json")
+    }
+}
+
 /// The resolved, read-only Claude Code config location shown in General settings.
 public struct ClaudeConfigLocation: Sendable, Equatable {
     public let url: URL
@@ -186,11 +264,10 @@ public struct ClaudeConfigLocation: Sendable, Equatable {
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> ClaudeConfigLocation {
-        let override = environment["CLAUDE_CONFIG_DIR"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let paths = ClaudePaths.resolve(home: home, environment: environment)
         return ClaudeConfigLocation(
-            url: ClaudeCredentialReader.configDirectory(home: home, environment: environment),
-            source: override?.isEmpty == false ? .environmentOverride : .defaultDirectory
+            url: paths.root,
+            source: paths.source
         )
     }
 }

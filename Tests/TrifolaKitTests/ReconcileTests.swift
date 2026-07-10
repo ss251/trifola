@@ -112,6 +112,78 @@ struct CodexBarParserTests {
 @Suite("CodexBar reconcile — Δ and the green rule")
 struct ReconcileDeltaTests {
 
+    @Test func multiDayMultiModelFixtureIsAStrictGate() throws {
+        let opus = SessionUsage(inputTokens: 1_000_000, outputTokens: 10_000)
+        let sonnet = SessionUsage(inputTokens: 2_000_000, cacheReadTokens: 500_000)
+        let session = SessionSummary(
+            id: "gate", project: "p", cwd: "/tmp", model: "claude-opus-4-8",
+            lastActivity: nil, messageCount: 2, usage: opus + sonnet,
+            contextWeight: 0,
+            usageByModelDay: [
+                "2026-07-05": ["claude-opus-4-8": opus],
+                "2026-07-06": ["claude-sonnet-5": sonnet],
+            ])
+        let opusNanos = Int((opus.cost(rate: PricingCatalog.current.resolvedRate(
+            model: "claude-opus-4-8", onDay: "2026-07-05")) * 1_000_000_000).rounded())
+        let sonnetNanos = Int((sonnet.cost(rate: PricingCatalog.current.resolvedRate(
+            model: "claude-sonnet-5", onDay: "2026-07-06")) * 1_000_000_000).rounded())
+        let json = """
+        {"version":1,"lastScanUnixMs":1783468800000,"scanSinceKey":"2026-07-01","scanUntilKey":"2026-07-07","days":{
+          "2026-07-05":{"claude-opus-4-8":[1000000,0,0,10000,\(opusNanos),1,1,0]},
+          "2026-07-06":{"claude-sonnet-5":[2000000,500000,0,0,\(sonnetNanos),1,1,0]}
+        }}
+        """
+        let cache = try #require(CodexBarReconcile.parse(Data(json.utf8)))
+        let rows = CodexBarReconcile.compare(
+            sessions: [session], cache: cache,
+            days: ["2026-07-05", "2026-07-06"])
+        let gate = ReconcileGate.evaluate(rows, cache: cache)
+        #expect(gate.passed)
+        #expect(gate.checkedDays == 2)
+        #expect(gate.mismatchedDays.isEmpty)
+
+        // Same tokens, deliberately wrong dollar slot: the gate turns red and
+        // the row explains that this is pricing semantics, not token dedup.
+        let wrong = json.replacingOccurrences(
+            of: "\(sonnetNanos),1,1,0",
+            with: "\(sonnetNanos + 1_000_000_000),1,1,0")
+        let wrongCache = try #require(CodexBarReconcile.parse(Data(wrong.utf8)))
+        let wrongRows = CodexBarReconcile.compare(
+            sessions: [session], cache: wrongCache,
+            days: ["2026-07-05", "2026-07-06"])
+        let failed = ReconcileGate.evaluate(wrongRows, cache: wrongCache)
+        #expect(!failed.passed)
+        #expect(failed.mismatchedDays == ["2026-07-06"])
+        #expect(failed.rows.first?.status == .knownDifference)
+        #expect(failed.rows.first?.explanation.contains("pricing-catalog/rate") == true)
+    }
+
+    @Test func rowExplanationsDistinguishUnpricedAndTokenDifferences() {
+        let ours = SessionUsage(inputTokens: 100)
+        let unpriced = CodexBarModelDay(
+            input: 100, cacheRead: 0, cacheCreate: 0, output: 0,
+            costNanos: 0, rowCount: 2, costPricedCount: 1, cacheCreate1h: 0)
+        let row = ReconcileDay(
+            day: "2026-07-05", ours: 1, theirs: 0,
+            ourModels: ["m": 1], theirModels: ["m": 0],
+            ourUsage: ["m": ours], theirRows: ["m": unpriced])
+        let explained = row.modelRows().first
+        #expect(explained?.status == .knownDifference)
+        #expect(explained?.explanation.contains("priced 1 of 2") == true)
+
+        let tokenMismatch = CodexBarModelDay(
+            input: 80, cacheRead: 0, cacheCreate: 0, output: 0,
+            costNanos: 0, rowCount: 1, costPricedCount: 1, cacheCreate1h: 0)
+        let unexplained = ReconcileDay(
+            day: "2026-07-05", ours: 1, theirs: 0,
+            ourModels: ["m": 1], theirModels: ["m": 0],
+            ourUsage: ["m": ours], theirRows: ["m": tokenMismatch])
+            .modelRows().first
+        #expect(unexplained?.status == .unexplained)
+        #expect(unexplained?.explanation.contains("input ours 100 vs CodexBar 80") == true)
+        #expect(unexplained?.explanation.contains("copied-history dedup") == true)
+    }
+
     /// BOTH arms of the tolerance: the $0.01 absolute floor (tiny days) and
     /// the 0.5% band (big days) — plus the red cases just outside each.
     @Test func greenRuleBothArms() {

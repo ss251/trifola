@@ -1,4 +1,113 @@
 import Foundation
+import TrifolaVersion
+
+// MARK: - Release + headless command contracts
+
+/// Public release identity compiled from the repository's root VERSION file by
+/// Package.swift. The app bundle receives the same file value in make-app.sh;
+/// About reads that bundle metadata and MCP reports this compiled value.
+public enum ReleaseIdentity {
+    public static let version = String(cString: TrifolaReleaseVersion())
+
+    /// Small CI seam for asserting that source, bundle and MCP identities agree.
+    public static func versionsAgree(
+        versionFileContents: String,
+        bundleShortVersion: String,
+        bundleBuildVersion: String,
+        mcpVersion: String
+    ) -> Bool {
+        let source = versionFileContents.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !source.isEmpty
+            && source == bundleShortVersion
+            && source == bundleBuildVersion
+            && source == mcpVersion
+    }
+}
+
+/// The pure command-line contract used by main.swift and unit tests. Keeping the
+/// recognized flag set here prevents another silent typo from opening the GUI.
+public enum TrifolaCommandLine {
+    public static let selfCheckFlags: Set<String> = ["--selfcheck", "--self-check"]
+
+    public static let recognizedLongFlags: Set<String> = selfCheckFlags.union([
+        "--help",
+        "--mcp",
+        "--render-attention",
+        "--render-audit",
+        "--render-burn",
+        "--render-config",
+        "--render-contexttax",
+        "--render-crossmachine",
+        "--render-deadlines",
+        "--render-fleet",
+        "--render-icon",
+        "--render-identity",
+        "--render-launch",
+        "--render-layout",
+        "--render-ledger",
+        "--render-palette",
+        "--render-provenance",
+        "--render-quota",
+        "--render-reroutes",
+        "--render-skills",
+        "--spend-by-model",
+    ])
+
+    public static func unknownHeadlessFlags(in arguments: [String]) -> [String] {
+        arguments.filter { $0.hasPrefix("--") && !recognizedLongFlags.contains($0) }
+    }
+
+    public static func isSelfCheck(_ arguments: [String]) -> Bool {
+        !selfCheckFlags.isDisjoint(with: arguments)
+    }
+
+    public static let usage = """
+    Usage: Trifola [option]
+
+      --selfcheck, --self-check     Run the full headless diagnostic
+      --mcp                         Run the read-only stdio MCP server
+      --spend-by-model [day ...]    Print per-model spend for local yyyy-MM-dd days
+      --render-icon <iconset-dir>   Export the macOS iconset and docs/assets/banner.png
+      --render-<surface> <base>     Export a visual QA surface
+                                    layout, attention, fleet, audit, ledger, launch,
+                                    skills, crossmachine, palette, identity, burn,
+                                    config, deadlines, provenance, contexttax,
+                                    reroutes, or quota
+      --help, -h                    Show this help
+
+    With no option, Trifola launches the macOS app.
+    """
+}
+
+public struct BrandIconsetEntry: Sendable, Equatable {
+    public let filename: String
+    public let pixels: Int
+
+    public init(filename: String, pixels: Int) {
+        self.filename = filename
+        self.pixels = pixels
+    }
+}
+
+/// Apple's complete ten-file iconset contract. Render.swift consumes this list
+/// directly; tests pin both names and pixel sizes.
+public enum BrandAssetManifest {
+    public static let iconset: [BrandIconsetEntry] = [
+        .init(filename: "icon_16x16.png", pixels: 16),
+        .init(filename: "icon_16x16@2x.png", pixels: 32),
+        .init(filename: "icon_32x32.png", pixels: 32),
+        .init(filename: "icon_32x32@2x.png", pixels: 64),
+        .init(filename: "icon_128x128.png", pixels: 128),
+        .init(filename: "icon_128x128@2x.png", pixels: 256),
+        .init(filename: "icon_256x256.png", pixels: 256),
+        .init(filename: "icon_256x256@2x.png", pixels: 512),
+        .init(filename: "icon_512x512.png", pixels: 512),
+        .init(filename: "icon_512x512@2x.png", pixels: 1024),
+    ]
+
+    public static let bannerWidth = 1_280
+    public static let bannerHeight = 360
+}
 
 // MARK: - Model tiers
 
@@ -717,8 +826,12 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     public var cacheHitRate: Double { usage.cacheHitRate }
 
     public var isActive: Bool {
+        isActive(at: Date())
+    }
+
+    public func isActive(at now: Date) -> Bool {
         guard let d = lastActivity else { return false }
-        return Date().timeIntervalSince(d) < 15 * 60
+        return now.timeIntervalSince(d) < 15 * 60
     }
 
     /// The "$20 hey" risk: a heavy context means every trivial message is expensive.
@@ -733,8 +846,15 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     /// observed cache-hit rate instead — its own history is the best predictor
     /// of how the next turn will bill.
     public var costPerMessage: Double {
+        costPerMessage(onDay: nil)
+    }
+
+    public func costPerMessage(
+        onDay day: String?,
+        catalog: PricingCatalog = .current
+    ) -> Double {
         let hit = usage.cacheHitRate
-        let r = PricingCatalog.current.resolvedRate(model: model)
+        let r = catalog.resolvedRate(model: model, onDay: day)
         let effectiveRate = r.input * (1 - hit) + r.cacheRead * hit
         return Double(contextWeight) / 1_000_000 * effectiveRate
     }
@@ -743,7 +863,15 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     /// context re-bills as fresh input on the next turn. This is the number the
     /// old `costPerMessage` reported for every turn.
     public var costPerMessageColdCache: Double {
-        Double(contextWeight) / 1_000_000 * PricingCatalog.current.resolvedRate(model: model).input
+        costPerMessageColdCache(onDay: nil)
+    }
+
+    public func costPerMessageColdCache(
+        onDay day: String?,
+        catalog: PricingCatalog = .current
+    ) -> Double {
+        Double(contextWeight) / 1_000_000
+            * catalog.resolvedRate(model: model, onDay: day).input
     }
 
     /// Short display id (first hunk of the UUID).
@@ -826,7 +954,7 @@ public func fmtTokens(_ n: Int) -> String {
 
 // Shared: NumberFormatter construction is expensive and receipts call this per
 // leg — read-only `string(from:)` on a configured formatter is thread-safe.
-nonisolated(unsafe) private let groupedFormatter: NumberFormatter = {
+private let groupedFormatter: NumberFormatter = {
     let f = NumberFormatter()
     f.numberStyle = .decimal
     f.locale = Locale(identifier: "en_US_POSIX")   // stable "," / "." everywhere
@@ -848,9 +976,9 @@ public func fmtUSD(_ v: Double) -> String {
     return String(format: "$%.2f", v)
 }
 
-public func fmtAgo(_ date: Date?) -> String {
+public func fmtAgo(_ date: Date?, now: Date = Date()) -> String {
     guard let date else { return "—" }
-    let s = Int(Date().timeIntervalSince(date))
+    let s = Int(now.timeIntervalSince(date))
     if s < 60 { return "\(s)s ago" }
     if s < 3600 { return "\(s / 60)m ago" }
     if s < 86400 { return "\(s / 3600)h ago" }

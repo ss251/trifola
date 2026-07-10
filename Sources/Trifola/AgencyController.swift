@@ -8,8 +8,12 @@ import TrifolaKit
 final class AgencyController: ObservableObject {
     @Published private(set) var suppressionState: AttentionSuppressionState
     @Published private(set) var recoveryState = AttentionRecoveryState()
+    @Published private(set) var persistenceError: String?
 
     private let store: AttentionSuppressionStore
+    private var pendingSuppressionState: AttentionSuppressionState?
+
+    var persistenceLocation: URL { store.url.deletingLastPathComponent() }
 
     init(store: AttentionSuppressionStore = AttentionSuppressionStore()) {
         self.store = store
@@ -25,8 +29,7 @@ final class AgencyController: ObservableObject {
     func observe(board: AttentionBoard, now: Date) {
         let applied = result(for: board, now: now)
         if applied.state != suppressionState {
-            suppressionState = applied.state
-            store.save(applied.state)
+            persist(applied.state, operation: "Update expired attention choices")
         }
         let nextRecovery = AttentionRecoveryReducer.reduce(recoveryState,
                                                            board: board,
@@ -39,8 +42,7 @@ final class AgencyController: ObservableObject {
                                                       action: action,
                                                       now: now)
         guard next != suppressionState else { return }
-        suppressionState = next
-        store.save(next)
+        persist(next, operation: "Save attention choice")
     }
 
     func reason(for session: SessionSummary, now: Date) -> AttentionSuppressionReason? {
@@ -59,5 +61,21 @@ final class AgencyController: ObservableObject {
 
     func snoozeOneHour(_ session: SessionSummary, now: Date = Date()) {
         snooze(session, until: now.addingTimeInterval(60 * 60), now: now)
+    }
+
+    func retryPersistence() {
+        guard let pendingSuppressionState else { return }
+        persist(pendingSuppressionState, operation: "Retry attention choice")
+    }
+
+    private func persist(_ state: AttentionSuppressionState, operation: String) {
+        guard store.save(state) else {
+            pendingSuppressionState = state
+            persistenceError = "\(operation) failed at \(store.url.path). The previous choice remains active."
+            return
+        }
+        suppressionState = state
+        pendingSuppressionState = nil
+        persistenceError = nil
     }
 }

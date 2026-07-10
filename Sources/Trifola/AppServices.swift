@@ -4,6 +4,17 @@ import SwiftUI
 import Combine
 import TrifolaKit
 
+enum AppRestorationKeys {
+    static let section = "trifola.restoration.section"
+    static let inspectorSessionID = "trifola.restoration.inspectorSessionID"
+    static let sessionsQuery = "trifola.restoration.sessions.query"
+    static let sessionsTier = "trifola.restoration.sessions.tier"
+    static let sessionsMachine = "trifola.restoration.sessions.machine"
+    static let sessionsActiveOnly = "trifola.restoration.sessions.activeOnly"
+    static let sessionsHeavyOnly = "trifola.restoration.sessions.heavyOnly"
+    static let sessionsSort = "trifola.restoration.sessions.sort"
+}
+
 enum AppSection: String, CaseIterable, Identifiable {
     // Fleet Board rides next to Live Now — the two converge (the Board is the room;
     // the transcript tiles are the drill-in desk view). VISION Pillar 4 / docs/FLEET_BOARD.md.
@@ -44,20 +55,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .stack: return "server.rack"
         }
     }
-    var shortcut: KeyEquivalent {
-        switch self {
-        case .overview: return "1"
-        case .live: return "2"
-        case .fleet: return "3"
-        case .deadlines: return "d"
-        case .sessions: return "4"
-        case .spend: return "5"
-        case .audit: return "6"
-        case .ledger: return "7"
-        case .launch: return "8"
-        case .stack: return "9"
-        }
-    }
 }
 
 /// Navigation motion is a property of the input, not the destination. Pointer
@@ -82,15 +79,16 @@ struct TerminalTranscriptReveal: Equatable {
 /// for the whole app; everything on the MainActor.
 @MainActor
 final class AppServices: ObservableObject {
-    private static let initialSection: AppSection =
+    private static let sectionOverride =
         (ProcessInfo.processInfo.environment["TRIFOLA_SECTION"]
             ?? ProcessInfo.processInfo.environment["CMC_SECTION"])
-            .flatMap(AppSection.init(rawValue:)) ?? .overview
+            .flatMap(AppSection.init(rawValue:))
 
-    let sessions = SessionStore()
-    let audit = RoutingAudit()
+    let claudePaths: ClaudePaths
+    let sessions: SessionStore
+    let audit: RoutingAudit
     let stack = StackStore()
-    let skills = SkillsStore()
+    let skills: SkillsStore
     let attention = AttentionStore()
     /// The AUDIT pillar: cache-miss dollars, dead-skill ledger, subagent doctrine,
     /// model-mismatch review candidates — the four findings, computed from disk.
@@ -128,7 +126,7 @@ final class AppServices: ObservableObject {
     /// PLAN QUOTA (W7): the REAL rate-limit windows (5h · weekly · model-scoped)
     /// from the OAuth usage endpoint, read-only. Its own 5-min throttle keeps the
     /// FSEvents-driven refreshAll() calls cheap.
-    let quota = QuotaStore()
+    let quota: QuotaStore
     /// One-shot launch choreography state. It is intentionally not published:
     /// claiming a reveal must never turn a decorative animation into a render
     /// source for the whole app.
@@ -136,7 +134,7 @@ final class AppServices: ObservableObject {
     /// First-run truth: whether the local Claude Code corpus exists and contains
     /// at least one transcript. Checked at launch and after each coalesced refresh,
     /// never in a hot SwiftUI body.
-    @Published private(set) var hasLocalClaudeCorpus = AppServices.detectLocalClaudeCorpus()
+    @Published private(set) var hasLocalClaudeCorpus: Bool
 
     // MENU-BAR PRESENCE lives on its own `MenuBarPresence` object (not here) so the
     // App scene's menu/MenuBarExtra don't observe this high-frequency store — see
@@ -152,11 +150,24 @@ final class AppServices: ObservableObject {
 
     /// `TRIFOLA_SECTION=spend` (etc.) opens the app on a given screen — the snapshot
     /// loop uses it to capture every screen without UI scripting.
-    @Published var section: AppSection = AppServices.initialSection
-    @Published private(set) var firstAppearanceSection: AppSection? = AppServices.initialSection
-    private(set) var seenSections: Set<AppSection> = [AppServices.initialSection]
-    @Published var selectedSessionID: String? = nil
+    @AppStorage(AppRestorationKeys.section) private var persistedSectionRaw = ""
+    @AppStorage(AppRestorationKeys.inspectorSessionID) private var persistedInspectorID = ""
+    @Published var section: AppSection = .overview
+    @Published private(set) var firstAppearanceSection: AppSection? = .overview
+    private(set) var seenSections: Set<AppSection> = [.overview]
+    @Published var selectedSessionID: String? = nil {
+        didSet {
+            guard selectedSessionID != oldValue else { return }
+            if let selectedSessionID {
+                pendingRestoredSessionID = nil
+                persistedInspectorID = selectedSessionID
+            } else if pendingRestoredSessionID == nil {
+                persistedInspectorID = ""
+            }
+        }
+    }
     @Published private(set) var terminalTranscriptReveal: TerminalTranscriptReveal? = nil
+    @Published private(set) var sessionOpenActions: [String: SessionOpenActionPresentation] = [:]
     /// Heartbeat so relative timestamps ("3m ago", `isActive`) re-render.
     @Published var now = Date()
 
@@ -164,9 +175,32 @@ final class AppServices: ObservableObject {
     private var ticker: Task<Void, Never>?
     private var sessionsDebounce: Task<Void, Never>?
     private var terminalRevealGeneration = 0
+    private var pendingRestoredSessionID: String?
+    private var sessionOpenActionResolvedAt: [String: Date] = [:]
+    private var pendingSessionOpenActionIDs: Set<String> = []
     private var forwarders: Set<AnyCancellable> = []
 
-    init() {
+    init(claudePaths: ClaudePaths = .process) {
+        self.claudePaths = claudePaths
+        self.sessions = SessionStore(paths: claudePaths)
+        self.audit = RoutingAudit(paths: claudePaths)
+        self.skills = SkillsStore(paths: claudePaths)
+        self.quota = QuotaStore(paths: claudePaths)
+        self.hasLocalClaudeCorpus = Self.detectLocalClaudeCorpus(paths: claudePaths)
+
+        let restoredSection = Self.sectionOverride
+            ?? AppSection(rawValue: persistedSectionRaw)
+            ?? .overview
+        self.section = restoredSection
+        self.firstAppearanceSection = restoredSection
+        self.seenSections = [restoredSection]
+        self.pendingRestoredSessionID = persistedInspectorID.isEmpty
+            ? nil : persistedInspectorID
+        if Self.sectionOverride == nil,
+           !persistedSectionRaw.isEmpty,
+           AppSection(rawValue: persistedSectionRaw) == nil {
+            persistedSectionRaw = ""
+        }
 
         // Nested-ObservableObject trap: views observe THIS object, but the data
         // lives in child stores. Forward every child publish so progressive scan
@@ -232,6 +266,7 @@ final class AppServices: ObservableObject {
             firstAppearanceSection = isFirstAppearance ? newSection : nil
             section = newSection
         }
+        persistedSectionRaw = newSection.rawValue
     }
 
     /// The Skill hierarchy's Launch button: jump to the builder, seeded with a
@@ -279,12 +314,17 @@ final class AppServices: ObservableObject {
 
         refreshAll()
 
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let watcher = FSEventsWatcher(paths: [home + "/.claude"]) { [weak self] paths in
+        let projectsPrefix = claudePaths.projects.standardizedFileURL.path + "/"
+        let settingsPath = claudePaths.settingsJSON.standardizedFileURL.path
+        let watcher = FSEventsWatcher(paths: [claudePaths.root.path]) { [weak self] paths in
             var sessionsDirty = false, settingsDirty = false
             for p in paths {
-                if p.contains("/.claude/projects/") && p.hasSuffix(".jsonl") { sessionsDirty = true }
-                else if p.hasSuffix("/.claude/settings.json") { settingsDirty = true }
+                let standardized = URL(fileURLWithPath: p).standardizedFileURL.path
+                if standardized.hasPrefix(projectsPrefix) && standardized.hasSuffix(".jsonl") {
+                    sessionsDirty = true
+                } else if standardized == settingsPath {
+                    settingsDirty = true
+                }
             }
             guard sessionsDirty || settingsDirty else { return }
             let s = sessionsDirty, g = settingsDirty
@@ -402,7 +442,7 @@ final class AppServices: ObservableObject {
     /// Run a recorded dream pass from the current findings + settings. Deterministic:
     /// "Dream now" and the on-launch pass share this one path.
     func dreamNow(trigger: DreamTrigger) {
-        settings = ClaudeSettings.load()
+        settings = ClaudeSettings.load(paths: claudePaths)
         ledger.dream(report: auditReport.report, catalog: skills.skills, settings: settings,
                      sessionsScanned: sessions.sessions.count, trigger: trigger)
     }
@@ -421,7 +461,8 @@ final class AppServices: ObservableObject {
     func refreshAll() {
         Task {
             await Perf.span("await:sessions.refreshNow") { await sessions.refreshNow() }
-            let corpusAvailable = Self.detectLocalClaudeCorpus()
+            reconcileRestoredSelection()
+            let corpusAvailable = Self.detectLocalClaudeCorpus(paths: claudePaths)
             if hasLocalClaudeCorpus != corpusAvailable {
                 hasLocalClaudeCorpus = corpusAvailable
             }
@@ -443,7 +484,7 @@ final class AppServices: ObservableObject {
             // the queue + sidebar count stay truthful. Silent (no dream-log line) —
             // an actual recorded pass runs on the Ledger screen's on-launch task and
             // on "Dream now". Deterministic: same findings → same lessons.
-            settings = ClaudeSettings.load()
+            settings = ClaudeSettings.load(paths: claudePaths)
             Perf.span("main:ledger.remint") {
                 ledger.remint(report: auditReport.report, catalog: skills.skills, settings: settings)
             }
@@ -468,9 +509,8 @@ final class AppServices: ObservableObject {
         }
     }
 
-    private static func detectLocalClaudeCorpus() -> Bool {
-        let projects = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects", isDirectory: true)
+    private static func detectLocalClaudeCorpus(paths: ClaudePaths) -> Bool {
+        let projects = paths.projects
         guard FileManager.default.fileExists(atPath: projects.path),
               let files = FileManager.default.enumerator(
                 at: projects,
@@ -495,6 +535,7 @@ final class AppServices: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 self.sessionsDebounce = nil
                 await Perf.span("await:sessions.refreshNow") { await self.sessions.refreshNow() }
+                self.reconcileRestoredSelection()
                 Perf.span("main:audit.refresh") { self.audit.refresh(sessions: self.sessions.sessions) }
                 await Perf.span("await:attention.refresh") {
                     await self.attention.refresh(candidates: self.attentionCandidates())
@@ -505,7 +546,9 @@ final class AppServices: ObservableObject {
                 await Perf.span("await:auditReport.refresh") {
                     await self.auditReport.refresh(sessions: self.sessions.sessions, skills: self.skills.skills)
                 }
-                if settingsDirty { self.settings = ClaudeSettings.load() }
+                if settingsDirty {
+                    self.settings = ClaudeSettings.load(paths: self.claudePaths)
+                }
                 Perf.span("main:ledger.remint") {
                     self.ledger.remint(report: self.auditReport.report, catalog: self.skills.skills,
                                        settings: self.settings)
@@ -537,6 +580,41 @@ final class AppServices: ObservableObject {
         select(.sessions, origin: .programmatic)
     }
 
+    /// Resolve the label shown on the selected session's open action from the
+    /// same typed process/registry result the launch flow consumes. Resolution
+    /// runs off-main and is cached briefly so rendering never shells out.
+    func prepareSessionOpenAction(for session: SessionSummary) {
+        if session.isRemote {
+            sessionOpenActions[session.id] = .transcript
+            return
+        }
+        if let resolvedAt = sessionOpenActionResolvedAt[session.id],
+           Date().timeIntervalSince(resolvedAt) < 20 {
+            return
+        }
+        guard pendingSessionOpenActionIDs.insert(session.id).inserted else { return }
+
+        let id = session.id
+        let cwd = session.cwd
+        let machineID = session.machineID
+        let resolver = TerminalLinkResolver(
+            registry: FileTerminalSessionRegistryProvider(directory: claudePaths.sessions))
+        Task { [weak self] in
+            let resolution = await Task.detached(priority: .utility) {
+                resolver.resolve(sessionID: id, cwd: cwd, machineID: machineID)
+            }.value
+            guard let self else { return }
+            self.pendingSessionOpenActionIDs.remove(id)
+            self.sessionOpenActionResolvedAt[id] = Date()
+            self.sessionOpenActions[id] = SessionOpenActionPresentation(resolution: resolution)
+        }
+    }
+
+    func sessionOpenAction(for session: SessionSummary) -> SessionOpenActionPresentation {
+        if session.isRemote { return .transcript }
+        return sessionOpenActions[session.id] ?? .session
+    }
+
     /// Opens the exact local session when possible. Every unsuccessful typed
     /// outcome executes a deterministic main-window transcript reveal instead of
     /// selecting an arbitrary keyable window or silently preserving current state.
@@ -558,6 +636,9 @@ final class AppServices: ObservableObject {
         }
         TerminalLauncher.open(
             session: session,
+            resolver: TerminalLinkResolver(
+                registry: FileTerminalSessionRegistryProvider(
+                    directory: claudePaths.sessions)),
             openMainWindow: openMainWindow,
             selectSession: { [weak self] id in
                 guard let self else { return }
@@ -615,5 +696,26 @@ final class AppServices: ObservableObject {
     var selectedSession: SessionSummary? {
         guard let id = selectedSessionID else { return nil }
         return sessions.sessions.first { $0.id == id }
+    }
+
+    /// Restoration waits for the complete index, then either hydrates the
+    /// inspector or removes a stale persisted ID. Later refreshes apply the
+    /// same stale-selection rule without ever clearing a still-valid inspector.
+    private func reconcileRestoredSelection() {
+        guard !sessions.scanProgress.isInProgress else { return }
+        if let restoredID = pendingRestoredSessionID {
+            pendingRestoredSessionID = nil
+            if sessions.sessions.contains(where: { $0.id == restoredID }) {
+                selectedSessionID = restoredID
+            } else {
+                selectedSessionID = nil
+                persistedInspectorID = ""
+            }
+            return
+        }
+        if let selectedSessionID,
+           !sessions.sessions.contains(where: { $0.id == selectedSessionID }) {
+            self.selectedSessionID = nil
+        }
     }
 }

@@ -448,9 +448,18 @@ public final class QuotaStore: ObservableObject {
     private var cooldownUntil: Date?
     private var inFlight = false
     private let refreshCoordinator: ProviderRefreshCoordinator
+    private let configDirectory: URL
 
-    public init(refreshCoordinator: ProviderRefreshCoordinator = .shared) {
+    public init(refreshCoordinator: ProviderRefreshCoordinator = .shared,
+                configDirectory: URL = ClaudePaths.process.root) {
         self.refreshCoordinator = refreshCoordinator
+        self.configDirectory = configDirectory
+    }
+
+    public convenience init(paths: ClaudePaths,
+                            refreshCoordinator: ProviderRefreshCoordinator = .shared) {
+        self.init(refreshCoordinator: refreshCoordinator,
+                  configDirectory: paths.root)
     }
 
     public func refresh(minInterval: TimeInterval = 300) async {
@@ -465,8 +474,10 @@ public final class QuotaStore: ObservableObject {
         // network work execute inside the coordinator's task group, off-main;
         // overlapping stack/machine/future-provider triggers coalesce here.
         let resolved = Locked<Result<ResolvedQuota, ClaudeQuotaError>?>(nil)
+        let configDirectory = configDirectory
         let probe = ProviderRefreshProbe(id: "claude.quota") {
-            let candidates = ClaudeCredentialReader.loadCandidates()
+            let candidates = ClaudeCredentialReader.loadCandidates(
+                configDirectory: configDirectory)
             let result = await ClaudeQuotaResolver.resolve(candidates: candidates)
             resolved.withLock { $0 = result }
         }

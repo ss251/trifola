@@ -237,7 +237,7 @@ private struct SkillLedgerSection: View {
                         }
                         Spacer(minLength: 6)
                         Text(e.lastFired.map { fmtAgo($0) } ?? "—")
-                            .font(.caption2).foregroundStyle(Theme.faint)
+                            .font(.caption2).foregroundStyle(Theme.muted)
                             .frame(width: 60, alignment: .trailing)
                         Text("×\(e.invocations)")
                             .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
@@ -275,7 +275,7 @@ private struct SkillLedgerSection: View {
                         CapsuleBar(fraction: Double(e.descriptionTokens) / Double(top))
                             .frame(width: Theme.rankBarWidth)
                         Text("≈\(fmtTokens(e.descriptionTokens)) prompt tokens")
-                            .font(.caption2).foregroundStyle(Theme.faint)
+                            .font(.caption2).foregroundStyle(Theme.muted)
                             .frame(width: Theme.rankBarWidth, alignment: .trailing)
                             .monospacedDigit()
                       }

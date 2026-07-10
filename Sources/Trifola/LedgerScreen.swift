@@ -160,7 +160,7 @@ private struct DreamLine: View {
                     .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
                 Text("·").foregroundStyle(Theme.faint)
                 Text("took \(d.durationMs)ms")
-                    .font(.caption).foregroundStyle(Theme.faint)
+                    .font(.caption).foregroundStyle(Theme.muted)
                 Text("·").foregroundStyle(Theme.faint)
                 Text("\(fmtGrouped(d.sessionsScanned)) sessions")
                     .font(.subheadline).foregroundStyle(Theme.muted)
@@ -169,7 +169,7 @@ private struct DreamLine: View {
                     .font(.subheadline).foregroundStyle(Theme.muted)
                 Text("·").foregroundStyle(Theme.faint)
                 Text(d.trigger == .manual ? "manual" : d.trigger.label)
-                    .font(.caption).foregroundStyle(Theme.faint)
+                    .font(.caption).foregroundStyle(Theme.muted)
             } else {
                 Text("No findings distilled yet")
                     .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
@@ -342,7 +342,7 @@ private struct EvidenceTable: View {
                         Text(e.label)
                             .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink).lineLimit(1)
                         Text(e.detail)
-                            .font(.caption2).foregroundStyle(Theme.faint).lineLimit(1)
+                            .font(.caption2).foregroundStyle(Theme.muted).lineLimit(1)
                     }
                 } trailing: {
                     Text(e.value)
@@ -420,7 +420,7 @@ private struct CandidateFixBlock: View {
                                 ArtifactPill(icon: "folder", name: t.label, help: t.path) {
                                     onReveal(t.path)
                                 }
-                                Text(t.detail).font(.caption2).foregroundStyle(Theme.faint)
+                                Text(t.detail).font(.caption2).foregroundStyle(Theme.muted)
                             }
                         }
                     }
@@ -429,7 +429,7 @@ private struct CandidateFixBlock: View {
                 HStack(spacing: 5) {
                     Image(systemName: "info.circle").font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.faint)
                     Text(fix.note)
-                        .font(.caption2).foregroundStyle(Theme.faint)
+                        .font(.caption2).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -482,7 +482,7 @@ private struct AdjudicatedLedger: View {
                         StatusPill(status: adj.status)
                         Spacer()
                         if let v = adj.verification {
-                            Text(v).font(.caption2).foregroundStyle(Theme.faint).lineLimit(1)
+                            Text(v).font(.caption2).foregroundStyle(Theme.muted).lineLimit(1)
                         }
                         Text(adj.lesson.detectorVersion)
                             .font(.caption2).foregroundStyle(Theme.faint)

@@ -131,20 +131,23 @@ struct SummaryTests {
     }
 
     @Test func derived() {
-        let s = make(model: "claude-sonnet-5", contextWeight: 250_000, last: Date())
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        let s = make(model: "claude-sonnet-5", contextWeight: 250_000, last: now)
         #expect(s.tier == .sonnet)
         #expect(s.shortID == "01234567")
         #expect(s.isContextHeavy)
         // Sonnet 5 is date-dependent pricing: $2/M input through 2026-08-31,
         // $3/M from 2026-09-01 (Pricing.swift). costPerMessage resolves
         // against today, so pre-cutover: 250k × $2/M = $0.50 per trivial message.
-        #expect(abs(s.costPerMessage - 0.50) < 0.0001)
-        #expect(s.isActive)
+        #expect(abs(s.costPerMessage(onDay: "2026-07-01") - 0.50) < 0.0001)
+        #expect(s.isActive(at: now))
     }
 
     @Test func staleness() {
-        #expect(!make(model: nil, contextWeight: 0, last: Date(timeIntervalSinceNow: -16 * 60)).isActive)
-        #expect(!make(model: nil, contextWeight: 0, last: nil).isActive)
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        #expect(!make(model: nil, contextWeight: 0,
+                      last: now.addingTimeInterval(-16 * 60)).isActive(at: now))
+        #expect(!make(model: nil, contextWeight: 0, last: nil).isActive(at: now))
         #expect(!make(model: nil, contextWeight: 200_000, last: nil).isContextHeavy) // boundary: strictly >
     }
 
@@ -265,8 +268,9 @@ struct FormatTests {
     @Test func pctAndAgo() {
         #expect(fmtPct(0.853) == "85%")
         #expect(fmtAgo(nil) == "—")
-        #expect(fmtAgo(Date(timeIntervalSinceNow: -5)).hasSuffix("s ago"))
-        #expect(fmtAgo(Date(timeIntervalSinceNow: -3 * 3600)) == "3h ago")
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        #expect(fmtAgo(now.addingTimeInterval(-5), now: now) == "5s ago")
+        #expect(fmtAgo(now.addingTimeInterval(-3 * 3600), now: now) == "3h ago")
     }
 }
 
@@ -455,6 +459,16 @@ struct AccumulatorTests {
         #expect(s.usage.outputTokens == 18)
     }
 
+    @Test func replayedZeroUsageDoesNotEraseTheBillableChunk() {
+        let zero = #"{"type":"assistant","requestId":"req-1","timestamp":"2026-01-01T10:00:05.000Z","message":{"id":"msg-1","model":"claude-opus-4-8","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#
+        var acc = SessionAccumulator(defaultID: "fb")
+        acc.ingest(Data((streamA3 + "\n" + zero + "\n").utf8))
+        let s = acc.summary(filePath: "")
+        #expect(s.usage == SessionUsage(inputTokens: 30, outputTokens: 15))
+        #expect(s.rawUsageBlocks == 2)
+        #expect(s.dedupedUsageBlocks == 1)
+    }
+
     // Per-message-DAY bucketing: two distinct messages on different timestamp days
     // land in separate `usageByDay` buckets (the burn governor's honesty input).
     @Test func usageByDayBucketsEachMessageOnItsOwnTimestampDay() {
@@ -479,6 +493,54 @@ struct AccumulatorTests {
 
 @Suite("Session index (incremental scan)")
 struct IndexTests {
+    private func indexedUsageLine(
+        sessionID: String,
+        messageID: String,
+        requestID: String,
+        input: Int,
+        sidechain: Bool = false
+    ) -> String {
+        #"{"type":"assistant","sessionId":"\#(sessionID)","cwd":"/repo","isSidechain":\#(sidechain),"requestId":"\#(requestID)","timestamp":"2026-07-08T10:00:00.000Z","message":{"id":"\#(messageID)","model":"claude-opus-4-8","usage":{"input_tokens":\#(input),"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#
+    }
+
+    @Test func copiedHistoryDedupsAcrossFilesAndPrefersNonSidechainParent() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let copy = dir.appendingPathComponent("a-copy.jsonl")
+        let original = dir.appendingPathComponent("z-original.jsonl")
+        let duplicateCopy = indexedUsageLine(
+            sessionID: "copy", messageID: "shared-message",
+            requestID: "shared-request", input: 1_000_000,
+            sidechain: true)
+        let copyOnly = indexedUsageLine(
+            sessionID: "copy", messageID: "copy-only",
+            requestID: "copy-only-request", input: 100)
+        let duplicateOriginal = indexedUsageLine(
+            sessionID: "original", messageID: "shared-message",
+            requestID: "shared-request", input: 1_000_000)
+        try (duplicateCopy + "\n" + copyOnly + "\n").write(
+            to: copy, atomically: true, encoding: .utf8)
+        try (duplicateOriginal + "\n").write(
+            to: original, atomically: true, encoding: .utf8)
+
+        let first = SessionIndex.update(SessionIndex(), dir: dir)
+        let byFile = Dictionary(uniqueKeysWithValues: first.summaries.map {
+            (($0.filePath as NSString).lastPathComponent, $0)
+        })
+        #expect(byFile["a-copy.jsonl"]?.usage.inputTokens == 100)
+        #expect(byFile["z-original.jsonl"]?.usage.inputTokens == 1_000_000)
+        #expect(first.summaries.reduce(0) { $0 + $1.usage.inputTokens } == 1_000_100)
+
+        // A warm no-op scan and cache reload must retain the same canonical
+        // result; reconciliation cannot depend on which worker finished first.
+        let warm = SessionIndex.update(first, dir: dir)
+        #expect(warm.summaries.reduce(0) { $0 + $1.usage.inputTokens } == 1_000_100)
+        let cache = dir.appendingPathComponent("index.json")
+        SessionStore.saveIndexCache(warm, to: cache)
+        let loaded = try #require(SessionStore.loadIndexCache(from: cache))
+        #expect(loaded.summaries.reduce(0) { $0 + $1.usage.inputTokens } == 1_000_100)
+    }
+
     @Test func scanPresentationReducerCoversEveryTransition() {
         typealias State = SessionScanPresentationState
         typealias Event = SessionScanPresentationEvent
