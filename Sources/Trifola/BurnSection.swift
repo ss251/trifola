@@ -122,7 +122,7 @@ struct BurnSparkline: View {
         HStack(alignment: .bottom, spacing: 2.5) {
             ForEach(Array(days.enumerated()), id: \.element.id) { i, d in
                 DayBar(day: d, fraction: d.cost / peak, height: height,
-                       isToday: i == days.count - 1)
+                       isToday: i == days.count - 1, drawIndex: i)
             }
         }
         .frame(height: height + 3, alignment: .bottom)
@@ -133,41 +133,47 @@ struct BurnSparkline: View {
         let fraction: Double
         let height: CGFloat
         let isToday: Bool
+        let drawIndex: Int
 
         var body: some View {
             let barH = max(2, height * min(1, fraction))
-            VStack(spacing: 1.5) {
-                Group {
-                    if day.cost > 0 {
-                        VStack(spacing: 0.5) {
-                            // Stack tier slices top-down, tallest tier at the bottom so
-                            // the dominant model reads as the base of the column.
-                            ForEach(day.tierSlices, id: \.tier) { seg in
-                                Rectangle()
-                                    .fill(seg.tier.color)
-                                    // 1pt floor: a non-zero segment never vanishes
-                                    // (UI_GRIND BRN-3 — the stack stays honest).
-                                    .frame(height: max(1, barH * (seg.cost / day.cost)))
+            Reveal.Progress(animation: Theme.Motion.draw(.bar),
+                            itemIndex: drawIndex) { progress in
+                VStack(spacing: 1.5) {
+                    Group {
+                        if day.cost > 0 {
+                            VStack(spacing: 0.5) {
+                                // Stack tier slices top-down, tallest tier at the bottom so
+                                // the dominant model reads as the base of the column.
+                                ForEach(day.tierSlices, id: \.tier) { seg in
+                                    Rectangle()
+                                        .fill(seg.tier.color)
+                                        // 1pt floor: a non-zero segment never vanishes
+                                        // (UI_GRIND BRN-3 — the stack stays honest).
+                                        .frame(height: max(
+                                            1,
+                                            barH * (seg.cost / day.cost) * progress))
+                                }
                             }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: barH, alignment: .bottom)
-                        .clipShape(RoundedRectangle(cornerRadius: Theme.sparkRadius, style: .continuous))
-                        .opacity(isToday ? 1 : 0.7)
-                    } else {
-                        // Quiet day — a faint track tick, not an empty gap.
-                        Capsule()
-                            .fill(Theme.progressTrack)
                             .frame(maxWidth: .infinity)
-                            .frame(height: 2)
+                            .frame(height: max(1, barH * progress), alignment: .bottom)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.sparkRadius, style: .continuous))
+                            .opacity(isToday ? 1 : 0.7)
+                        } else {
+                            // Quiet day — a faint track tick, not an empty gap.
+                            Capsule()
+                                .fill(Theme.progressTrack)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 2)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .bottom)
+                    // The single accent now-marker, matching the calendar's now line.
+                    Rectangle()
+                        .fill(isToday ? Theme.accent : .clear)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 1.5)
                 }
-                .frame(maxWidth: .infinity, alignment: .bottom)
-                // The single accent now-marker, matching the calendar's now line.
-                Rectangle()
-                    .fill(isToday ? Theme.accent : .clear)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 1.5)
             }
         }
     }

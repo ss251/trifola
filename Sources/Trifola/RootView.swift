@@ -16,25 +16,40 @@ struct RootView: View {
     // (the ⌘K overlay), and RootLifecycle (start() + Dock badge). Re-introducing a
     // `services` read here — even one — brings the storm straight back.
     var body: some View {
-        HStack(spacing: 0) {
-            Sidebar()
-                .frame(width: 248)
-                .background {
-                    Theme.surfaceSidebar.ignoresSafeArea()
-                }
-            Divider()
-                .ignoresSafeArea()
-            ContentColumn()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background {
-                    Theme.surfaceWindow.ignoresSafeArea()
-                    VisualEffectBackground(material: .underWindowBackground).opacity(0.16).ignoresSafeArea()
-                }
+        AppMotionScope {
+            HStack(spacing: 0) {
+                Sidebar()
+                    .frame(width: 248)
+                    .background {
+                        Theme.surfaceSidebar.ignoresSafeArea()
+                    }
+                    .launchReveal(.rail)
+                Divider()
+                    .ignoresSafeArea()
+                ContentColumn()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background {
+                        Theme.surfaceWindow.ignoresSafeArea()
+                        VisualEffectBackground(material: .underWindowBackground).opacity(0.16).ignoresSafeArea()
+                    }
+            }
+            .background(WindowConfigurator())
+            .frame(minWidth: 1120, minHeight: 720)
+            .overlay { CommandPaletteHost() }
+            .background(RootLifecycle())
         }
-        .background(WindowConfigurator())
-        .frame(minWidth: 1120, minHeight: 720)
-        .overlay { CommandPaletteHost() }
-        .background(RootLifecycle())
+    }
+}
+
+/// A child bridge publishes the non-observable one-shot registry into the view
+/// environment without making the scene root observe AppServices (the render-
+/// storm invariant above remains intact).
+private struct AppMotionScope<Content: View>: View {
+    @EnvironmentObject private var services: AppServices
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content().environment(\.revealRegistry, services.reveals)
     }
 }
 
@@ -67,6 +82,9 @@ private struct RootLifecycle: View {
             .onChange(of: services.blockedCount, initial: true) { _, n in
                 AppBrand.updateDockBadge(blockedCount: n)
             }
+            .onDisappear {
+                services.reveals.windowDidClose()
+            }
     }
 }
 
@@ -77,20 +95,26 @@ private struct ContentColumn: View {
 
     var body: some View {
         ZStack {
-            switch services.section {
-            case .overview: OverviewScreen()
-            case .live: LiveScreen()
-            case .fleet: FleetScreen()
-            case .deadlines: DeadlineScreen()
-            case .sessions: SessionsScreen()
-            case .spend: SpendScreen()
-            case .audit: AuditScreen()
-            case .ledger: LedgerScreen()
-            case .launch: LaunchScreen()
-            case .stack: StackScreen()
-            }
+            sectionView
+                .id(services.section)
+                .sectionTransition()
+                .sectionFirstAppearance(services.firstAppearanceSection == services.section)
         }
-        .id(services.section)
+    }
+
+    @ViewBuilder private var sectionView: some View {
+        switch services.section {
+        case .overview: OverviewScreen()
+        case .live: LiveScreen()
+        case .fleet: FleetScreen()
+        case .deadlines: DeadlineScreen()
+        case .sessions: SessionsScreen()
+        case .spend: SpendScreen()
+        case .audit: AuditScreen()
+        case .ledger: LedgerScreen()
+        case .launch: LaunchScreen()
+        case .stack: StackScreen()
+        }
     }
 }
 
@@ -122,6 +146,8 @@ struct SidebarSnapshot {
 struct SidebarRail: View {
     let snapshot: SidebarSnapshot
     var onSelect: (AppSection) -> Void = { _ in }
+    var onKeyboardSelect: (AppSection) -> Void = { _ in }
+    @Namespace private var selectionNamespace
 
     private let v1Sections: [AppSection] = [
         .overview, .fleet, .sessions, .spend, .audit, .stack,
@@ -141,9 +167,10 @@ struct SidebarRail: View {
                 ForEach(v1Sections) { section in
                     SidebarItem(section: section,
                                 isSelected: snapshot.selected == section,
-                                badge: snapshot.badge(for: section)) {
-                        onSelect(section)
-                    }
+                                badge: snapshot.badge(for: section),
+                                selectionNamespace: selectionNamespace,
+                                action: { onSelect(section) },
+                                keyboardAction: { onKeyboardSelect(section) })
                 }
             }
             .padding(.horizontal, Theme.intraCell)
@@ -180,10 +207,15 @@ private struct Sidebar: View {
             updatedText: "updated \(fmtAgo(services.sessions.lastRefresh))",
             refreshText: refreshText,
             account: NSUserName(),
-            machine: Host.current().localizedName ?? "this Mac")) { section in
-                services.section = section
+            machine: Host.current().localizedName ?? "this Mac"),
+            onSelect: { section in
+                services.select(section, origin: .pointer)
                 if section != .sessions { services.selectedSessionID = nil }
-        }
+            },
+            onKeyboardSelect: { section in
+                services.select(section, origin: .keyboard)
+                if section != .sessions { services.selectedSessionID = nil }
+            })
     }
 }
 
@@ -213,11 +245,15 @@ private struct SidebarItem: View {
     let section: AppSection
     let isSelected: Bool
     let badge: Int?
+    let selectionNamespace: Namespace.ID
     let action: () -> Void
+    let keyboardAction: () -> Void
     @State private var hovering = false
 
     var body: some View {
-        TapButton(shortcut: KeyboardShortcut(section.shortcut, modifiers: .command), action: action) {
+        TapButton(shortcut: KeyboardShortcut(section.shortcut, modifiers: .command),
+                  keyboardAction: keyboardAction,
+                  action: action) {
             HStack(spacing: Theme.codePadding) {
                 Image(systemName: section.icon)
                     .font(.system(size: 16, weight: .medium))
@@ -239,14 +275,17 @@ private struct SidebarItem: View {
             .contentShape(Rectangle())
         }
         .background {
-            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                .fill(isSelected
-                      ? Theme.selectionBG
-                      : hovering
-                        ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.6)
-                        : .clear)
+            if isSelected {
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                    .fill(Theme.selectionBG)
+                    .sidebarSelectionTravel(in: selectionNamespace)
+            } else if hovering {
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                    .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.6))
+            }
         }
         .motion(Theme.Motion.quick, value: hovering)
+        .motion(Theme.Motion.quick, value: isSelected)
         .onHover { hovering = $0 }
     }
 }

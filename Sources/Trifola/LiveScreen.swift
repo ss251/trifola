@@ -41,8 +41,10 @@ struct LiveScreen: View {
                     detail: "No sessions have been active in the last 15 minutes. Tiles appear here the moment a transcript moves — no refresh needed."
                 )
                 .frame(minHeight: 460)
+                .motionRowTransition()
             } else {
                 board
+                    .motionRowTransition()
             }
         }
         // The one app-standard reorder motion — membership changes glide; a

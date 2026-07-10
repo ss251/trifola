@@ -38,7 +38,11 @@ struct LedgerScreen: View {
             )
         }
         .overlay(alignment: .top) {
-            if let feedback { Toast(text: feedback).padding(.top, Theme.intraCell) }
+            if let feedback {
+                Toast(text: feedback)
+                    .id(feedback)
+                    .padding(.top, Theme.intraCell)
+            }
         }
         .motion(Theme.Motion.move, value: feedback)
         .task {
@@ -119,10 +123,12 @@ struct LedgerContent: View {
             Divider()
             if pending.isEmpty {
                 LedgerEmptyState(dream: dream)
+                    .motionRowTransition()
             } else {
                 ForEach(pending) { adj in
                     LessonCard(adj: adj, onCopy: onCopy, onReveal: onReveal,
                                onInspect: onInspect, onKeep: onKeep, onDismiss: onDismiss)
+                        .motionRowTransition()
                 }
             }
             if !history.isEmpty {
@@ -130,6 +136,7 @@ struct LedgerContent: View {
                 AdjudicatedLedger(history: history, expanded: $showHistory)
             }
         }
+        .reorderMotion(value: pending.map(\.id))
     }
 }
 
@@ -457,7 +464,7 @@ private struct AdjudicatedLedger: View {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.medium))
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .disclosureChevron(isExpanded: expanded)
                     SectionLabel("Adjudicated ledger")
                     Text("\(history.count)").font(.footnote).foregroundStyle(Theme.muted)
                     Spacer()
@@ -482,6 +489,7 @@ private struct AdjudicatedLedger: View {
                     }
                     .padding(.vertical, Theme.rhythm / 2)
                     .overlay(alignment: .top) { Divider() }
+                    .motionRowTransition()
                 }
             }
         }

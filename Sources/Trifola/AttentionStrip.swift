@@ -71,33 +71,38 @@ struct AttentionStripView: View {
                         .foregroundStyle(Theme.muted)
                 }
                 .padding(.vertical, Theme.hairlineWidth)
+                .motionRowTransition()
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
-                        AttentionChip(row: row,
-                                      suppressionState: suppression?.state,
-                                      signal: signals[row.id],
-                                      defaultSnoozeMinutes: defaultSnoozeMinutes,
-                                      onAgencyAction: onAgencyAction) {
-                            onSelect(row.item.session)
-                        }
-                        .motionRowTransition()
-                        if index < shown.count - 1 {
-                            Rectangle().fill(Theme.hairline.opacity(0.65)).frame(height: 1)
+                VStack(alignment: .leading, spacing: Theme.rhythm) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
+                            AttentionChip(row: row,
+                                          revealIndex: index,
+                                          suppressionState: suppression?.state,
+                                          signal: signals[row.id],
+                                          defaultSnoozeMinutes: defaultSnoozeMinutes,
+                                          onAgencyAction: onAgencyAction) {
+                                onSelect(row.item.session)
+                            }
+                            .motionRowTransition()
+                            if index < shown.count - 1 {
+                                Rectangle().fill(Theme.hairline.opacity(0.65)).frame(height: 1)
+                            }
                         }
                     }
+                    if suppressed.count > 1 {
+                        MutedDisclosurePill(
+                            label: showsSuppressed
+                                ? "Hide snoozed sessions"
+                                : "+\(suppressed.count) snoozed",
+                            isExpanded: showsSuppressed) {
+                                showsSuppressed.toggle()
+                            }
+                            .id("snoozed-disclosure")
+                            .motionRowTransition()
+                    }
                 }
-                if suppressed.count > 1 {
-                    MutedDisclosurePill(
-                        label: showsSuppressed
-                            ? "Hide snoozed sessions"
-                            : "+\(suppressed.count) snoozed",
-                        isExpanded: showsSuppressed) {
-                            showsSuppressed.toggle()
-                        }
-                        .id("snoozed-disclosure")
-                        .motionRowTransition()
-                }
+                .motionRowTransition()
             }
 
             if let acknowledgement,
@@ -137,6 +142,7 @@ struct AttentionStripView: View {
 
 private struct AttentionChip: View {
     let row: AttentionSuppressionRow
+    let revealIndex: Int
     var suppressionState: AttentionSuppressionState? = nil
     /// The tail signal backing this chip — carries the ask (tool + detail).
     var signal: AttentionSignals? = nil
@@ -162,7 +168,8 @@ private struct AttentionChip: View {
         let item = row.item
         HoverRow(radius: Theme.radiusRow, action: onTap) {
             HStack(alignment: .top, spacing: Theme.intraCell) {
-                SeatMark(state: DoorLightState(item.state), size: 8)
+                SeatMark(state: DoorLightState(item.state), size: 8,
+                         revealIndex: revealIndex)
                     .padding(.top, 3)
                 VStack(alignment: .leading, spacing: Theme.micro) {
                     HStack(spacing: Theme.intraCell) {

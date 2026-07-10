@@ -124,6 +124,7 @@ struct FleetScreen: View {
                     )
                     .frame(minHeight: 460)
                 }
+                .motionRowTransition()
             } else {
                 ScrollView {
                     FleetFloor(
@@ -142,8 +143,10 @@ struct FleetScreen: View {
                     .screenScaffoldFrame()
                 }
                 .scrollIndicators(.never)
+                .motionRowTransition()
             }
         }
+        .reorderMotion(value: board.bays.isEmpty)
         .onChange(of: watches) { _, w in heartbeat.sync(w) }
         .onAppear { heartbeat.sync(watches) }
         .onDisappear { heartbeat.stopAll() }
@@ -177,7 +180,9 @@ struct FleetFloor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.blockGap) {
             header
+                .launchReveal(.header)
             Divider()
+                .launchReveal(.header)
             // The strip rides on top: "who needs me NOW" survives even while the
             // room below holds still. Sorted (triage) over stable (presence).
             AttentionStripView(board: attention,
@@ -188,10 +193,13 @@ struct FleetFloor: View {
                                onAgencyAction: onAgencyAction) {
                 (onOpenTerminal ?? onSelect)($0)
             }
+            .launchReveal(.content)
+            .sectionRevealBlock(index: 0)
             Divider()
             VStack(alignment: .leading, spacing: Theme.blockGap) {
-                ForEach(board.bays) { bay in
+                ForEach(Array(board.bays.enumerated()), id: \.element.id) { bayIndex, bay in
                     FleetBayView(bay: bay,
+                                 revealIndex: bayIndex,
                                  chipForced: duplicatedProjects.contains(bay.project),
                                  pulses: pulses,
                                  suppressionState: suppressionState,
@@ -207,6 +215,8 @@ struct FleetFloor: View {
             // (W6 wave 4), so a bay appearing never snaps the room.
             .reorderMotion(
                 value: board.bays.flatMap { [$0.id] + $0.allTokens.map(\.id) })
+            .launchReveal(.content)
+            .sectionRevealBlock(index: 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -266,6 +276,7 @@ struct FleetFloor: View {
 
 private struct FleetBayView: View {
     let bay: FleetBay
+    let revealIndex: Int
     /// Forced when this project name exists on >1 machine (CRM-1).
     var chipForced = false
     var pulses: [String: Int]
@@ -277,16 +288,18 @@ private struct FleetBayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            BayHeader(bay: bay, chipForced: chipForced)
+            BayHeader(bay: bay, chipForced: chipForced,
+                      revealIndex: revealIndex)
             if bay.isIdle {
                 // Compressed dimmed line — the bay sinks via the ember fade, not by
                 // reordering. Its cost stays legible.
-                ForEach(bay.tokens) { t in
+                ForEach(Array(bay.tokens.enumerated()), id: \.element.id) { tokenIndex, t in
                     let now = Date()
                     let snoozed = suppressionState?.isSnoozed(sessionID: t.id, at: now) == true
                     let muted = suppressionState?.isMuted(projectKey: t.session.project) == true
                     HStack(spacing: 10) {
-                        SeatMark(state: .idle, size: 8)
+                        SeatMark(state: .idle, size: 8,
+                                 revealIndex: revealIndex + tokenIndex + 1)
                         if snoozed || muted { SuppressionMark() }
                         Text(t.session.tier.label).font(.caption).foregroundStyle(Theme.faint)
                         if let q = t.taskQuote {
@@ -346,8 +359,9 @@ private struct FleetBayView: View {
                     .padding(.leading, Theme.micro / 2)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(bay.tokens) { token in
+                    ForEach(Array(bay.tokens.enumerated()), id: \.element.id) { tokenIndex, token in
                         FleetTokenView(token: token, depth: 0, pulses: pulses,
+                                       revealIndex: revealIndex + tokenIndex + 1,
                                        suppressionState: suppressionState,
                                        defaultSnoozeMinutes: defaultSnoozeMinutes,
                                        onAgencyAction: onAgencyAction,
@@ -364,10 +378,12 @@ private struct FleetBayView: View {
 private struct BayHeader: View {
     let bay: FleetBay
     var chipForced = false
+    let revealIndex: Int
 
     var body: some View {
         HStack(spacing: 10) {
-            SeatMark(state: bayDoorState, size: 8)
+            SeatMark(state: bayDoorState, size: 8,
+                     revealIndex: revealIndex)
             Text(bay.project)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(bay.isIdle ? Theme.muted : Theme.ink)
@@ -437,6 +453,7 @@ private struct FleetTokenView: View {
     let depth: Int
     var isLast: Bool = true
     var pulses: [String: Int]
+    var revealIndex: Int
     var suppressionState: AttentionSuppressionState? = nil
     var defaultSnoozeMinutes = 60
     var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
@@ -458,6 +475,7 @@ private struct FleetTokenView: View {
                     ForEach(Array(token.children.enumerated()), id: \.element.id) { i, child in
                         FleetTokenView(token: child, depth: depth + 1,
                                        isLast: i == token.children.count - 1, pulses: pulses,
+                                       revealIndex: revealIndex + i + 1,
                                        suppressionState: suppressionState,
                                        defaultSnoozeMinutes: defaultSnoozeMinutes,
                                        onAgencyAction: onAgencyAction,
@@ -485,7 +503,8 @@ private struct FleetTokenView: View {
                         .frame(width: 10)
                 }
                 HeartbeatDot(state: token.state, ring: token.tier.color,
-                             pulse: pulses[token.id] ?? 0, still: token.isStill)
+                             pulse: pulses[token.id] ?? 0, still: token.isStill,
+                             revealIndex: revealIndex)
                 if suppressed { SuppressionMark() }
                 Text(token.tier.label)
                     .font(.caption)
@@ -613,9 +632,11 @@ private struct HeartbeatDot: View {
     let ring: Color
     let pulse: Int
     let still: Bool
+    let revealIndex: Int
 
     var body: some View {
-        SeatMark(state: DoorLightState(state), size: 8)
+        SeatMark(state: DoorLightState(state), size: 8,
+                 revealIndex: revealIndex)
     }
 }
 

@@ -84,7 +84,11 @@ struct LaunchScreen: View {
             }
         }
         .overlay(alignment: .top) {
-            if let feedback { Toast(text: feedback).padding(.top, Theme.intraCell) }
+            if let feedback {
+                Toast(text: feedback)
+                    .id(feedback)
+                    .padding(.top, Theme.intraCell)
+            }
         }
         .motion(Theme.Motion.move, value: feedback)
         .task { await services.skills.refreshIfStale() }
@@ -367,7 +371,7 @@ private struct DisclosureRow: View {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.medium))
-                        .rotationEffect(.degrees(open ? 90 : 0))
+                        .disclosureChevron(isExpanded: open)
                     Text(label).font(.caption2)
                 }
                 .foregroundStyle(Theme.muted)
@@ -375,8 +379,10 @@ private struct DisclosureRow: View {
             if open {
                 Text(detail).font(.caption2).foregroundStyle(Theme.faint)
                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .motionRowTransition()
             }
         }
+        .reorderMotion(value: open)
     }
 }
 

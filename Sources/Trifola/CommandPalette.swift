@@ -198,7 +198,8 @@ struct PalettePanel<Field: View>: View {
     private var rows: some View {
         VStack(spacing: 2) {
             ForEach(Array(results.enumerated()), id: \.element.id) { i, e in
-                TapButton(focusVisual: .row, action: { onInvoke(i) }) {
+                TapButton(focusVisual: .row, pressFeedback: false,
+                          action: { onInvoke(i) }) {
                     PaletteRow(entry: e, selected: i == selection)
                 }
                     .id(e.id)
@@ -277,7 +278,7 @@ struct CommandPalette: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            TapButton(focusVisual: .none, action: close) {
+            TapButton(focusVisual: .none, pressFeedback: false, action: close) {
                 Color.black.opacity(0.16)
                     .contentShape(Rectangle())
             }
@@ -396,7 +397,7 @@ enum PaletteEntries {
                 candidate: PaletteCandidate(id: id, primary: section.title,
                                             secondary: [section.rawValue] + synonyms(section),
                                             group: PaletteKind.screen.rawValue),
-                run: { [weak services] in services?.section = section })
+                run: { [weak services] in services?.select(section, origin: .keyboard) })
         }
     }
 
@@ -436,7 +437,7 @@ enum PaletteEntries {
                    "moon.stars", ["ledger", "lessons", "dreaming"]) { [weak services] in
                 guard let services else { return }
                 services.dreamNow(trigger: .manual)
-                services.section = .ledger
+                services.select(.ledger, origin: .keyboard)
             },
             action("sync-fleet", "Sync fleet", "pull remote transcripts over Tailscale",
                    "arrow.triangle.2.circlepath", ["cross machine", "workstation", "remote", "tailscale"]) { [weak services] in
@@ -444,7 +445,7 @@ enum PaletteEntries {
             },
             action("new-recipe", "New recipe", "compose a launch recipe from scratch",
                    "plus", ["builder", "launch", "compose"]) { [weak services] in
-                services?.section = .launch
+                services?.select(.launch, origin: .keyboard)
             },
         ]
     }
@@ -525,7 +526,7 @@ enum PaletteEntries {
                         + sk.triggers.map { String($0.prefix(60)) },
                     group: PaletteKind.skill.rawValue),
                 altLabel: "Launch",
-                run: { [weak services] in services?.section = .stack },
+                run: { [weak services] in services?.select(.stack, origin: .keyboard) },
                 runAlt: { [weak services] in services?.seedLaunch(skill: sk.id) })
         }
     }

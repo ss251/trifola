@@ -83,6 +83,7 @@ struct TranscriptView: View {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(store.events) { ev in
                         TranscriptRow(event: ev)
+                            .transcriptLineTransition()
                     }
                     Color.clear.frame(height: 1).id("live-bottom")
                 }

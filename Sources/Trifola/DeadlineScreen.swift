@@ -343,27 +343,32 @@ struct DeadlineScreen: View {
                 EmptyState(icon: "calendar",
                            title: "No deadlines yet",
                            detail: "Trifola pre-fills from dates in your project notes (NOTES.md, MEMORY.md) and from Linear once connected — it reads your notes, never writes them.")
+                    .motionRowTransition()
             } else {
-                DeadlineContent(cards: cards, config: DeadlineConfig(),
-                                tiers: tiers,
-                                onSelect: { open($0) },
-                                onConfirm: { services.deadlines.confirm($0.projectKey) },
-                                onReveal: { reveal($0) })
-                DeadlineConnectPanel(
-                    connection: services.deadlines.connection,
-                    keyDraft: Binding(get: { services.deadlines.keyDraft },
-                                      set: { services.deadlines.keyDraft = $0 }),
-                    teams: services.deadlines.teams,
-                    selectedTeamID: services.deadlines.settings.teamID,
-                    syncStatus: services.deadlines.syncStatus,
-                    report: services.deadlines.lastSyncReport,
-                    onSaveKey: { services.deadlines.saveKey() },
-                    onPickTeam: { services.deadlines.pickTeam($0) },
-                    onSync: { Task { await services.deadlines.sync(cards: cards) } },
-                    onToggleBackground: { services.deadlines.setBackgroundSync($0) },
-                    onDisconnect: { services.deadlines.disconnect() })
+                Group {
+                    DeadlineContent(cards: cards, config: DeadlineConfig(),
+                                    tiers: tiers,
+                                    onSelect: { open($0) },
+                                    onConfirm: { services.deadlines.confirm($0.projectKey) },
+                                    onReveal: { reveal($0) })
+                    DeadlineConnectPanel(
+                        connection: services.deadlines.connection,
+                        keyDraft: Binding(get: { services.deadlines.keyDraft },
+                                          set: { services.deadlines.keyDraft = $0 }),
+                        teams: services.deadlines.teams,
+                        selectedTeamID: services.deadlines.settings.teamID,
+                        syncStatus: services.deadlines.syncStatus,
+                        report: services.deadlines.lastSyncReport,
+                        onSaveKey: { services.deadlines.saveKey() },
+                        onPickTeam: { services.deadlines.pickTeam($0) },
+                        onSync: { Task { await services.deadlines.sync(cards: cards) } },
+                        onToggleBackground: { services.deadlines.setBackgroundSync($0) },
+                        onDisconnect: { services.deadlines.disconnect() })
+                }
+                .motionRowTransition()
             }
         }
+        .reorderMotion(value: cards.isEmpty)
     }
 
     private var subtitle: String {

@@ -98,15 +98,20 @@ struct StackScreen: View {
                     title: store.probing ? "Probing the stack…" : "No sweep yet",
                     detail: "Each tool gets a concurrent health check with a \(Int(ToolProbeEngine.perProbeTimeout.components.seconds))-second budget. A hung probe comes back as UNKNOWN — it never blocks this screen.")
                     .frame(minHeight: 420)
+                    .motionRowTransition()
             } else {
-                stats
-                Divider()
-                grid
-                footnote
+                Group {
+                    stats
+                    Divider()
+                    grid
+                    footnote
+                }
+                .motionRowTransition()
             }
             Divider()
             skillsSection
         }
+        .reorderMotion(value: store.results.isEmpty)
         .task {
             while !Task.isCancelled {
                 await store.refreshIfStale(30)

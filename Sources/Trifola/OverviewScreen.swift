@@ -161,7 +161,7 @@ struct OverviewScreen: View {
                 tierStats: store.tierStats,
                 tierTotal: store.totalCost,
                 liveSessions: store.activeSessions),
-            onOpenLiveBoard: { services.section = .live },
+            onOpenLiveBoard: { services.select(.live, origin: .programmatic) },
             onSelectSession: { services.inspect($0) })
         // ScreenScaffold contributes the first 20pt; this completes the required
         // 32pt verdict→KPI gap without inventing a second screen rhythm.
@@ -242,10 +242,10 @@ struct OverviewScreen: View {
             .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: Theme.intraCell) {
                 ArtifactPill(icon: "square.grid.3x3", name: "Fleet Board") {
-                    services.section = .fleet
+                    services.select(.fleet, origin: .programmatic)
                 }
                 ArtifactPill(icon: "doc.text.magnifyingglass", name: "Audit evidence") {
-                    services.section = .audit
+                    services.select(.audit, origin: .programmatic)
                 }
             }
         }

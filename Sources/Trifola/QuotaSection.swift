@@ -33,8 +33,8 @@ struct QuotaSection: View {
 
             if let snapshot, !snapshot.isEmpty {
                 VStack(alignment: .leading, spacing: Theme.rhythm) {
-                    ForEach(snapshot.windows, id: \.title) { window in
-                        QuotaWindowRow(window: window, now: now)
+                    ForEach(Array(snapshot.windows.enumerated()), id: \.element.title) { index, window in
+                        QuotaWindowRow(window: window, now: now, drawIndex: index)
                     }
                 }
                 Text("plan rate-limit windows · OAuth usage endpoint · read-only — not dollars")
@@ -68,6 +68,7 @@ struct QuotaSection: View {
 private struct QuotaWindowRow: View {
     let window: QuotaWindow
     let now: Date
+    let drawIndex: Int
 
     private var fill: Color {
         if window.usedPercent >= 90 { return Theme.red }
@@ -89,8 +90,12 @@ private struct QuotaWindowRow: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Theme.progressTrack)
-                    Capsule().fill(fill)
-                        .frame(width: geo.size.width * min(max(window.usedPercent, 0), 100) / 100)
+                    Reveal.Progress(itemIndex: drawIndex) { progress in
+                        Capsule().fill(fill)
+                            .frame(width: geo.size.width
+                                * min(max(window.usedPercent, 0), 100) / 100
+                                * progress)
+                    }
                 }
             }
             .frame(height: Theme.barHeight)

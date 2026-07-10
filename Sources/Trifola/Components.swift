@@ -162,9 +162,10 @@ private struct DoorLightRing: Shape {
         let r = rect.insetBy(dx: inset, dy: inset)
         let radius = max(0, min(r.width, r.height) / 2)
         var path = Path()
+        let clamped = Double(min(CGFloat(1), max(CGFloat(0), trim)))
         path.addArc(center: CGPoint(x: r.midX, y: r.midY), radius: radius,
                     startAngle: .degrees(-90),
-                    endAngle: .degrees(-90 + 360 * min(1, max(0, trim))),
+                    endAngle: .degrees(-90 + 360 * clamped),
                     clockwise: false)
         return path
     }
@@ -182,12 +183,23 @@ struct SeatMark: View {
     var gapped: Bool = true
     /// Lockups keep an ink core while their ring carries the fleet's worst state.
     var coreUsesState = true
+    /// Menu-bar marks opt out; every in-window mark may spend the one-shot draw
+    /// supplied by its launch/section reveal context.
+    var firstAppearanceDraw = true
+    var revealIndex: Int? = nil
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.doorLightReduceMotionOverride) private var reduceMotionOverride
+    @Environment(\.sectionFirstAppearance) private var sectionFirstAppearance
+    @Environment(\.launchFirstAppearance) private var launchFirstAppearance
+    @Environment(\.revealBlockIndex) private var revealBlockIndex
     @State private var ringTrim: CGFloat = 1
+    @State private var coreRevealOpacity: Double = 1
+    @State private var echoProgress: CGFloat = 1
+    @State private var ceremonyDelay: TimeInterval = 0
+    @State private var didDrawFirstAppearance = false
     @State private var ceremonyEndsAt = Date.distantPast
 
     private var effectiveRingWidth: CGFloat {
@@ -211,6 +223,12 @@ struct SeatMark: View {
             let coreOpacity = runningOpacity(at: context.date)
             let pulse = blockedPulse(at: context.date)
             ZStack {
+                Circle()
+                    .stroke((state?.color ?? effectiveRing).opacity(0.35),
+                            lineWidth: effectiveRingWidth)
+                    .scaleEffect(1 + 0.35 * echoProgress)
+                    .opacity(0.35 * (1 - echoProgress))
+                    .motion(Theme.Motion.echo, value: echoProgress)
                 if pulse > 0 {
                     DoorLightRing(trim: 1,
                                   inset: effectiveRingWidth / 2 - pulse / max(displayScale, 1))
@@ -228,7 +246,7 @@ struct SeatMark: View {
                         .fill(coreColor)
                         .frame(width: size * AppBrand.Geometry.coreRatio,
                                height: size * AppBrand.Geometry.coreRatio)
-                        .opacity(coreOpacity)
+                        .opacity(coreOpacity * coreRevealOpacity)
                         // A state identity replaces the old core with the new
                         // hue, so the ceremony is a true cross-fade rather than
                         // an interpolated color pass through a muddy midpoint.
@@ -236,31 +254,84 @@ struct SeatMark: View {
                         .transition(.opacity.animation(
                             Theme.motion(Theme.Motion.ceremony,
                                          reduceMotion: motionReduced)))
+                        .motion(Theme.Motion.ceremony,
+                                value: coreRevealOpacity,
+                                delay: ceremonyDelay)
                 }
             }
             .doorLightMotion(value: state)
         }
         .frame(width: size, height: size)
         .opacity(active ? 1 : 0.45)
-        .onChange(of: state) { _, _ in
-            guard !motionReduced else { ringTrim = 1; return }
-            // A second state flip during the draw keeps the current presentation
-            // value moving toward 1; it never snaps back to zero. A settled ring
-            // starts the next ceremony blank, then draws clockwise on the next
-            // update so the reset and the value-keyed animation cannot coalesce.
-            let now = Date()
-            guard now >= ceremonyEndsAt else { return }
-            ceremonyEndsAt = now.addingTimeInterval(Theme.ceremonyInterval)
-            var reset = Transaction()
-            reset.disablesAnimations = true
-            withTransaction(reset) { ringTrim = 0 }
+        .onChange(of: state) { oldState, newState in
+            playStateCeremony(from: oldState, to: newState)
+        }
+        .onChange(of: firstAppearanceActive, initial: true) { _, active in
+            if active { playFirstAppearance() }
+        }
+        .doorLightMotion(value: ringTrim, delay: ceremonyDelay)
+        .accessibilityHidden(true)
+    }
+
+    private var firstAppearanceActive: Bool {
+        firstAppearanceDraw && (sectionFirstAppearance || launchFirstAppearance)
+    }
+
+    private var firstAppearanceDelay: TimeInterval {
+        let index = revealIndex ?? revealBlockIndex
+        return TimeInterval(min(max(index, 0), 5)) * Theme.Motion.revealStep
+    }
+
+    private func playFirstAppearance() {
+        guard !didDrawFirstAppearance else { return }
+        didDrawFirstAppearance = true
+        ceremonyDelay = motionReduced ? 0 : firstAppearanceDelay
+
+        var reset = Transaction()
+        reset.disablesAnimations = true
+        withTransaction(reset) {
+            ringTrim = motionReduced ? 1 : 0
+            coreRevealOpacity = 0
+        }
+        ceremonyEndsAt = Date().addingTimeInterval(
+            Theme.Motion.delay(firstAppearanceDelay) + Theme.ceremonyInterval)
+        Task { @MainActor in
+            await Task.yield()
+            ringTrim = 1
+            coreRevealOpacity = 1
+        }
+    }
+
+    private func playStateCeremony(from oldState: DoorLightState?,
+                                   to newState: DoorLightState?) {
+        ceremonyDelay = 0
+        if !motionReduced,
+           oldState != newState,
+           newState == .blocked || newState == .waiting {
+            var echoReset = Transaction()
+            echoReset.disablesAnimations = true
+            withTransaction(echoReset) { echoProgress = 0 }
             Task { @MainActor in
                 await Task.yield()
-                ringTrim = 1
+                echoProgress = 1
             }
         }
-        .doorLightMotion(value: ringTrim)
-        .accessibilityHidden(true)
+
+        guard !motionReduced else { ringTrim = 1; return }
+        // A second state flip during the draw keeps the current presentation
+        // value moving toward 1; it never snaps back to zero. A settled ring
+        // starts the next ceremony blank, then draws clockwise on the next
+        // update so the reset and the value-keyed animation cannot coalesce.
+        let now = Date()
+        guard now >= ceremonyEndsAt else { return }
+        ceremonyEndsAt = now.addingTimeInterval(Theme.ceremonyInterval)
+        var reset = Transaction()
+        reset.disablesAnimations = true
+        withTransaction(reset) { ringTrim = 0 }
+        Task { @MainActor in
+            await Task.yield()
+            ringTrim = 1
+        }
     }
 
     private func runningOpacity(at date: Date) -> Double {
@@ -599,10 +670,16 @@ struct TierSplitBar: View {
         VStack(alignment: .leading, spacing: Theme.intraCell) {
             GeometryReader { geo in
                 HStack(spacing: 2) {
-                    ForEach(stats) { st in
-                        Capsule()
-                            .fill(st.tier.color)
-                            .frame(width: max(3, (geo.size.width - CGFloat(stats.count - 1) * 2) * st.cost / total))
+                    ForEach(Array(stats.enumerated()), id: \.element.id) { index, st in
+                        Reveal.Progress(animation: Theme.Motion.draw(.bar),
+                                        itemIndex: index) { progress in
+                            Capsule()
+                                .fill(st.tier.color)
+                                .frame(width: max(
+                                    3,
+                                    (geo.size.width - CGFloat(stats.count - 1) * 2)
+                                        * st.cost / total * progress))
+                        }
                     }
                 }
             }
@@ -634,17 +711,20 @@ struct BarStrip: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 2.5) {
             ForEach(Array(values.enumerated()), id: \.offset) { index, v in
-                ZStack(alignment: .bottom) {
-                    Capsule()
-                        .fill(v > 0.02 ? color.opacity(0.85) : Theme.progressTrack)
-                    if index == currentIndex {
+                Reveal.Progress(animation: Theme.Motion.draw(.bar),
+                                itemIndex: index) { progress in
+                    ZStack(alignment: .bottom) {
                         Capsule()
-                            .fill(Theme.accent)
-                            .frame(width: 2)
+                            .fill(v > 0.02 ? color.opacity(0.85) : Theme.progressTrack)
+                        if index == currentIndex {
+                            Capsule()
+                                .fill(Theme.accent)
+                                .frame(width: 2)
+                        }
                     }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(2, height * v * progress))
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: max(2, height * v))
             }
         }
         .frame(height: height, alignment: .bottom)
@@ -670,6 +750,8 @@ enum TapFocusVisual { case row, card, capsule, none }
 struct TapButton<Label: View>: View {
     var shortcut: KeyboardShortcut? = nil
     var focusVisual: TapFocusVisual = .row
+    var keyboardAction: (() -> Void)? = nil
+    var pressFeedback = true
     let action: () -> Void
     @ViewBuilder let label: () -> Label
     @Environment(\.isEnabled) private var isEnabled
@@ -678,10 +760,14 @@ struct TapButton<Label: View>: View {
 
     init(shortcut: KeyboardShortcut? = nil,
          focusVisual: TapFocusVisual = .row,
+         keyboardAction: (() -> Void)? = nil,
+         pressFeedback: Bool = true,
          action: @escaping () -> Void,
          @ViewBuilder label: @escaping () -> Label) {
         self.shortcut = shortcut
         self.focusVisual = focusVisual
+        self.keyboardAction = keyboardAction
+        self.pressFeedback = pressFeedback
         self.action = action
         self.label = label
     }
@@ -689,7 +775,7 @@ struct TapButton<Label: View>: View {
     var body: some View {
         label()
             .contentShape(Rectangle())
-            .pressedMotion(isPressed: isPressed)
+            .pressedMotion(isPressed: pressFeedback && isPressed, visual: focusVisual)
             .onTapGesture { if isEnabled { action() } }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
@@ -718,12 +804,12 @@ struct TapButton<Label: View>: View {
             .motion(Theme.Motion.quick, value: isFocused)
             .onKeyPress(.return) {
                 guard isEnabled else { return .ignored }
-                action()
+                (keyboardAction ?? action)()
                 return .handled
             }
             .background {
                 if let shortcut {
-                    Button("", action: action)
+                    Button("", action: keyboardAction ?? action)
                         .buttonStyle(.link)          // verified immune
                         .keyboardShortcut(shortcut)
                         .opacity(0)
@@ -1131,12 +1217,11 @@ struct MutedDisclosureRow: View {
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.faint)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .disclosureChevron(isExpanded: isExpanded)
                 Spacer(minLength: 0)
             }
             .padding(.vertical, Theme.micro)
         }
-        .reorderMotion(value: isExpanded)
     }
 }
 
@@ -1160,7 +1245,7 @@ struct MutedDisclosurePill: View {
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.faint)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .disclosureChevron(isExpanded: isExpanded)
             }
             .padding(.horizontal, Theme.codePadding)
             .padding(.vertical, Theme.micro)
@@ -1169,7 +1254,6 @@ struct MutedDisclosurePill: View {
                 Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
         }
-        .reorderMotion(value: isExpanded)
     }
 }
 
@@ -1327,29 +1411,34 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.blockGap) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Text(title)
-                                .font(.system(size: 28, weight: .bold))
-                                .tracking(-0.4)
-                                .foregroundStyle(Theme.ink)
-                            if let epithet {
-                                Text(epithet)
-                                    .font(.caption)
-                                    .foregroundStyle(Theme.faint)
+                VStack(alignment: .leading, spacing: Theme.blockGap) {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 8) {
+                                Text(title)
+                                    .font(.system(size: 28, weight: .bold))
+                                    .tracking(-0.4)
+                                    .foregroundStyle(Theme.ink)
+                                if let epithet {
+                                    Text(epithet)
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.faint)
+                                }
                             }
+                            Text(subtitle)
+                                .font(.subheadline)
+                                .foregroundStyle(Theme.muted)
                         }
-                        Text(subtitle)
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.muted)
+                        Spacer()
+                        trailing()
                     }
-                    Spacer()
-                    trailing()
+                    .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
+                    Divider()
                 }
-                .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
-                Divider()
-                content()
+                .launchReveal(.header)
+
+                Reveal.StaggeredContent { content() }
+                    .launchReveal(.content)
             }
             .screenScaffoldFrame()
         }
@@ -1396,6 +1485,6 @@ struct Toast: View {
         .padding(.vertical, Theme.toastVerticalInset)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
-        .motionTransition(edge: .bottom)
+        .toastTransition()
     }
 }

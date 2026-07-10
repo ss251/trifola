@@ -40,7 +40,7 @@ struct ReceiptDisclosure: View {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(Theme.faint)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .disclosureChevron(isExpanded: expanded)
                     Text(expanded ? "hide the math" : "show the math")
                         .font(.caption)
                 }
@@ -48,8 +48,10 @@ struct ReceiptDisclosure: View {
             }
             if expanded {
                 ReceiptView(receipt: build())
+                    .motionRowTransition()
             }
         }
+        .reorderMotion(value: expanded)
     }
 }
 

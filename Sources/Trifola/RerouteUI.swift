@@ -130,14 +130,17 @@ private struct RerouteTrendSparkline: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 2) {
-            ForEach(Array(series.enumerated()), id: \.offset) { _, day in
-                RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(day.1 == 0 ? Theme.progressTrack : Theme.graphite.opacity(0.85))
-                    .frame(maxWidth: .infinity)
-                    .frame(minWidth: 3)
-                    .frame(height: day.1 == 0
-                           ? 1
-                           : max(3, height * CGFloat(day.1) / CGFloat(peak)))
+            ForEach(Array(series.enumerated()), id: \.offset) { index, day in
+                Reveal.Progress(animation: Theme.Motion.draw(.bar),
+                                itemIndex: index) { progress in
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(day.1 == 0 ? Theme.progressTrack : Theme.graphite.opacity(0.85))
+                        .frame(maxWidth: .infinity)
+                        .frame(minWidth: 3)
+                        .frame(height: day.1 == 0
+                               ? 1
+                               : max(3, height * CGFloat(day.1) / CGFloat(peak) * progress))
+                }
             }
         }
         .frame(height: height, alignment: .bottom)

@@ -58,11 +58,15 @@ struct SessionsScreen: View {
         HStack(spacing: 0) {
             listColumn
                 .frame(width: 430)
+                .sectionRevealBlock(index: 0)
             Divider()
             inspector
                 .frame(maxWidth: .infinity)
+                .launchReveal(.content)
+                .sectionRevealBlock(index: 1)
         }
         .centeredContentColumn()
+        .reorderMotion(value: services.selectedSessionID)
     }
 
     // MARK: List column
@@ -83,8 +87,10 @@ struct SessionsScreen: View {
                 .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
                 .padding(.top, ScreenScaffoldMetrics.topInset)
                 .padding(.horizontal, Theme.gutter)
+                .launchReveal(.header)
 
                 Divider()
+                    .launchReveal(.header)
 
                 VStack(alignment: .leading, spacing: Theme.sectionGap) {
                     HStack(spacing: 6) {
@@ -145,6 +151,7 @@ struct SessionsScreen: View {
                     }
                 }
                 .padding(.horizontal, Theme.gutter)
+                .launchReveal(.content)
             }
             .padding(.bottom, Theme.intraCell)
 
@@ -181,6 +188,7 @@ struct SessionsScreen: View {
                     }
                 }
             }
+            .launchReveal(.content)
         }
     }
 
@@ -191,11 +199,13 @@ struct SessionsScreen: View {
         if let session = services.selectedSession {
             SessionInspector(session: session)
                 .id(session.id)
+                .motionRowTransition()
         } else {
             EmptyState(
                 icon: "square.stack.3d.up",
                 title: "Pick a session",
                 detail: "Select any session on the left to see its live transcript, token economics and hand-off controls.")
+                .motionRowTransition()
         }
     }
 }

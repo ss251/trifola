@@ -289,7 +289,8 @@ struct MenuBarContent: View {
             }
         }) {
             HStack(spacing: 8) {
-                SeatMark(state: DoorLightState(state), size: 8)
+                SeatMark(state: DoorLightState(state), size: 8,
+                         firstAppearanceDraw: false)
                 if suppressed { SuppressionMark() }
                 VStack(alignment: .leading, spacing: 1) {
                     Text("\(row.project) · \(row.title)")

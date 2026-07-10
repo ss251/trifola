@@ -60,10 +60,24 @@ enum AppSection: String, CaseIterable, Identifiable {
     }
 }
 
+/// Navigation motion is a property of the input, not the destination. Pointer
+/// selection earns spatial continuity; keyboard, palette, restoration and deep
+/// links remain hard cuts through the single transaction in `select`.
+enum NavOrigin {
+    case pointer
+    case keyboard
+    case programmatic
+}
+
 /// Owns the stores, the FSEvents wiring and the navigation state. One instance
 /// for the whole app; everything on the MainActor.
 @MainActor
 final class AppServices: ObservableObject {
+    private static let initialSection: AppSection =
+        (ProcessInfo.processInfo.environment["TRIFOLA_SECTION"]
+            ?? ProcessInfo.processInfo.environment["CMC_SECTION"])
+            .flatMap(AppSection.init(rawValue:)) ?? .overview
+
     let sessions = SessionStore()
     let audit = RoutingAudit()
     let stack = StackStore()
@@ -106,6 +120,10 @@ final class AppServices: ObservableObject {
     /// from the OAuth usage endpoint, read-only. Its own 5-min throttle keeps the
     /// FSEvents-driven refreshAll() calls cheap.
     let quota = QuotaStore()
+    /// One-shot launch choreography state. It is intentionally not published:
+    /// claiming a reveal must never turn a decorative animation into a render
+    /// source for the whole app.
+    let reveals = Reveal.Registry()
     /// First-run truth: whether the local Claude Code corpus exists and contains
     /// at least one transcript. Checked at launch and after each coalesced refresh,
     /// never in a hot SwiftUI body.
@@ -125,10 +143,9 @@ final class AppServices: ObservableObject {
 
     /// `TRIFOLA_SECTION=spend` (etc.) opens the app on a given screen — the snapshot
     /// loop uses it to capture every screen without UI scripting.
-    @Published var section: AppSection =
-        (ProcessInfo.processInfo.environment["TRIFOLA_SECTION"]
-            ?? ProcessInfo.processInfo.environment["CMC_SECTION"])
-            .flatMap(AppSection.init(rawValue:)) ?? .overview
+    @Published var section: AppSection = AppServices.initialSection
+    @Published private(set) var firstAppearanceSection: AppSection? = AppServices.initialSection
+    private(set) var seenSections: Set<AppSection> = [AppServices.initialSection]
     @Published var selectedSessionID: String? = nil
     /// Heartbeat so relative timestamps ("3m ago", `isActive`) re-render.
     @Published var now = Date()
@@ -189,11 +206,28 @@ final class AppServices: ObservableObject {
         }
     }
 
+    /// The only section mutation point. A nil/disabled transaction suppresses
+    /// every transition and matched-geometry effect for non-pointer origins;
+    /// no screen or sidebar item needs to know how navigation was initiated.
+    func select(_ newSection: AppSection, origin: NavOrigin) {
+        guard section != newSection else { return }
+        let isFirstAppearance = seenSections.insert(newSection).inserted
+        var transaction = Transaction(
+            animation: origin == .pointer
+                ? Theme.motion(Theme.Motion.nav, reduceMotion: false)
+                : nil)
+        transaction.disablesAnimations = origin != .pointer
+        withTransaction(transaction) {
+            firstAppearanceSection = isFirstAppearance ? newSection : nil
+            section = newSection
+        }
+    }
+
     /// The Skill hierarchy's Launch button: jump to the builder, seeded with a
     /// skill ref. The builder folds it into the current draft on appear.
     func seedLaunch(skill: String) {
         pendingSkillSeed = skill
-        section = .launch
+        select(.launch, origin: .programmatic)
     }
 
     /// Distinct existing `<cwd>/.claude/skills` dirs across recent sessions — the
@@ -489,7 +523,7 @@ final class AppServices: ObservableObject {
     /// Deep-link: jump to a session's live detail from anywhere.
     func inspect(_ session: SessionSummary) {
         selectedSessionID = session.id
-        section = .sessions
+        select(.sessions, origin: .programmatic)
     }
 
     /// The attention door light opens the real terminal when possible, then falls

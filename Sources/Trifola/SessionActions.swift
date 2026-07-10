@@ -36,6 +36,7 @@ struct SessionActions: View {
         .overlay(alignment: .top) {
             if let feedback {
                 Toast(text: feedback)
+                    .id(feedback)
                     .offset(y: -44)
                     .allowsHitTesting(false)
             }
