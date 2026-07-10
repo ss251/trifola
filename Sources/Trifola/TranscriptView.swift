@@ -54,14 +54,11 @@ struct TranscriptView: View {
         HStack(spacing: 6) {
             switch store.state {
             case .live:
-                SeatMark(fill: Theme.green, size: 6)
-                Text("Tailing").font(.caption).foregroundStyle(Theme.muted)
+                Text("Tailing").font(.caption).foregroundStyle(Theme.green)
             case .idle:
-                SeatMark(fill: Theme.faint, size: 6, active: false)
                 Text("Opening").font(.caption).foregroundStyle(Theme.muted)
             case .error(let why):
-                SeatMark(fill: Theme.red, size: 6, active: false)
-                Text(why).font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
+                Text(why).font(.caption).foregroundStyle(Theme.red).lineLimit(1)
             }
             if store.startedMidFile || store.droppedHead {
                 Text("· tail of file")

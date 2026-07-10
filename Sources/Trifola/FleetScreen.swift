@@ -285,7 +285,7 @@ private struct FleetBayView: View {
                     let snoozed = suppressionState?.isSnoozed(sessionID: t.id, at: now) == true
                     let muted = suppressionState?.isMuted(projectKey: t.session.project) == true
                     HStack(spacing: 10) {
-                        SeatMark(fill: Theme.faint, size: 6, active: false)
+                        SeatMark(state: .idle, size: 8)
                         if snoozed || muted { SuppressionMark() }
                         Text(t.session.tier.label).font(.caption).foregroundStyle(Theme.faint)
                         if let q = t.taskQuote {
@@ -365,6 +365,7 @@ private struct BayHeader: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            SeatMark(state: bayDoorState, size: 8)
             Text(bay.project)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(bay.isIdle ? Theme.muted : Theme.ink)
@@ -390,7 +391,6 @@ private struct BayHeader: View {
             if bay.isIdle {
                 Text("idle \(fmtAgeShort(bay.age))").font(.caption).foregroundStyle(Theme.faint)
             } else if bay.blockedCount > 0 {
-                SeatMark(fill: Theme.red, size: 6)
                 Text("\(bay.blockedCount) blocked").font(.caption.weight(.medium)).foregroundStyle(Theme.ink)
                 Text("· \(fmtUSD(bay.costSubtotal)) today").font(.caption).foregroundStyle(Theme.muted)
             } else {
@@ -399,6 +399,22 @@ private struct BayHeader: View {
             }
         }
         .fixedSize()
+    }
+
+    private var bayDoorState: DoorLightState {
+        guard let worst = bay.allTokens.map(\.state).min(by: { stateRank($0) < stateRank($1) }) else {
+            return .idle
+        }
+        return DoorLightState(worst)
+    }
+
+    private func stateRank(_ state: AttentionState) -> Int {
+        switch state {
+        case .blocked: return 0
+        case .waiting: return 1
+        case .running: return 2
+        case .idle: return 3
+        }
     }
 }
 
@@ -596,21 +612,8 @@ private struct HeartbeatDot: View {
     let pulse: Int
     let still: Bool
 
-    @State private var flash: Double = 0
-
     var body: some View {
-        // The seat token = the app's mark at live density (POLISH II.A): a filled
-        // state dot with a 1pt tier ring, plus the heartbeat blip. Same `SeatMark`
-        // the sidebar lockup wears — one object at every distance.
-        SeatMark(fill: state.color, ring: ring.opacity(0.9), size: 7,
-                 ringWidth: state == .idle ? 0 : 1)
-            // The blip: a brief lighter overlay that fades out. Absent for blocked.
-            .overlay(Circle().fill(.white).opacity(flash * 0.7).frame(width: 7, height: 7))
-            .onChange(of: pulse) { _, _ in
-                guard !still else { return }
-                flash = 1
-                withAnimation(.easeOut(duration: 0.2)) { flash = 0 }
-            }
+        SeatMark(state: DoorLightState(state), size: 8)
     }
 }
 

@@ -40,6 +40,17 @@ extension DeadlineState {
     }
 }
 
+private extension DeadlineCard {
+    var doorLightState: DoorLightState {
+        if isLive { return .running }
+        switch state {
+        case .stalled, .overdue: return .blocked
+        case .atRisk: return .waiting
+        case .onTrack, .shipped: return .idle
+        }
+    }
+}
+
 // MARK: - The Linear connection (drives the affordance's two honest states)
 
 enum LinearConnection: Equatable {
@@ -382,8 +393,11 @@ struct DeadlineScreen: View {
     }
 
     private func reveal(_ card: DeadlineCard) {
-        // The provenance click lands on the source file (unconfirmed → confirm inline).
-        if !card.source.confirmed { services.deadlines.confirm(card.projectKey) }
+        // Confirmation is an explicit chip action. Provenance never mutates state.
+        let path = (card.source.file as NSString).expandingTildeInPath
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+        }
     }
 }
 
@@ -481,9 +495,7 @@ private struct DeadlineStrip: View {
     var body: some View {
         TapButton(action: onTap) {
             HStack(spacing: 10) {
-                SeatMark(fill: card.state.color,
-                         ring: (tier?.color ?? card.state.color).opacity(0.9), size: 8,
-                         ringWidth: 1)
+                SeatMark(state: card.doorLightState, size: 8)
                 Text(card.projectKey).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
                 Text("— \(card.state.label)").font(.subheadline.weight(.medium)).foregroundStyle(card.state.color)
                 Text("· \(fmtCountdown(card.runway)) left, untouched \(fmtAgeShort(card.idle))")
@@ -554,9 +566,7 @@ private struct DeadlineCardRow: View {
             HStack(spacing: 8) {
                 // The door light: state fill + TIER ring where a session backs the
                 // row (UI_GRIND DLN-5/§2.1) — state-only ring when none does.
-                SeatMark(fill: card.isLive ? Theme.green : card.state.color,
-                         ring: (tier?.color ?? card.state.color).opacity(0.9), size: 7,
-                         ringWidth: card.state == .shipped ? 0 : 1)
+                SeatMark(state: card.doorLightState, size: 8)
                 Text(card.projectKey)
                     .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink).lineLimit(1)
             }
@@ -603,7 +613,7 @@ private struct DeadlineCardRow: View {
             Text("· \(card.platform ?? card.kind.label)")
                 .font(.caption).foregroundStyle(Theme.faint).lineLimit(1)
             if card.isLive {
-                Text("· ● live").font(.caption2).foregroundStyle(Theme.green)
+                Text("· live").font(.caption2).foregroundStyle(Theme.green)
             }
             Spacer(minLength: 8)
             if card.machineID != Machine.localID { MachineChip(machineID: card.machineID) }
@@ -612,15 +622,20 @@ private struct DeadlineCardRow: View {
 
     // line 3 — the provenance: mono, faint, click → source file (confirm inline)
     private var provenanceLine: some View {
-        TapButton(action: { onReveal(card) }) {
-            HStack(spacing: 4) {
+        HStack(spacing: 6) {
+            TapButton(action: { onReveal(card) }) {
                 Text(provenanceText)
                     .font(.caption2).foregroundStyle(Theme.faint)
                     .lineLimit(1)
-                Text(confirmSuffix)
-                    .font(.caption2).foregroundStyle(card.source.confirmed ? Theme.faint : Theme.ink)
+                    .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            if card.source.confirmed {
+                Text("confirmed")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
+            } else {
+                DeadlineConfirmChip { onConfirm(card) }
+            }
         }
     }
 
@@ -639,7 +654,27 @@ private struct DeadlineCardRow: View {
             return "parsed  \(card.source.file)\(loc)\(raw)"
         }
     }
-    private var confirmSuffix: String { card.source.confirmed ? " · confirmed" : " · confirm?" }
+}
+
+private struct DeadlineConfirmChip: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        TapButton(focusVisual: .capsule, action: action) {
+            Text("Confirm")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Theme.ink)
+                .padding(.horizontal, Theme.intraCell)
+                .padding(.vertical, 2)
+                .background {
+                    Capsule().fill(hovering ? Theme.selectionBG : Theme.cardFill)
+                    Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
+                }
+        }
+        .onHover { hovering = $0 }
+        .help("Confirm this parsed deadline")
+    }
 }
 
 // MARK: - The connect-Linear affordance (calm, both states, never a nag)

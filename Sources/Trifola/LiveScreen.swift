@@ -86,6 +86,7 @@ private struct LiveTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
+                SeatMark(state: DoorLightState(attentionState), size: 8)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         Text("\(session.project) · \(session.displayTitle)")
@@ -128,5 +129,10 @@ private struct LiveTile: View {
         .contextMenu {
             Button("Inspect session") { services.inspect(session) }
         }
+    }
+
+    private var attentionState: AttentionState {
+        services.attentionBoard(now: services.now).items
+            .first(where: { $0.id == session.id })?.state ?? .running
     }
 }

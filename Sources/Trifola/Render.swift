@@ -92,6 +92,8 @@ enum AttentionRender {
         // ImageRenderer resolves SwiftUI `Color` against the environment scheme —
         // without this the dark pass rendered light (the harness lied; UI_GRIND ATT-1).
         .environment(\.colorScheme, dark ? .dark : .light)
+        .environment(\.displayScale, 2)
+        .environment(\.doorLightReduceMotionOverride, true)
 
         let renderer = ImageRenderer(content: content)
         renderer.scale = 2
@@ -217,6 +219,8 @@ enum AuditRender {
         // against the environment scheme, so the drawing-appearance override alone
         // leaves the dark pass looking light. Both together render true dark/light.
         .environment(\.colorScheme, dark ? .dark : .light)
+        .environment(\.displayScale, 2)
+        .environment(\.doorLightReduceMotionOverride, true)
 
         let renderer = ImageRenderer(content: content)
         renderer.scale = 2
@@ -335,6 +339,8 @@ enum FleetRender {
             .frame(width: 1180, alignment: .topLeading)
             .background(Color(nsColor: .windowBackgroundColor))
             .environment(\.colorScheme, dark ? .dark : .light)
+            .environment(\.displayScale, 2)
+            .environment(\.doorLightReduceMotionOverride, true)
 
         let renderer = ImageRenderer(content: content)
         renderer.scale = 2
@@ -443,6 +449,8 @@ private func writePNG<V: View>(_ content: V, to path: String, dark: Bool, width:
         .frame(width: width, alignment: .leading)
         .background(Color(nsColor: .windowBackgroundColor))
         .environment(\.colorScheme, dark ? .dark : .light)
+        .environment(\.displayScale, 2)
+        .environment(\.doorLightReduceMotionOverride, true)
     let renderer = ImageRenderer(content: framed)
     renderer.scale = 2
     var rendered: NSImage?
@@ -455,6 +463,140 @@ private func writePNG<V: View>(_ content: V, to path: String, dark: Bool, width:
     }
     try? png.write(to: URL(fileURLWithPath: path))
     print("RENDER: \(path)")
+}
+
+// MARK: - Permanent full-window layout render (`--render-layout`)
+
+/// The production rail + scaffold + Overview hero at the two launch widths Fable
+/// judges. This is intentionally permanent: C-5's temporary projection drifted
+/// from the shipped rail and silently reintroduced both the gray slab and a greedy
+/// KPI card.
+enum LayoutRender {
+    private static func live(_ id: String, _ project: String, _ title: String,
+                             tier: ModelTier, now: Date) -> SessionSummary {
+        SessionSummary(id: id, project: project, cwd: "/Users/dev/Developer/\(project)",
+                       model: tier.rawValue, lastActivity: now.addingTimeInterval(-24),
+                       messageCount: 18, usage: SessionUsage(inputTokens: 48_000),
+                       contextWeight: 118_000, filePath: "/tmp/\(id).jsonl",
+                       lastUserMessage: title)
+    }
+
+    private struct WindowSnapshot: View {
+        let viewportWidth: CGFloat
+        let now: Date
+
+        private var burn: BurnGovernor {
+            BurnGovernor(sessions: BurnRender.seededSessions(now: now), now: now)
+        }
+        private var liveSessions: [SessionSummary] {
+            [live("layout-a", "my-app", "Build the Fleet Board", tier: .opus, now: now),
+             live("layout-b", "mobile-app", "Fix the chat view layout", tier: .sonnet, now: now),
+             live("layout-c", "api-gateway", "Run the gateway test suite", tier: .user, now: now)]
+        }
+        private var tierStats: [TierStat] {
+            [TierStat(tier: .opus, tokens: 68_000_000, cost: 6214, sessions: 4120),
+             TierStat(tier: .user, tokens: 12_400_000, cost: 1148, sessions: 790),
+             TierStat(tier: .sonnet, tokens: 29_100_000, cost: 1038, sessions: 1068),
+             TierStat(tier: .haiku, tokens: 8_800_000, cost: 142, sessions: 188)]
+        }
+
+        var body: some View {
+            let sidebar = SidebarSnapshot(
+                selected: .overview,
+                worstState: .blocked,
+                liveCount: 7,
+                pendingLessonCount: 0,
+                todayCost: burn.today.cost,
+                monthProjection: burn.monthProjection,
+                updatedText: "updated now",
+                refreshText: nil,
+                account: "local account",
+                machine: "this Mac")
+
+            HStack(spacing: 0) {
+                SidebarRail(snapshot: sidebar)
+                    .frame(width: 248)
+                    .background(Theme.surfaceSidebar)
+                Divider()
+                VStack(alignment: .leading, spacing: Theme.blockGap) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Overview")
+                                .font(.system(size: 28, weight: .bold))
+                                .tracking(-0.4)
+                                .foregroundStyle(Theme.ink)
+                            Text("6,166 sessions across 42 projects · refreshed now · dollar values are API-rate estimates, not your bill")
+                                .font(.subheadline)
+                                .foregroundStyle(Theme.muted)
+                        }
+                        .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
+                        Divider()
+                        VStack(alignment: .leading, spacing: Theme.intraCell) {
+                            Text("2 sessions need you · \(fmtUSD(burn.today.cost)) today at public API rates")
+                                .font(.title3)
+                                .foregroundStyle(Theme.ink)
+                            HStack(spacing: Theme.intraCell) {
+                                ArtifactPill(icon: "square.grid.3x3", name: "Fleet Board") {}
+                                ArtifactPill(icon: "doc.text.magnifyingglass", name: "Audit evidence") {}
+                            }
+                        }
+                        .frame(maxWidth: ScreenScaffoldMetrics.proseMaxWidth, alignment: .leading)
+                        OverviewHeroComposition(snapshot: OverviewHeroSnapshot(
+                            usageValue: "$8,542",
+                            usageReading: "estimate from recorded usage — not your bill",
+                            activeCount: 7,
+                            activeReading: "sessions in the last 15m",
+                            savingsValue: "$3,214",
+                            savingsReading: "vs. uncached input at API rates",
+                            governor: burn,
+                            tierStats: tierStats,
+                            tierTotal: 8_542,
+                            liveSessions: liveSessions))
+                            .padding(.top, 12)
+                }
+                .screenScaffoldFrame()
+                .frame(width: viewportWidth - 249, height: 900, alignment: .top)
+                .background(Theme.surfaceWindow)
+            }
+            .frame(width: viewportWidth, height: 900)
+            .background(Theme.surfaceWindow)
+        }
+    }
+
+    @MainActor
+    static func run(base: String) {
+        let now = Date()
+        for width: CGFloat in [1440, 1680] {
+            for dark in [true, false] {
+                let mode = dark ? "dark" : "light"
+                let path = "\(base)-\(Int(width))-\(mode).png"
+                write(WindowSnapshot(viewportWidth: width, now: now),
+                      to: path, dark: dark, width: width, height: 900)
+            }
+        }
+    }
+
+    @MainActor
+    private static func write<V: View>(_ content: V, to path: String, dark: Bool,
+                                       width: CGFloat, height: CGFloat) {
+        let framed = content
+            .frame(width: width, height: height)
+            .environment(\.colorScheme, dark ? .dark : .light)
+            .environment(\.displayScale, 2)
+            .environment(\.doorLightReduceMotionOverride, true)
+        let renderer = ImageRenderer(content: framed)
+        renderer.scale = 2
+        var rendered: NSImage?
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+        appearance.performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
+        guard let image = rendered, let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            FileHandle.standardError.write(Data("layout render failed\n".utf8))
+            return
+        }
+        try? png.write(to: URL(fileURLWithPath: path))
+        print("RENDER: \(path)")
+    }
 }
 
 // MARK: - Credit-era burn governor headless render (`--render-burn`)
@@ -747,7 +889,7 @@ enum CrossMachineRender {
         let s: SessionSummary
         var body: some View {
             HStack(spacing: 8) {
-                SeatMark(fill: s.isActive ? Theme.green : Theme.faint, ring: s.tier.color, size: 7)
+                SeatMark(state: s.isActive ? .running : .idle, size: 8)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(s.displayTitle).font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
@@ -792,8 +934,7 @@ enum CrossMachineRender {
                         MachineChip(machineID: r.machine.id)
                         Text(r.machine.name).font(.subheadline).foregroundStyle(Theme.ink)
                         if r.activeCount > 0 {
-                            SeatMark(fill: Theme.green, size: 6)
-                            Text("\(r.activeCount) active").font(.caption).foregroundStyle(Theme.muted)
+                            Text("\(r.activeCount) active").font(.caption).foregroundStyle(Theme.green)
                         }
                         Spacer()
                         Text("\(r.sessionCount) sessions · \(fmtTokens(r.tokens)) tokens").font(.caption).foregroundStyle(Theme.faint)
@@ -1066,7 +1207,6 @@ private struct SkillDetailPreview: View {
                 }
             }
             Text(skill.path).font(.caption2).foregroundStyle(Theme.faint).lineLimit(1)
-            Spacer(minLength: 0)
         }
         .padding(Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1194,15 +1334,17 @@ enum IdentityRender {
 
     private struct Lockup: View {
         let caption: String
+        let state: DoorLightState
         let ring: Color
         var body: some View {
             VStack(alignment: .leading, spacing: 6) {
                 RenderCaption(caption)
                 HStack(spacing: 9) {
-                    SeatMark(fill: Theme.ink, ring: ring, size: 15, ringWidth: 1.5, gapped: true)
+                    SeatMark(state: state, fill: Theme.ink, ring: ring, size: 10,
+                             coreUsesState: false)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Trifola").font(.headline).foregroundStyle(Theme.ink)
-                        Text("Claude Code fleet").font(.caption).foregroundStyle(Theme.muted)
+                        Text("local · read-only").font(.caption).foregroundStyle(Theme.muted)
                     }
                     Spacer(minLength: 8)
                 }
@@ -1245,20 +1387,32 @@ enum IdentityRender {
         // The menu-bar glyph is a template at runtime (the system tints it); here we
         // draw it in the theme's label color so its geometry reads in the render.
         let markColor: NSColor = dark ? .white : NSColor.black.withAlphaComponent(0.85)
-        let quiet = AppBrand.markImage(size: 26, state: .quiet, color: markColor)
-        let running = AppBrand.markImage(size: 26, state: .running, color: markColor)
-        let needs = AppBrand.markImage(size: 26, state: .needsYou, color: markColor)
+        let quiet = AppBrand.markImage(size: 15, state: .quiet, color: markColor)
+        let running = AppBrand.markImage(size: 15, state: .running, color: markColor)
+        let needs = AppBrand.markImage(size: 15, state: .needsYou, color: markColor)
         let dock = AppBrand.dockIcon()
 
         let content = VStack(alignment: .leading, spacing: 20) {
-            RenderCaption("The door light — the session dot + its 1pt tier ring, the app's own telemetry atom promoted to its face. One circle, one ring; the tint is the signal.")
+            RenderCaption("The Door Light — one hand-drawn ring-and-core atom: 10pt masthead, 8pt entity rows, template menu glyph, Dock badge and runtime app icon.")
 
             SectionLabel("Sidebar lockup — the mark's ring takes the fleet's worst live state")
             HStack(alignment: .top, spacing: 16) {
-                Lockup(caption: "quiet", ring: Theme.faint)
-                Lockup(caption: "running", ring: Theme.green)
-                Lockup(caption: "waiting on you", ring: Theme.amber)
-                Lockup(caption: "blocked", ring: Theme.red)
+                Lockup(caption: "quiet", state: .idle, ring: Theme.ink.opacity(0.35))
+                Lockup(caption: "running", state: .running, ring: Theme.green)
+                Lockup(caption: "waiting on you", state: .waiting, ring: Theme.amber)
+                Lockup(caption: "blocked", state: .blocked, ring: Theme.red)
+            }
+            Divider()
+
+            SectionLabel("Entity rows — fixed 8pt mark, monochrome ring, state core")
+            HStack(spacing: 26) {
+                ForEach([DoorLightState.idle, .running, .waiting, .blocked], id: \.self) { state in
+                    HStack(spacing: 8) {
+                        SeatMark(state: state, size: 8)
+                        Text(String(describing: state)).font(.caption).foregroundStyle(Theme.muted)
+                    }
+                }
+                Spacer()
             }
             Divider()
 
@@ -1271,8 +1425,24 @@ enum IdentityRender {
             }
             Divider()
 
-            SectionLabel("Dock tile — the door light on graphite (drops the borrowed ⌘)")
-            Image(nsImage: dock).resizable().frame(width: 96, height: 96)
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 8) {
+                    SectionLabel("App icon")
+                    Image(nsImage: dock).resizable().frame(width: 96, height: 96)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    SectionLabel("Dock badge — blocked light + count")
+                    ZStack(alignment: .bottomTrailing) {
+                        Image(nsImage: dock).resizable().frame(width: 96, height: 96)
+                        HStack(spacing: 4) {
+                            SeatMark(state: .blocked, ring: Theme.red, size: 14)
+                            Text("2").font(.caption.weight(.semibold)).foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(Color.black.opacity(0.88), in: Capsule())
+                    }
+                }
+            }
         }
         // 4 lockup cards ×220 + 3×16 gaps = 928 content + 56 padding — 900 clipped
         // the blocked card (the state that matters most) off the canvas (IDN-1).

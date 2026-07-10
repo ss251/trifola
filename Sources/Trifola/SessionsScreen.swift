@@ -225,8 +225,8 @@ private struct SessionRow: View {
                 // The door light (UI_GRIND §2.1): state fill + 1pt tier ring —
                 // never a tier-colored disc (which read as an alarm in the app's
                 // own dot language). Stays lit through selection, like the palette.
-                SeatMark(fill: session.isActive ? Theme.green : Theme.faint,
-                         ring: session.tier.color, size: 7)
+                SeatMark(state: DoorLightState(attentionState
+                         ?? (session.isActive ? .running : .idle)), size: 8)
                 if suppressed { SuppressionMark() }
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
@@ -282,8 +282,7 @@ private struct SessionInspector: View {
                 HStack(spacing: 8) {
                     // The door light has an idle rendering (faint fill) — absence
                     // was a third, unsanctioned state (UI_GRIND CLB-3).
-                    SeatMark(fill: session.isActive ? Theme.green : Theme.faint,
-                             ring: session.tier.color, size: 7)
+                    SeatMark(state: DoorLightState(attentionStateForInspector), size: 8)
                     Text("\(session.project) · \(session.displayTitle)")
                         .font(.system(size: 28, weight: .bold))
                         .tracking(-0.4)
@@ -363,6 +362,12 @@ private struct SessionInspector: View {
         }
         .padding(.horizontal, Theme.gutter)
         .padding(.bottom, Theme.paneInset)
+    }
+
+    private var attentionStateForInspector: AttentionState {
+        services.attentionBoard(now: services.now).items
+            .first(where: { $0.id == session.id })?.state
+            ?? (session.isActive ? .running : .idle)
     }
 }
 

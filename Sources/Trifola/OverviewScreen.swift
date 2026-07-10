@@ -1,6 +1,55 @@
 import SwiftUI
 import TrifolaKit
 
+struct OverviewHeroSnapshot {
+    let usageValue: String
+    let usageReading: String
+    let activeCount: Int
+    let activeReading: String
+    let savingsValue: String
+    let savingsReading: String
+    let governor: BurnGovernor
+    let tierStats: [TierStat]
+    let tierTotal: Double
+    let liveSessions: [SessionSummary]
+}
+
+/// The judged launch-frame composition, shared by the live Overview and the
+/// permanent full-window render path.
+struct OverviewHeroComposition: View {
+    let snapshot: OverviewHeroSnapshot
+    var onOpenLiveBoard: () -> Void = {}
+    var onSelectSession: (SessionSummary) -> Void = { _ in }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 32) {
+            StatRow {
+                StatTile(label: "Usage at API rates", value: snapshot.usageValue,
+                         sub: snapshot.usageReading)
+                Divider()
+                StatTile(label: "Active now", value: "\(snapshot.activeCount)",
+                         sub: snapshot.activeReading, live: snapshot.activeCount > 0)
+                Divider()
+                StatTile(label: "Cache savings — net of write premiums",
+                         value: snapshot.savingsValue, sub: snapshot.savingsReading)
+            }
+            Card(padding: 20, fixedHeight: 180) {
+                BurnGovernorSection(governor: snapshot.governor, showsDisclaimer: false)
+            }
+            HStack(alignment: .top, spacing: Theme.gutter) {
+                Card(padding: 20, fixedHeight: 190) {
+                    TierSpendSection(stats: snapshot.tierStats, total: snapshot.tierTotal)
+                }
+                Card(padding: 20, fixedHeight: 190) {
+                    LiveNowSection(sessions: snapshot.liveSessions, limit: 3,
+                                   onOpenBoard: onOpenLiveBoard,
+                                   onSelect: onSelectSession)
+                }
+            }
+        }
+    }
+}
+
 /// The hero dashboard: fleet vitals, tier spend split, live sessions,
 /// context-weight offenders and the routing audit — one glance, whole story.
 struct OverviewScreen: View {
@@ -93,25 +142,42 @@ struct OverviewScreen: View {
 
     @ViewBuilder
     private func populatedContent(governor: BurnGovernor) -> some View {
-        AttentionStrip()
+        // The launch-frame composition: verdict above, then one measured vertical
+        // sequence. Fixed heights prevent surplus viewport space from entering a
+        // card; any remainder settles below the final pair.
+        OverviewHeroComposition(
+            snapshot: OverviewHeroSnapshot(
+                usageValue: fmtUSD(store.totalCost),
+                usageReading: store.scanPresentation.isProvisional
+                    ? "still counting" : "estimate from recorded usage — not your bill",
+                activeCount: store.activeSessions.count,
+                activeReading: store.scanPresentation.isProvisional
+                    ? "still counting"
+                    : (store.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m"),
+                savingsValue: fmtUSD(store.totalCacheSavings),
+                savingsReading: store.scanPresentation.isProvisional
+                    ? "still counting" : "vs. uncached input at API rates",
+                governor: governor,
+                tierStats: store.tierStats,
+                tierTotal: store.totalCost,
+                liveSessions: store.activeSessions),
+            onOpenLiveBoard: { services.section = .live },
+            onSelectSession: { services.inspect($0) })
+        // ScreenScaffold contributes the first 20pt; this completes the required
+        // 32pt verdict→KPI gap without inventing a second screen rhythm.
+        .padding(.top, 12)
+
+        // Secondary evidence remains available below the launch frame. It is open
+        // content, never allowed to stretch the hero instruments above.
         if services.isCrossMachine {
             FleetMachinesSection()
             Divider()
         }
-        statRow
         // "Show the math" (W3): the hero's whole-corpus receipt — per-model
         // legs → Σ = the tile's number, same code path (built on expand).
         ReceiptDisclosure(storageKey: "provenance.overview-hero") {
             CostProvenance.corpusReceipt(sessions: store.sessions)
         }
-        Divider()
-        BurnGovernorSection(governor: governor, receipt: {
-            CostProvenance.dayReceipt(
-                sessions: store.sessions,
-                dayKey: CostProvenance.dayKey(for: services.now),
-                footnotes: [CostProvenance.projectionFootnote(governor)])
-        }, showsDisclaimer: false)
-        Divider()
         // PLAN QUOTA (W7): the REAL rate-limit windows next to the estimate
         // above — "what we think you burned" vs "what Anthropic says you
         // have left". Makes the 'resets 10am' wall predictable in advance.
@@ -137,19 +203,11 @@ struct OverviewScreen: View {
             Divider()
         }
         HStack(alignment: .top, spacing: Theme.gutter) {
-            VStack(alignment: .leading, spacing: 16) {
-                TierSpendSection(stats: store.tierStats, total: store.totalCost)
-                Divider()
-                ActivitySection(sessions: store.sessions, now: services.now)
-            }
-            .frame(maxWidth: .infinity)
+            ActivitySection(sessions: store.sessions, now: services.now)
+                .frame(maxWidth: .infinity)
             Divider()
-            VStack(alignment: .leading, spacing: 16) {
-                LiveNowSection()
-                Divider()
-                ContextOffendersSection()
-            }
-            .frame(maxWidth: .infinity)
+            ContextOffendersSection()
+                .frame(maxWidth: .infinity)
         }
         Divider()
         RoutingSection(audit: services.audit)
@@ -213,7 +271,7 @@ struct OverviewScreen: View {
 
 // MARK: - Tier spend
 
-private struct TierSpendSection: View {
+struct TierSpendSection: View {
     let stats: [TierStat]
     let total: Double
 
@@ -291,23 +349,25 @@ private struct ActivitySection: View {
 
 // MARK: - Live now
 
-private struct LiveNowSection: View {
-    @EnvironmentObject var services: AppServices
+struct LiveNowSection: View {
+    let sessions: [SessionSummary]
+    var limit = 5
+    var onOpenBoard: () -> Void = {}
+    var onSelect: (SessionSummary) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.rhythm) {
             HStack(spacing: 8) {
                 SectionLabel("Live now")
-                if !services.sessions.activeSessions.isEmpty { SeatMark(size: 6) }
                 Spacer()
                 ArtifactPill(icon: "dot.radiowaves.left.and.right", name: "Live board") {
-                    services.section = .live
+                    onOpenBoard()
                 }
             }
             // Deterministic tiebreaker + the one reorder motion (W6 wave 4).
-            let live = Array(services.sessions.activeSessions
+            let live = Array(sessions
                 .sorted { ($0.lastActivity ?? .distantPast, $1.id) > ($1.lastActivity ?? .distantPast, $0.id) }
-                .prefix(5))
+                .prefix(limit))
             if live.isEmpty {
                 Text("No sessions active in the last 15 minutes.")
                     .font(.subheadline)
@@ -317,10 +377,10 @@ private struct LiveNowSection: View {
                 VStack(spacing: 0) {
                     ForEach(live) { s in
                         HoverRow {
-                            services.inspect(s)
+                            onSelect(s)
                         } content: {
                             HStack(spacing: 8) {
-                                SeatMark(fill: Theme.green, size: 6)
+                                SeatMark(state: .running, size: 8)
                                 VStack(alignment: .leading, spacing: 1) {
                                     HStack(spacing: 6) {
                                         Text("\(s.project) · \(s.displayTitle)")
@@ -390,6 +450,7 @@ private struct ContextOffendersSection: View {
                             services.inspect(s)
                         } content: {
                             HStack(spacing: 8) {
+                                SeatMark(state: s.isActive ? .running : .idle, size: 8)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text("\(s.project) · \(s.displayTitle) · \(fmtAgo(s.lastActivity))")
                                         .font(.subheadline)
@@ -450,10 +511,9 @@ struct FleetMachinesSection: View {
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink)
                         if r.activeCount > 0 {
-                            SeatMark(fill: Theme.green, size: 6)
                             Text("\(r.activeCount) active")
                                 .font(.caption)
-                                .foregroundStyle(Theme.muted)
+                                .foregroundStyle(Theme.green)
                         }
                         Spacer()
                         Text("\(r.sessionCount) sessions · \(fmtTokens(r.tokens)) tokens")

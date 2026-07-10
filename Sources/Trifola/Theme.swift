@@ -24,8 +24,8 @@ enum Theme {
         light: .windowBackgroundColor,
         dark: NSColor(srgbRed: 25 / 255, green: 25 / 255, blue: 24 / 255, alpha: 1)))
     static let surfaceSidebar = Color(nsColor: .dyn(
-        light: .underPageBackgroundColor,
-        dark: NSColor(srgbRed: 33 / 255, green: 33 / 255, blue: 32 / 255, alpha: 1)))
+        light: .windowBackgroundColor,
+        dark: NSColor(srgbRed: 25 / 255, green: 25 / 255, blue: 24 / 255, alpha: 1)))
     static let ink = Color(nsColor: .dyn(
         light: .labelColor,
         dark: NSColor(srgbRed: 237 / 255, green: 236 / 255, blue: 233 / 255, alpha: 1)))
@@ -40,7 +40,9 @@ enum Theme {
         light: NSColor.black.withAlphaComponent(0.06),
         dark: NSColor.white.withAlphaComponent(0.08)))
     static let selectionText = ink
-    static let accent = Color(nsColor: .controlAccentColor)
+    static let accent = Color(nsColor: .dyn(
+        light: NSColor(srgbRed: 38 / 255, green: 111 / 255, blue: 96 / 255, alpha: 1),
+        dark: NSColor(srgbRed: 66 / 255, green: 153 / 255, blue: 132 / 255, alpha: 1)))
     static let graphite = muted
 
     // Elevation. Every stroked surface is paired with a fill; open tables and
@@ -122,6 +124,19 @@ enum Theme {
 }
 
 // MARK: - Reduce Motion
+
+private struct DoorLightReduceMotionOverrideKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
+}
+
+extension EnvironmentValues {
+    /// Render-only override; production always falls through to the system's
+    /// accessibilityReduceMotion value.
+    var doorLightReduceMotionOverride: Bool? {
+        get { self[DoorLightReduceMotionOverrideKey.self] }
+        set { self[DoorLightReduceMotionOverrideKey.self] = newValue }
+    }
+}
 
 private struct ReorderMotion<Value: Equatable>: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -223,73 +238,4 @@ struct WindowConfigurator: NSViewRepresentable {
         return view
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
-}
-
-// MARK: - The door light — the app's identity mark (AppKit path)
-// The signature (POLISH II.A): the session dot + its 1pt tier ring — the Fleet
-// seat token — promoted to the app's face. Not a picture chosen to look good, but
-// the app's own telemetry atom. Drawn in code (no asset pipeline). SwiftUI
-// surfaces use `SeatMark`; the dock tile + the template menu-bar glyph share this
-// AppKit path so it's one object at every distance.
-
-enum AppBrand {
-    enum Geometry {
-        static let ringInsetRatio: CGFloat = 0.12
-        static let ringWidthRatio: CGFloat = 0.12
-        static let runningDotRatio: CGFloat = 0.22
-        static let needsDotRatio: CGFloat = 0.34
-    }
-    /// The three honest menu-bar states — legible at a hallway glance.
-    /// quiet = hollow ring · running = dot-in-ring · needsYou = filled dot + ring.
-    enum MarkState { case quiet, running, needsYou }
-
-    @MainActor static func applyDockIcon() {
-        NSApplication.shared.applicationIconImage = dockIcon()
-    }
-
-    private static func drawMark(in rect: NSRect, state: MarkState, color: NSColor) {
-        color.setStroke(); color.setFill()
-        let size = min(rect.width, rect.height)
-        let lw = max(1, size * Geometry.ringWidthRatio)
-        let ringRect = rect.insetBy(dx: size * Geometry.ringInsetRatio,
-                                    dy: size * Geometry.ringInsetRatio)
-        let ring = NSBezierPath(ovalIn: ringRect)
-        ring.lineWidth = lw
-        ring.stroke()
-        guard state != .quiet else { return }
-        let d = state == .needsYou ? size * Geometry.needsDotRatio : size * Geometry.runningDotRatio
-        let dot = NSRect(x: rect.midX - d / 2, y: rect.midY - d / 2, width: d, height: d)
-        NSBezierPath(ovalIn: dot).fill()
-    }
-
-    /// The mark alone, on a transparent canvas, in one `color`. `template` marks it
-    /// as a menu-bar template so the system tints it for light/dark + selection.
-    static func markImage(size: CGFloat, state: MarkState = .needsYou,
-                          color: NSColor = .black, template: Bool = false) -> NSImage {
-        let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            drawMark(in: rect, state: state, color: color)
-            return true
-        }
-        img.isTemplate = template
-        return img
-    }
-
-    static func dockIcon() -> NSImage {
-        NSImage(size: NSSize(width: 512, height: 512), flipped: false) { rect in
-            let inset = rect.insetBy(dx: 40, dy: 40)
-            let path = NSBezierPath(roundedRect: inset, xRadius: 108, yRadius: 108)
-            NSGradient(colors: [NSColor(srgbRed: 0.32, green: 0.33, blue: 0.36, alpha: 1),
-                                NSColor(srgbRed: 0.17, green: 0.18, blue: 0.20, alpha: 1)])?
-                .draw(in: path, angle: -90)
-            // Same normalized path as the 14pt/64pt lockups, centered inside
-            // the graphite tile. Scale changes; geometry does not.
-            let markRect = NSRect(x: rect.midX - 160, y: rect.midY - 160, width: 320, height: 320)
-            drawMark(in: markRect, state: .needsYou, color: NSColor.white.withAlphaComponent(0.92))
-            NSColor.white.withAlphaComponent(0.12).setStroke()
-            let rim = NSBezierPath(roundedRect: inset.insetBy(dx: 1, dy: 1), xRadius: 107, yRadius: 107)
-            rim.lineWidth = 2
-            rim.stroke()
-            return true
-        }
-    }
 }

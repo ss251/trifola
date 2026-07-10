@@ -272,73 +272,70 @@ struct SkillDetail: View {
     var onLaunch: () -> Void = {}
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.sectionGap) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(skill.name)
-                        .font(.headline)
-                        .foregroundStyle(Theme.ink)
-                    if let v = skill.version {
-                        Text("v\(v)")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.muted)
-                    }
-                    Spacer()
-                    ProminentTapButton(size: .small, action: onLaunch) {
-                        Label("Launch", systemImage: "paperplane.fill")
-                    }
-                    .help("Seed the Session Builder with /\(skill.qualifiedID)")
-                    QuietTapButton(action: {
-                        NSWorkspace.shared.selectFile(
-                            skill.path, inFileViewerRootedAtPath: "")
-                    }) {
-                        Label("Reveal", systemImage: "folder")
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    SkillSourceBadge(source: skill.source)
-                    Text("/\(skill.qualifiedID)")
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(Theme.muted)
-                    if !skill.hasManifest {
-                        Text("no manifest").font(.caption2).foregroundStyle(Theme.faint)
-                    }
-                }
-
-                SkillLedgerBadge(entry: entry, source: skill.source)
-
-                Text(skill.description)
-                    .font(.subheadline)
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(skill.name)
+                    .font(.headline)
                     .foregroundStyle(Theme.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-
-                HStack(spacing: 14) {
-                    fact("body", "\(skill.wordCount) words")
-                    fact("files", "\(skill.fileCount)")
-                    fact("touched", fmtAgo(skill.modified))
+                if let v = skill.version {
+                    Text("v\(v)")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.muted)
                 }
-
-                if !skill.triggers.isEmpty {
-                    chipGroup("Triggers", skill.triggers)
+                Spacer()
+                ProminentTapButton(size: .small, action: onLaunch) {
+                    Label("Launch", systemImage: "paperplane.fill")
                 }
-                if !skill.allowedTools.isEmpty {
-                    chipGroup("Allowed tools", skill.allowedTools)
+                .help("Seed the Session Builder with /\(skill.qualifiedID)")
+                QuietTapButton(action: {
+                    NSWorkspace.shared.selectFile(
+                        skill.path, inFileViewerRootedAtPath: "")
+                }) {
+                    Label("Reveal", systemImage: "folder")
                 }
-
-                Text(skill.path)
-                    .font(.caption2)
-                    .foregroundStyle(Theme.faint)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
             }
-            .padding(Theme.cardPadding)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            HStack(spacing: 8) {
+                SkillSourceBadge(source: skill.source)
+                Text("/\(skill.qualifiedID)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Theme.muted)
+                if !skill.hasManifest {
+                    Text("no manifest").font(.caption2).foregroundStyle(Theme.faint)
+                }
+            }
+
+            SkillLedgerBadge(entry: entry, source: skill.source)
+
+            Text(skill.description)
+                .font(.subheadline)
+                .foregroundStyle(Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            HStack(spacing: 14) {
+                fact("body", "\(skill.wordCount) words")
+                fact("files", "\(skill.fileCount)")
+                fact("touched", fmtAgo(skill.modified))
+            }
+
+            if !skill.triggers.isEmpty {
+                chipGroup("Triggers", skill.triggers)
+            }
+            if !skill.allowedTools.isEmpty {
+                chipGroup("Allowed tools", skill.allowedTools)
+            }
+
+            Text(skill.path)
+                .font(.caption2)
+                .foregroundStyle(Theme.faint)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
+        .padding(Theme.cardPadding)
         .frame(maxWidth: .infinity)
-        .frame(height: 520)
+        .fixedSize(horizontal: false, vertical: true)
         .background {
             RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
             RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
@@ -436,7 +433,9 @@ private struct FlowLayout: Layout {
             }
         }()
         return HStack(spacing: 6) {
-            SeatMark(fill: store.probing ? Theme.amber : color, size: 6)
+            Image(systemName: store.probing ? "ellipsis" : "circle.fill")
+                .font(.system(size: 7, weight: .medium))
+                .foregroundStyle(store.probing ? Theme.amber : color)
             Text(label)
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
@@ -581,7 +580,9 @@ struct ProbeCard: View {
     private var badge: some View {
         let text = result.map { $0.status.rawValue.capitalized } ?? (probing ? "Probing…" : "—")
         return HStack(spacing: 5) {
-            SeatMark(fill: color, size: 6)
+            Image(systemName: "circle.fill")
+                .font(.system(size: 7, weight: .medium))
+                .foregroundStyle(color)
             Text(text)
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
@@ -806,18 +807,18 @@ struct SkillLedgerBadge: View {
     var body: some View {
         HStack(spacing: 6) {
             if let e = entry, e.invocations > 0 {
-                SeatMark(fill: Theme.green, size: 6)
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
                 Text("fired ×\(e.invocations)").font(.caption.weight(.medium)).foregroundStyle(Theme.ink)
                 Text("· \(e.sessionsTouched) session\(e.sessionsTouched == 1 ? "" : "s") · last \(fmtAgo(e.lastFired))")
                     .font(.caption2).foregroundStyle(Theme.muted)
             } else if entry != nil {
-                SeatMark(fill: Theme.amber.opacity(0.6), size: 6)
+                Image(systemName: "minus.circle").foregroundStyle(Theme.amber.opacity(0.6))
                 Text("unused — never explicitly invoked").font(.caption).foregroundStyle(Theme.muted)
             } else if source.lane == .user {
-                SeatMark(fill: Theme.faint, size: 6)
+                Image(systemName: "circle.dashed").foregroundStyle(Theme.faint)
                 Text("no explicit invocations recorded").font(.caption).foregroundStyle(Theme.muted)
             } else {
-                SeatMark(fill: Theme.faint, size: 6)
+                Image(systemName: "circle.dashed").foregroundStyle(Theme.faint)
                 Text("not tracked in the ledger (plugin/project skill)").font(.caption).foregroundStyle(Theme.muted)
             }
         }

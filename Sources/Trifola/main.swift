@@ -2,6 +2,14 @@ import Foundation
 import TrifolaKit
 import Security
 
+// `--render-layout <base>` permanently rasterizes the production rail and shared
+// Overview composition at 1440×900 and 1680×900, dark + light.
+if let i = CommandLine.arguments.firstIndex(of: "--render-layout") {
+    let base = i + 1 < CommandLine.arguments.count ? CommandLine.arguments[i + 1] : "/tmp/layout"
+    MainActor.assumeIsolated { LayoutRender.run(base: base) }
+    exit(0)
+}
+
 // `--render-attention <png>` rasterizes the Attention Strip headlessly (no window,
 // Space, or Screen-Recording permission needed) so the component can be seen and
 // judged — including a BLOCKED case that's rare on live data.

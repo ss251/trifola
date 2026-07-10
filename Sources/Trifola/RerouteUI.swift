@@ -82,14 +82,13 @@ struct RerouteTrendRow: View {
 
     var body: some View {
         if report.totalSilent > 0 {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 Eyebrow("Reroutes")
                 Text("runs that landed on a different model than you configured")
                     .font(.caption2)
                     .foregroundStyle(Theme.faint)
-                Text(sparkline)
-                    .font(.caption)
-                    .foregroundStyle(Theme.muted)
+                RerouteTrendSparkline(series: report.trend(window: 14, now: now))
+                    .frame(width: 112)
                 Text("\(report.totalSilent) without a recorded /model command · \(report.receipts.count) session\(report.receipts.count == 1 ? "" : "s")")
                     .font(.caption2)
                     .monospacedDigit()
@@ -108,14 +107,30 @@ struct RerouteTrendRow: View {
         }
     }
 
-    /// The same block ramp the selfcheck burn spark uses — one dialect.
-    private var sparkline: String {
-        let series = report.trend(window: 14, now: now)
-        let peak = max(series.map(\.count).max() ?? 0, 1)
-        let blocks = ["·", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-        return series.map { _, c in
-            c == 0 ? "·" : blocks[min(blocks.count - 1, 1 + (c * (blocks.count - 2)) / peak)]
-        }.joined()
+}
+
+/// A real fixed-track chart, not a Unicode glyph run. Empty days retain a 1pt
+/// baseline tick; non-empty days are at least 3pt tall and every bar is >=3pt wide.
+private struct RerouteTrendSparkline: View {
+    let series: [(String, Int)]
+    private let height: CGFloat = 24
+    private var peak: Int { max(series.map(\.1).max() ?? 0, 1) }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(series.enumerated()), id: \.offset) { _, day in
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(day.1 == 0 ? Theme.progressTrack : Theme.graphite.opacity(0.85))
+                    .frame(maxWidth: .infinity)
+                    .frame(minWidth: 3)
+                    .frame(height: day.1 == 0
+                           ? 1
+                           : max(3, height * CGFloat(day.1) / CGFloat(peak)))
+            }
+        }
+        .frame(height: height, alignment: .bottom)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Reroutes per day over the last 14 days")
     }
 }
 

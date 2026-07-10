@@ -226,6 +226,7 @@ struct SpendScreen: View {
             VStack(spacing: Theme.rhythm) {
                 ForEach(rows, id: \.project) { row in
                     HStack(spacing: Theme.sectionGap) {
+                        SeatMark(state: .idle, size: 8)
                         Text(row.project)
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink)

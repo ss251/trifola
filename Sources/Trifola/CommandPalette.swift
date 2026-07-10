@@ -126,10 +126,8 @@ private struct PaletteRow: View {
     }
 
     @ViewBuilder private var mark: some View {
-        if entry.kind == .session, let tier = entry.tier {
-            // The door light at palette density: state fill + 1pt tier ring — the
-            // same session-dot object the Fleet floor and the strip wear.
-            SeatMark(fill: (entry.state ?? .idle).color, ring: tier.color, size: 9)
+        if entry.kind == .session {
+            SeatMark(state: DoorLightState(entry.state ?? .idle), size: 8)
         } else {
             Image(systemName: entry.icon)
                 .font(.footnote.weight(.medium))

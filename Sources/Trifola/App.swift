@@ -199,10 +199,6 @@ struct MenuBarContent: View {
             // One template mark + one sans status line: identity and judgment,
             // without turning the dropdown into another dashboard.
             HStack(spacing: Theme.intraCell) {
-                Image(nsImage: AppBrand.markImage(
-                    size: 15,
-                    state: markState(mb.glyph),
-                    template: true))
                 Text(mb.fleetLine + suppression.legendSuffix + " · API-rate estimate")
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
@@ -212,7 +208,6 @@ struct MenuBarContent: View {
             // WHO NEEDS ME — the strip's reason to exist.
             if mb.blocked.isEmpty && mb.waiting.isEmpty {
                 HStack(spacing: 7) {
-                    SeatMark(fill: Theme.green, size: 7)
                     Text("Nothing needs you")
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
@@ -286,7 +281,7 @@ struct MenuBarContent: View {
             }
         }) {
             HStack(spacing: 8) {
-                SeatMark(fill: state.color, size: 7, active: state.needsAttention)
+                SeatMark(state: DoorLightState(state), size: 8)
                 if suppressed { SuppressionMark() }
                 VStack(alignment: .leading, spacing: 1) {
                     Text("\(row.project) · \(row.title)")

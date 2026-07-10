@@ -222,7 +222,11 @@ private struct AboutSettings: View {
 
     var body: some View {
         VStack(spacing: Theme.sectionGap) {
-            AppLockup(size: 64, ring: Theme.green)
+            Image(nsImage: AppBrand.appIcon())
+                .resizable()
+                .frame(width: 64, height: 64)
+            Text("Trifola")
+                .font(.title2.weight(.semibold))
             Text("Version \(version)")
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.secondary)

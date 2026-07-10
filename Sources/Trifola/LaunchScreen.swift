@@ -113,7 +113,6 @@ struct LaunchScreen: View {
 
     private var builder: some View {
         VStack(alignment: .leading, spacing: Theme.gutter) {
-            AppLockup(size: 64, ring: Theme.green)
             nameAndDir
             Divider()
             AgentsEditor(agents: $draft.agents)

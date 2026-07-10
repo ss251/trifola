@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import TrifolaKit
 
 // MARK: - Elevation primitives
@@ -7,12 +8,14 @@ import TrifolaKit
 /// use this; instruments, settings groups and compact evidence objects do.
 struct Card<Content: View>: View {
     var padding: CGFloat = Theme.cardPadding
+    var fixedHeight: CGFloat? = nil
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         content()
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: fixedHeight, alignment: .top)
             .background {
                 RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
                     .fill(Theme.cardFill)
@@ -72,12 +75,9 @@ struct AttentionStatusPill: View {
     private var text: Color { state == .blocked ? Theme.blockedText : Theme.waitingText }
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(state.color).frame(width: 6, height: 6)
-            Text(state == .blocked ? "Blocked" : "Waiting")
-                .font(.system(size: 12, weight: .medium))
-        }
-        .foregroundStyle(text)
+        Text(state == .blocked ? "Blocked" : "Waiting")
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(text)
         .padding(.horizontal, Theme.intraCell)
         .frame(height: 20)
         .background(Capsule().fill(fill))
@@ -123,79 +123,265 @@ struct Eyebrow: View {
     }
 }
 
-// MARK: - The door light — the app's identity mark (SwiftUI path)
-// The signature (POLISH II.A): a filled center + a concentric 1pt ring — the
-// session dot with its tier ring, the app's own telemetry atom promoted to its
-// face. One circle, one ring, nothing else. Two renderings, both honest: a filled
-// dot with a rim (the live seat token, on the Floor + chips) and a haloed
-// dot-in-ring (`gapped` — the lockup, matching the dock/menu-bar geometry). The
-// dock icon + template menu glyph share the AppKit path in `AppBrand.markImage`.
+// MARK: - The Door Light — one ring-and-core atom at every density
 
-struct SeatMark: View {
-    var fill: Color = Theme.green
-    var ring: Color? = nil
-    var size: CGFloat = 7
-    var active = true
-    /// When false the center is hollow (the menu-bar "quiet" rendering has none).
-    var filled: Bool = true
-    var ringWidth: CGFloat? = nil
-    /// Gapped = a haloed dot-in-ring (the wordmark/logo rendering). Non-gapped = a
-    /// filled dot with a concentric rim (the live seat token — unchanged).
-    var gapped: Bool = false
+enum DoorLightState: Hashable {
+    case idle, running, waiting, blocked
 
-    private var effectiveRingWidth: CGFloat {
-        ringWidth ?? (ring == nil ? 0 : 1)
+    init(_ state: AttentionState) {
+        switch state {
+        case .idle: self = .idle
+        case .running: self = .running
+        case .waiting: self = .waiting
+        case .blocked: self = .blocked
+        }
     }
 
-    var body: some View {
-        Group {
-            if gapped {
-                ZStack {
-                    if let ring, effectiveRingWidth > 0 {
-                        Circle().strokeBorder(ring, lineWidth: effectiveRingWidth)
-                            .frame(width: size * (1 - 2 * AppBrand.Geometry.ringInsetRatio),
-                                   height: size * (1 - 2 * AppBrand.Geometry.ringInsetRatio))
-                    }
-                    if filled {
-                        Circle().fill(fill)
-                            .frame(width: size * AppBrand.Geometry.needsDotRatio,
-                                   height: size * AppBrand.Geometry.needsDotRatio)
-                    }
-                }
-                .frame(width: size, height: size)
-            } else {
-                Circle()
-                    .fill(filled ? fill : .clear)
-                    .frame(width: size, height: size)
-                    .overlay {
-                        if let ring, effectiveRingWidth > 0 {
-                            Circle().strokeBorder(ring, lineWidth: effectiveRingWidth)
-                        }
-                    }
-            }
+    var color: Color {
+        switch self {
+        case .idle: return Theme.ink
+        case .running: return Theme.green
+        case .waiting: return Theme.amber
+        case .blocked: return Theme.red
         }
-        .opacity(active ? 1 : 0.45)
     }
 }
 
-/// One brand lockup at every distance; only the size and state-ring change.
-struct AppLockup: View {
-    var size: CGFloat = 14
-    var ring: Color = Theme.faint
-    var machine: String = Host.current().localizedName ?? "this Mac"
+/// A hand-drawn clockwise ring. `trim` animates from twelve o'clock, so a state
+/// transition is visible as a 300ms draw rather than a generic cross-fade.
+private struct DoorLightRing: Shape {
+    var trim: CGFloat
+    var inset: CGFloat = 0
+
+    var animatableData: CGFloat {
+        get { trim }
+        set { trim = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let r = rect.insetBy(dx: inset, dy: inset)
+        let radius = max(0, min(r.width, r.height) / 2)
+        var path = Path()
+        path.addArc(center: CGPoint(x: r.midX, y: r.midY), radius: radius,
+                    startAngle: .degrees(-90),
+                    endAngle: .degrees(-90 + 360 * min(1, max(0, trim))),
+                    clockwise: false)
+        return path
+    }
+}
+
+struct SeatMark: View {
+    var state: DoorLightState? = nil
+    var fill: Color = Theme.green
+    var ring: Color? = nil
+    var size: CGFloat = 8
+    var active = true
+    var filled: Bool = true
+    var ringWidth: CGFloat? = nil
+    /// Retained for source compatibility; the Door Light is always ring-and-core.
+    var gapped: Bool = true
+    /// Lockups keep an ink core while their ring carries the fleet's worst state.
+    var coreUsesState = true
+
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.doorLightReduceMotionOverride) private var reduceMotionOverride
+    @State private var ringTrim: CGFloat = 1
+
+    private var effectiveRingWidth: CGFloat {
+        ringWidth ?? AppBrand.Geometry.ringWidth(displayScale: displayScale)
+    }
+    private var effectiveRing: Color {
+        ring ?? Theme.ink.opacity(0.35)
+    }
+    private var coreColor: Color {
+        if coreUsesState, let state { return state.color }
+        return fill
+    }
+    private var showsCore: Bool {
+        filled && state != .idle
+    }
 
     var body: some View {
-        HStack(spacing: size >= 48 ? Theme.sectionGap : Theme.intraCell) {
-            SeatMark(fill: Theme.ink, ring: ring, size: size,
-                     ringWidth: max(1, size * AppBrand.Geometry.ringWidthRatio), gapped: true)
-            VStack(alignment: .leading, spacing: Theme.micro) {
-                Text("trifola")
-                    .font(size >= 48 ? .system(size: 28, weight: .semibold) : .footnote.weight(.medium))
-                    .foregroundStyle(Theme.ink)
-                Text(machine)
-                    .font(size >= 48 ? .subheadline : .caption2)
-                    .foregroundStyle(Theme.faint)
+        TimelineView(.animation(minimumInterval: 1 / 30,
+                                paused: motionReduced || (state != .running && state != .blocked))) { context in
+            let coreOpacity = runningOpacity(at: context.date)
+            let pulse = blockedPulse(at: context.date)
+            ZStack {
+                if pulse > 0 {
+                    DoorLightRing(trim: 1,
+                                  inset: effectiveRingWidth / 2 - pulse / max(displayScale, 1))
+                        .stroke(Theme.red.opacity(0.35 * (1 - pulse)), lineWidth: effectiveRingWidth)
+                }
+                DoorLightRing(trim: ringTrim, inset: effectiveRingWidth / 2)
+                    .stroke(effectiveRing, lineWidth: effectiveRingWidth)
+                if colorScheme == .light {
+                    DoorLightRing(trim: ringTrim,
+                                  inset: effectiveRingWidth + 0.25)
+                        .stroke(Theme.surfaceWindow, lineWidth: 0.5)
+                }
+                if showsCore {
+                    Circle()
+                        .fill(coreColor)
+                        .frame(width: size * AppBrand.Geometry.coreRatio,
+                               height: size * AppBrand.Geometry.coreRatio)
+                        .opacity(coreOpacity)
+                }
             }
+        }
+        .frame(width: size, height: size)
+        .opacity(active ? 1 : 0.45)
+        .onChange(of: state) { _, _ in
+            guard !motionReduced else { ringTrim = 1; return }
+            ringTrim = 0
+            withAnimation(.easeOut(duration: 0.30)) { ringTrim = 1 }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func runningOpacity(at date: Date) -> Double {
+        guard !motionReduced, state == .running else { return 1 }
+        let phase = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: AppBrand.Motion.runningPeriod)
+        return 0.925 + 0.075 * sin(2 * .pi * phase / AppBrand.Motion.runningPeriod)
+    }
+
+    /// One device-pixel echo at the start of each eight-second blocked interval.
+    private func blockedPulse(at date: Date) -> CGFloat {
+        guard !motionReduced, state == .blocked else { return 0 }
+        let phase = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: AppBrand.Motion.blockedPeriod)
+        guard phase < AppBrand.Motion.blockedPulseDuration else { return 0 }
+        return CGFloat(phase / AppBrand.Motion.blockedPulseDuration)
+    }
+
+    private var motionReduced: Bool { reduceMotionOverride ?? reduceMotion }
+}
+
+/// Shared geometry and the AppKit raster adapter for the menu bar, Dock and app
+/// icon. SwiftUI and AppKit consume the same outer diameter, stroke and core ratio.
+enum AppBrand {
+    enum Geometry {
+        static let coreRatio: CGFloat = 0.5
+
+        static func ringWidth(displayScale: CGFloat) -> CGFloat {
+            displayScale >= 2 ? 1.5 : 1
+        }
+
+        static func ringRect(in rect: CGRect, lineWidth: CGFloat) -> CGRect {
+            rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2)
+        }
+
+        static func coreRect(in rect: CGRect) -> CGRect {
+            let d = min(rect.width, rect.height) * coreRatio
+            return CGRect(x: rect.midX - d / 2, y: rect.midY - d / 2, width: d, height: d)
+        }
+    }
+
+    enum Motion {
+        static let runningPeriod: TimeInterval = 2.4
+        static let blockedPeriod: TimeInterval = 8
+        static let blockedPulseDuration: TimeInterval = 0.35
+    }
+
+    enum MarkState { case quiet, running, needsYou }
+
+    @MainActor static func applyDockIcon() {
+        NSApplication.shared.applicationIconImage = appIcon()
+    }
+
+    /// The Dock's BLOCKED badge is the same light plus its count, not a second
+    /// OS-red lozenge vocabulary. Clearing the count restores the normal app icon.
+    @MainActor static func updateDockBadge(blockedCount: Int) {
+        if blockedCount > 0 {
+            NSApp.dockTile.badgeLabel = nil
+            NSApp.dockTile.contentView = DockBadgeView(count: blockedCount)
+        } else {
+            NSApp.dockTile.contentView = nil
+            NSApp.dockTile.badgeLabel = nil
+        }
+        NSApp.dockTile.display()
+    }
+
+    private static func drawMark(in rect: NSRect, state: MarkState, color: NSColor,
+                                 displayScale: CGFloat = 2) {
+        let lineWidth = Geometry.ringWidth(displayScale: displayScale)
+        let ringColor = color.withAlphaComponent(color.alphaComponent * 0.35)
+        ringColor.setStroke()
+        let ring = NSBezierPath(ovalIn: Geometry.ringRect(in: rect, lineWidth: lineWidth))
+        ring.lineWidth = lineWidth
+        ring.stroke()
+        guard state != .quiet else { return }
+        color.setFill()
+        NSBezierPath(ovalIn: Geometry.coreRect(in: rect)).fill()
+    }
+
+    static func markImage(size: CGFloat, state: MarkState = .needsYou,
+                          color: NSColor = .black, template: Bool = false) -> NSImage {
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            drawMark(in: rect, state: state, color: color)
+            return true
+        }
+        image.isTemplate = template
+        return image
+    }
+
+    static func appIcon() -> NSImage {
+        NSImage(size: NSSize(width: 512, height: 512), flipped: false) { rect in
+            let inset = rect.insetBy(dx: 40, dy: 40)
+            let tile = NSBezierPath(roundedRect: inset, xRadius: 108, yRadius: 108)
+            NSGradient(colors: [NSColor(srgbRed: 0.19, green: 0.31, blue: 0.29, alpha: 1),
+                                NSColor(srgbRed: 0.09, green: 0.14, blue: 0.14, alpha: 1)])?
+                .draw(in: tile, angle: -90)
+            let markRect = NSRect(x: rect.midX - 160, y: rect.midY - 160,
+                                  width: 320, height: 320)
+            drawMark(in: markRect, state: .needsYou,
+                     color: NSColor.white.withAlphaComponent(0.94), displayScale: 2)
+            NSColor.white.withAlphaComponent(0.12).setStroke()
+            let rim = NSBezierPath(roundedRect: inset.insetBy(dx: 1, dy: 1),
+                                   xRadius: 107, yRadius: 107)
+            rim.lineWidth = 2
+            rim.stroke()
+            return true
+        }
+    }
+
+    /// Backward-compatible name used by the identity render.
+    static func dockIcon() -> NSImage { appIcon() }
+
+    private final class DockBadgeView: NSView {
+        let count: Int
+
+        init(count: Int) {
+            self.count = count
+            super.init(frame: NSRect(x: 0, y: 0, width: 128, height: 128))
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            AppBrand.appIcon().draw(in: bounds)
+
+            let badge = NSRect(x: 72, y: 8, width: 48, height: 30)
+            NSColor(srgbRed: 0.10, green: 0.11, blue: 0.11, alpha: 0.96).setFill()
+            NSBezierPath(roundedRect: badge, xRadius: 15, yRadius: 15).fill()
+            NSColor.white.withAlphaComponent(0.18).setStroke()
+            let border = NSBezierPath(roundedRect: badge.insetBy(dx: 0.5, dy: 0.5),
+                                      xRadius: 14.5, yRadius: 14.5)
+            border.lineWidth = 1
+            border.stroke()
+
+            let mark = NSRect(x: badge.minX + 8, y: badge.midY - 7, width: 14, height: 14)
+            AppBrand.drawMark(in: mark, state: .needsYou, color: .systemRed, displayScale: 2)
+            let text = count > 9 ? "9+" : "\(count)"
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: NSColor.white,
+            ]
+            NSAttributedString(string: text, attributes: attributes)
+                .draw(at: NSPoint(x: badge.minX + 27, y: badge.minY + 8))
         }
     }
 }
@@ -290,20 +476,21 @@ struct StatTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
-                if live { SeatMark(fill: Theme.green, size: 6) }
+                if live { Circle().fill(Theme.green).frame(width: 6, height: 6) }
                 Text(label)
-                    .font(.caption)
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.muted)
             }
             Text(value)
-                .font(.system(.title, design: .rounded).weight(.semibold))
+                .font(.system(size: 30, weight: .semibold, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(valueColor)
                 .contentTransition(.numericText())
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             if let sub {
                 Text(sub)
-                    .font(.caption2)
+                    .font(.system(size: 11))
                     .foregroundStyle(Theme.faint)
                     .lineLimit(1)
             }
@@ -318,10 +505,17 @@ struct StatRow<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        Card {
-            HStack(alignment: .top, spacing: Theme.sectionGap) {
-                content()
-            }
+        HStack(alignment: .top, spacing: Theme.sectionGap) {
+            content()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 150, alignment: .top)
+        .background {
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
     }
 }
@@ -380,16 +574,29 @@ struct TierSplitBar: View {
     private var total: Double { max(stats.reduce(0) { $0 + $1.cost }, 0.0001) }
 
     var body: some View {
-        GeometryReader { geo in
-            HStack(spacing: 2) {
-                ForEach(stats) { st in
-                    Capsule()
-                        .fill(st.tier.color)
-                        .frame(width: max(3, (geo.size.width - CGFloat(stats.count - 1) * 2) * st.cost / total))
+        VStack(alignment: .leading, spacing: Theme.intraCell) {
+            GeometryReader { geo in
+                HStack(spacing: 2) {
+                    ForEach(stats) { st in
+                        Capsule()
+                            .fill(st.tier.color)
+                            .frame(width: max(3, (geo.size.width - CGFloat(stats.count - 1) * 2) * st.cost / total))
+                    }
                 }
             }
+            .frame(height: height)
+            HStack(spacing: Theme.sectionGap) {
+                ForEach(stats) { st in
+                    HStack(spacing: Theme.micro) {
+                        Rectangle().fill(st.tier.color).frame(width: 8, height: 3)
+                        Text("\(st.tier.label) \(fmtUSD(st.cost))")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.muted)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
         }
-        .frame(height: height)
     }
 }
 
@@ -563,7 +770,7 @@ extension QuietTapButton where Label == Text {
 struct ProminentTapButton<Label: View>: View {
     enum Size { case small, regular, large }
     var size: Size = .regular
-    var tint: Color = .accentColor
+    var tint: Color = Theme.accent
     var shortcut: KeyboardShortcut? = nil
     let action: () -> Void
     @ViewBuilder let label: () -> Label
@@ -571,7 +778,7 @@ struct ProminentTapButton<Label: View>: View {
     @State private var hovering = false
     @FocusState private var isFocused: Bool
 
-    init(size: Size = .regular, tint: Color = .accentColor,
+    init(size: Size = .regular, tint: Color = Theme.accent,
          shortcut: KeyboardShortcut? = nil,
          action: @escaping () -> Void,
          @ViewBuilder label: @escaping () -> Label) {
@@ -604,7 +811,14 @@ struct ProminentTapButton<Label: View>: View {
             .foregroundStyle(.white)
             .padding(.horizontal, hPad)
             .padding(.vertical, vPad)
-            .background(Capsule().fill(tint))
+            .background {
+                Capsule().fill(tint)
+                Capsule().strokeBorder(Color.black.opacity(0.20), lineWidth: 0.5)
+                Capsule().strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+                    .mask(alignment: .top) {
+                        Rectangle().frame(height: size == .large ? 13 : 9)
+                    }
+            }
             .brightness((hovering || isFocused) && isEnabled ? 0.06 : 0)
             .opacity(isEnabled ? 1 : 0.45)
             .contentShape(Capsule())
@@ -633,7 +847,7 @@ struct ProminentTapButton<Label: View>: View {
 }
 
 extension ProminentTapButton where Label == Text {
-    init(_ title: String, size: Size = .regular, tint: Color = .accentColor,
+    init(_ title: String, size: Size = .regular, tint: Color = Theme.accent,
          shortcut: KeyboardShortcut? = nil, action: @escaping () -> Void) {
         self.init(size: size, tint: tint, shortcut: shortcut, action: action) { Text(title) }
     }
@@ -839,12 +1053,7 @@ struct IdentityCell: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if tier != nil || state != nil {
-                SeatMark(fill: state?.color ?? Theme.faint,
-                         ring: tier?.color ?? .clear,
-                         size: 7,
-                         ringWidth: tier == nil ? 0 : 1)
-            }
+            SeatMark(state: state.map(DoorLightState.init) ?? .idle, size: 8)
             VStack(alignment: .leading, spacing: 1) {
                 Text(project)
                     .font(.subheadline.weight(.medium))

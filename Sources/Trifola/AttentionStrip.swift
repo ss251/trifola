@@ -66,22 +66,23 @@ struct AttentionStripView: View {
 
             if needs.isEmpty {
                 HStack(spacing: 8) {
-                    SeatMark(fill: board.runningCount > 0 ? Theme.green : Theme.faint,
-                             size: 7, active: board.runningCount > 0)
                     Text(allClearText(board))
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
                 }
                 .padding(.vertical, Theme.hairlineWidth)
             } else {
-                FlowLayout(spacing: Theme.intraCell, lineSpacing: Theme.intraCell) {
-                    ForEach(shown) { row in
+                VStack(spacing: 0) {
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
                         AttentionChip(row: row,
                                       suppressionState: suppression?.state,
                                       signal: signals[row.id],
                                       defaultSnoozeMinutes: defaultSnoozeMinutes,
                                       onAgencyAction: onAgencyAction) {
                             onSelect(row.item.session)
+                        }
+                        if index < shown.count - 1 {
+                            Rectangle().fill(Theme.hairline.opacity(0.65)).frame(height: 1)
                         }
                     }
                 }
@@ -99,7 +100,7 @@ struct AttentionStripView: View {
             if let acknowledgement,
                now.timeIntervalSince(acknowledgement.startedAt) < 8 {
                 HStack(spacing: 8) {
-                    SeatMark(fill: Theme.green, size: 7)
+                    SeatMark(state: .running, size: 8)
                     Text("\(acknowledgement.project) moving again — approved \(fmtAgeShort(max(0, now.timeIntervalSince(acknowledgement.startedAt)))) ago")
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
@@ -137,7 +138,6 @@ private struct AttentionChip: View {
     var defaultSnoozeMinutes = 60
     var onAgencyAction: ((AttentionSuppressionAction) -> Void)? = nil
     let onTap: () -> Void
-    @State private var hovering = false
 
     /// The ask (UI_GRIND ATT-4): what the session wants, before you click — the
     /// dangling/last tool + its detail, quiet narration, ~42 chars. Only
@@ -155,51 +155,49 @@ private struct AttentionChip: View {
 
     var body: some View {
         let item = row.item
-        TapButton(focusVisual: .card, action: onTap) {
-            VStack(alignment: .leading, spacing: Theme.micro) {
-                HStack(spacing: Theme.intraCell) {
-                    Text(item.session.project)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(1)
-                        .layoutPriority(1)
-                    AttentionStatusPill(state: item.state)
-                    if row.isSuppressed { SuppressionMark() }
-                    Text(fmtAgeShort(item.age))
-                        .font(.caption2)
-                        .foregroundStyle(Theme.muted)
-                    Spacer(minLength: 0)
-                    Text(item.session.tier.label)
-                        .font(.caption2)
-                        .foregroundStyle(Theme.faint)
-                    if item.session.isRemote {
-                        MachineChip(machineID: item.session.machineID, compact: true)
+        HoverRow(radius: Theme.radiusRow, action: onTap) {
+            HStack(alignment: .top, spacing: Theme.intraCell) {
+                SeatMark(state: DoorLightState(item.state), size: 8)
+                    .padding(.top, 3)
+                VStack(alignment: .leading, spacing: Theme.micro) {
+                    HStack(spacing: Theme.intraCell) {
+                        Text(item.session.project)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.ink)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                        AttentionStatusPill(state: item.state)
+                        if row.isSuppressed { SuppressionMark() }
+                        Text(fmtAgeShort(item.age))
+                            .font(.caption2)
+                            .foregroundStyle(Theme.muted)
+                        Spacer(minLength: 0)
+                        Text(item.session.tier.label)
+                            .font(.caption2)
+                            .foregroundStyle(Theme.faint)
+                        if item.session.isRemote {
+                            MachineChip(machineID: item.session.machineID, compact: true)
+                        }
                     }
-                }
-                HStack(spacing: Theme.rhythm) {
-                    Text(item.session.displayTitle)
-                        .font(.caption2)
-                        .foregroundStyle(Theme.faint)
-                        .lineLimit(1)
-                        .layoutPriority(1)
-                    if let ask {
-                        Text("· \(ask)")
+                    HStack(spacing: Theme.rhythm) {
+                        Text(item.session.displayTitle)
                             .font(.caption2)
                             .foregroundStyle(Theme.faint)
                             .lineLimit(1)
+                            .layoutPriority(1)
+                        if let ask {
+                            Text("· \(ask)")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.faint)
+                                .lineLimit(1)
+                        }
                     }
                 }
             }
-            .frame(minWidth: 300, idealWidth: 400, maxWidth: 410, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Theme.sectionGap)
             .padding(.vertical, Theme.intraCell)
-            .contentShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
-            .background {
-                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                    .fill(hovering ? Theme.cardStroke : Theme.cardFill)
-                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
-            }
+            .contentShape(Rectangle())
         }
         .opacity(row.isSuppressed ? 0.45 : 1)
         .contextMenu {
@@ -237,7 +235,6 @@ private struct AttentionChip: View {
                 }
             }
         }
-        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
         .help("\(item.session.id) · opens your terminal — macOS asks permission the first time")
     }
 }
@@ -254,10 +251,9 @@ private struct AttentionLegend: View {
                 let n = board.count(state)
                 if n > 0 {
                     HStack(spacing: 4) {
-                        SeatMark(fill: state.color, size: 6)
                         Text("\(n)")
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(Theme.ink)
+                            .foregroundStyle(state.color)
                         Text(state.label.lowercased())
                             .font(.caption2)
                             .foregroundStyle(Theme.faint)

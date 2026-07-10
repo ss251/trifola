@@ -21,10 +21,8 @@ struct RootView: View {
                 .frame(width: 248)
                 .background {
                     Theme.surfaceSidebar.ignoresSafeArea()
-                    VisualEffectBackground(material: .sidebar).opacity(0.30).ignoresSafeArea()
                 }
             Divider()
-                .padding(.top, Theme.blockGap)
                 .ignoresSafeArea()
             ContentColumn()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -67,7 +65,7 @@ private struct RootLifecycle: View {
                 services.start()
             }
             .onChange(of: services.blockedCount, initial: true) { _, n in
-                NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : nil
+                AppBrand.updateDockBadge(blockedCount: n)
             }
     }
 }
@@ -100,8 +98,32 @@ private struct ContentColumn: View {
 
 // MARK: - Sidebar
 
-private struct Sidebar: View {
-    @EnvironmentObject var services: AppServices
+struct SidebarSnapshot {
+    let selected: AppSection
+    let worstState: AttentionState?
+    let liveCount: Int
+    let pendingLessonCount: Int
+    let todayCost: Double
+    let monthProjection: Double
+    let updatedText: String
+    let refreshText: String?
+    let account: String
+    let machine: String
+
+    func badge(for section: AppSection) -> Int? {
+        switch section {
+        case .fleet: return liveCount > 0 ? liveCount : nil
+        case .ledger: return pendingLessonCount > 0 ? pendingLessonCount : nil
+        default: return nil
+        }
+    }
+}
+
+/// Pure production rail chrome. The live app and LayoutRender feed different
+/// snapshots into this same view, eliminating the C-5 projection drift.
+struct SidebarRail: View {
+    let snapshot: SidebarSnapshot
+    var onSelect: (AppSection) -> Void = { _ in }
 
     private let v1Sections: [AppSection] = [
         .overview, .fleet, .sessions, .spend, .audit, .stack,
@@ -109,10 +131,8 @@ private struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Wordmark()
+            Wordmark(worst: snapshot.worstState)
                 .padding(.horizontal, Theme.gutter)
-                // The rail header uses body-scale semibold, so this optical offset
-                // aligns its baseline with the 28pt title in the shared header row.
                 .padding(.top, Theme.codePadding)
                 .frame(height: ScreenScaffoldMetrics.headerHeight, alignment: .top)
                 .padding(.top, ScreenScaffoldMetrics.topInset)
@@ -121,7 +141,11 @@ private struct Sidebar: View {
 
             VStack(spacing: 2) {
                 ForEach(v1Sections) { section in
-                    SidebarItem(section: section)
+                    SidebarItem(section: section,
+                                isSelected: snapshot.selected == section,
+                                badge: snapshot.badge(for: section)) {
+                        onSelect(section)
+                    }
                 }
             }
             .padding(.horizontal, Theme.intraCell)
@@ -129,52 +153,73 @@ private struct Sidebar: View {
 
             Spacer()
 
-            SidebarFooter()
+            SidebarFooter(snapshot: snapshot)
                 .padding(.horizontal, Theme.gutter)
                 .padding(.bottom, Theme.cardPadding)
         }
     }
 }
 
-private struct Wordmark: View {
+private struct Sidebar: View {
+    @EnvironmentObject var services: AppServices
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.micro / 2) {
-            Text("Fleet console")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(Theme.ink)
-            Text("local · read-only")
-                .font(.footnote)
-                .foregroundStyle(Theme.muted)
+        let burn = services.sessions.burnGovernor(now: services.now)
+        let progress = services.sessions.scanProgress
+        let refreshText: String? = {
+            guard services.sessions.scanPresentation == .liveRefreshing,
+                  progress.isInProgress else { return nil }
+            guard progress.totalEstimate > 0 else { return "refreshing" }
+            return "refreshing \(fmtGrouped(progress.scanned))/~\(fmtGrouped(progress.totalEstimate))"
+        }()
+        return SidebarRail(snapshot: SidebarSnapshot(
+            selected: services.section,
+            worstState: services.attentionBoard(now: services.now).worst,
+            liveCount: services.sessions.activeSessions.count,
+            pendingLessonCount: services.pendingLessonCount,
+            todayCost: burn.today.cost,
+            monthProjection: burn.monthProjection,
+            updatedText: "updated \(fmtAgo(services.sessions.lastRefresh))",
+            refreshText: refreshText,
+            account: NSUserName(),
+            machine: Host.current().localizedName ?? "this Mac")) { section in
+                services.section = section
+                if section != .sessions { services.selectedSessionID = nil }
+        }
+    }
+}
+
+private struct Wordmark: View {
+    let worst: AttentionState?
+
+    var body: some View {
+        HStack(spacing: Theme.intraCell) {
+            SeatMark(state: worst.map(DoorLightState.init) ?? .idle,
+                     fill: Theme.ink,
+                     ring: worst?.color ?? Theme.ink.opacity(0.35),
+                     size: 10,
+                     coreUsesState: false)
+            VStack(alignment: .leading, spacing: Theme.micro / 2) {
+                Text("Trifola")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Theme.ink)
+                Text("local · read-only")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
         }
     }
 }
 
 private struct SidebarItem: View {
-    @EnvironmentObject var services: AppServices
     let section: AppSection
+    let isSelected: Bool
+    let badge: Int?
+    let action: () -> Void
     @State private var hovering = false
 
-    private var isSelected: Bool { services.section == section }
-
-    private var badge: Int? {
-        if section == .fleet {
-            let n = services.sessions.activeSessions.count
-            return n > 0 ? n : nil
-        }
-        // The Ledger's pending-lesson count — the ONLY signal it emits (docs §5:
-        // no nags, no dock badge; a count in the sidebar item is the entire signal).
-        if section == .ledger {
-            let n = services.pendingLessonCount
-            return n > 0 ? n : nil
-        }
-        return nil
-    }
-
     var body: some View {
-        TapButton(shortcut: KeyboardShortcut(section.shortcut, modifiers: .command), action: {
-            services.section = section
-            if section != .sessions { services.selectedSessionID = nil }
-        }) {
+        TapButton(shortcut: KeyboardShortcut(section.shortcut, modifiers: .command), action: action) {
             HStack(spacing: Theme.codePadding) {
                 Image(systemName: section.icon)
                     .font(.system(size: 16, weight: .medium))
@@ -207,19 +252,18 @@ private struct SidebarItem: View {
 }
 
 private struct SidebarFooter: View {
-    @EnvironmentObject var services: AppServices
+    let snapshot: SidebarSnapshot
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             // The credit-era burn governor replaces the retired Jul-7 countdown
             // (VISION 2.5): today's API-equiv burn + the recent-run-rate month pace.
-            let burn = services.sessions.burnGovernor(now: services.now)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(Theme.muted)
-                    Text("today \(fmtUSD(burn.today.cost)) · ≈\(fmtUSD(burn.monthProjection))/mo")
+                    Text("today \(fmtUSD(snapshot.todayCost)) · ≈\(fmtUSD(snapshot.monthProjection))/mo")
                         .font(.footnote)
                         .foregroundStyle(Theme.muted)
                 }
@@ -229,11 +273,10 @@ private struct SidebarFooter: View {
             }
 
             HStack(spacing: Theme.rhythm) {
-                Text("updated \(fmtAgo(services.sessions.lastRefresh))")
-                if services.sessions.scanPresentation == .liveRefreshing,
-                   services.sessions.scanProgress.isInProgress {
+                Text(snapshot.updatedText)
+                if let refreshText = snapshot.refreshText {
                     ProgressView().controlSize(.mini)
-                    Text(inlineRefreshLabel)
+                    Text(refreshText)
                 }
             }
             .font(.caption)
@@ -241,13 +284,37 @@ private struct SidebarFooter: View {
 
             Divider()
 
-            AppLockup(size: 16, ring: services.alertingAttentionBoard(now: services.now).worst?.color ?? Theme.faint)
+            AccountChip(account: snapshot.account, machine: snapshot.machine)
         }
     }
+}
 
-    private var inlineRefreshLabel: String {
-        let progress = services.sessions.scanProgress
-        guard progress.totalEstimate > 0 else { return "refreshing" }
-        return "refreshing \(fmtGrouped(progress.scanned))/~\(fmtGrouped(progress.totalEstimate))"
+private struct AccountChip: View {
+    let account: String
+    let machine: String
+
+    var body: some View {
+        HStack(spacing: Theme.intraCell) {
+            Image(systemName: "person.crop.circle")
+                .font(.body)
+                .foregroundStyle(Theme.muted)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(account)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(Theme.ink)
+                Text(machine)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Theme.codePadding)
+        .padding(.vertical, Theme.intraCell)
+        .background {
+            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                .fill(Theme.cardFill)
+            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
+        }
     }
 }
