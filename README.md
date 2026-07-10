@@ -44,7 +44,7 @@ and nothing on your machine surfaces either:
   and across every machine you run on.
 
 It analyzes what Claude Code and Codex already write to `~/.claude` and `~/.codex`. **No Trifola account, no
-Trifola cloud, no telemetry. Source-auditable.** Idle CPU is ~0% in typical use.
+Trifola cloud, no telemetry. Source-auditable.** Event-driven (FSEvents) — no transcript polling loop.
 
 ## What it does
 
@@ -123,8 +123,9 @@ Point a Claude Code session at it and the session
 can introspect its own state — `session_brief`, `context_tax`, `reroutes`, `cost_today`,
 `quota_windows`. Ask *"what will my next message cost warm vs cold?"* or *"am I about to
 violate my routing policy?"* — mid-run, before it costs you. Tools that accept `session_id`
-also allow it to be omitted; trifola then resolves the newest top-level session, which is
-usually the caller.
+resolve the session registered for the connection automatically; without a registered
+identity, pass `session_id` explicitly or opt in with `use_newest: true` — omission alone
+is an error, never a silent guess.
 
 ## trifola vs. the neighbors (honestly)
 

@@ -21,6 +21,13 @@ jobs:
       - name: Secret-scan gate
         run: bash Scripts/secret-scan.sh
 
+      # The README's first command must work on a CLEAN CLONE — this checkout IS
+      # one. It already broke once (cli/dist was gitignored → MODULE_NOT_FOUND
+      # for every stranger who tried it; readiness-review P0.3), so the exact
+      # advertised command is now a gate, not a hope.
+      - name: README CLI command works from a clean clone
+        run: node cli/dist/trifola.js --help
+
       - name: Build (release)
         run: swift build -c release
 
