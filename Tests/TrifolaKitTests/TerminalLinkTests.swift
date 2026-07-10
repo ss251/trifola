@@ -274,6 +274,27 @@ private func launchTarget(ownerProcessID: Int32? = 500,
     )
 }
 
+@Suite("Terminal launch outcome copy")
+struct TerminalLaunchOutcomeCopyTests {
+    @Test("a successful open confirms by terminal name; failures never claim success")
+    func successMessages() {
+        #expect(TerminalLaunchOutcome.exact(launchTarget(application: .iTerm2)).successMessage
+                == "Jumped to your session in iTerm")
+        #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(application: .ghostty)).successMessage
+                == "Brought Ghostty to the front")
+        #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(application: .other(name: "Warp"))).successMessage
+                == "Brought Warp to the front")
+        #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(application: nil)).successMessage
+                == "Brought your terminal to the front")
+        // Every fallback path stays silent on success so the toast never lies.
+        #expect(TerminalLaunchOutcome.notLive.successMessage == nil)
+        #expect(TerminalLaunchOutcome.ambiguous.successMessage == nil)
+        #expect(TerminalLaunchOutcome.permissionDenied(
+            TerminalAutomationError(number: -1743, message: "denied", dictionary: [:])).successMessage == nil)
+        #expect(TerminalLaunchOutcome.failed(.noTerminalOwner).successMessage == nil)
+    }
+}
+
 @Suite("Observable terminal launch flow")
 @MainActor
 struct TerminalLaunchFlowTests {

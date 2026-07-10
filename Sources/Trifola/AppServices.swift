@@ -651,6 +651,11 @@ final class AppServices: ObservableObject {
                     message: outcome.fallbackMessage
                         ?? "No live terminal found — showing transcript"
                 )
+            },
+            confirmLaunch: { [weak self] message in
+                // A successful open acknowledges in-app so it never reads as a
+                // no-op — the same session-scoped banner the fallback uses.
+                self?.publishTranscriptReveal(sessionID: session.id, message: message)
             }
         )
     }

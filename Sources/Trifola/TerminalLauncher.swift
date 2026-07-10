@@ -11,7 +11,8 @@ enum TerminalLauncher {
         resolver: any TerminalLinkResolving = TerminalLinkResolver(),
         openMainWindow: @escaping @MainActor () -> Void,
         selectSession: @escaping @MainActor (String) -> Void,
-        revealTranscript: @escaping @MainActor (String, TerminalLaunchOutcome) -> Void
+        revealTranscript: @escaping @MainActor (String, TerminalLaunchOutcome) -> Void,
+        confirmLaunch: @escaping @MainActor (String) -> Void
     ) {
         let flow = TerminalLaunchFlow(
             resolver: resolver,
@@ -24,11 +25,18 @@ enum TerminalLauncher {
             )
         )
         Task {
-            await flow.open(
+            // The outcome was previously discarded, so a successful Tier-1/2 open
+            // gave no in-app signal — invisible when the terminal was already
+            // frontmost. Surface a confirmation on success; failures already
+            // route through revealTranscript.
+            let outcome = await flow.open(
                 sessionID: session.id,
                 cwd: session.cwd,
                 machineID: session.machineID
             )
+            if let message = outcome.successMessage {
+                confirmLaunch(message)
+            }
         }
     }
 }

@@ -112,6 +112,16 @@ public enum TerminalApplication: Sendable, Equatable, Hashable {
         case .ghostty, .other: false
         }
     }
+
+    /// Human name for launch confirmations and diagnostics.
+    public var displayName: String {
+        switch self {
+        case .terminal: "Terminal"
+        case .iTerm2: "iTerm"
+        case .ghostty: "Ghostty"
+        case .other(let name): name
+        }
+    }
 }
 
 /// Everything the app target needs to perform the tiered launch. No activation
@@ -433,6 +443,21 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
             "Multiple live terminals matched — showing transcript"
         case .failed:
             "Terminal unavailable — showing transcript"
+        }
+    }
+
+    /// Confirmation shown when a launch SUCCEEDS. Without it, activating a
+    /// terminal that is already frontmost (e.g. Ghostty, which has no scriptable
+    /// tab for trifola to jump to) produces no visible change — the click reads
+    /// as "nothing happened." This makes every successful open acknowledge.
+    public var successMessage: String? {
+        switch self {
+        case .exact(let target):
+            "Jumped to your session in \(target.ownerApplication?.displayName ?? "your terminal")"
+        case .ownerActivated(let target):
+            "Brought \(target.ownerApplication?.displayName ?? "your terminal") to the front"
+        case .permissionDenied, .notLive, .ambiguous, .failed:
+            nil
         }
     }
 }
