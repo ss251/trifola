@@ -440,6 +440,7 @@ struct DeadlineContent: View {
                         DeadlineCardRow(card: card, topJeopardy: topJeopardy, config: config,
                                         tier: tiers[card.projectKey],
                                         onSelect: onSelect, onConfirm: onConfirm, onReveal: onReveal)
+                            .motionRowTransition()
                     }
                 }
                 // The one app-standard reorder motion (W6 wave 4): jeopardy
@@ -455,8 +456,10 @@ struct DeadlineContent: View {
                                             tier: tiers[card.projectKey],
                                             onSelect: onSelect, onConfirm: onConfirm, onReveal: onReveal)
                                 .opacity(0.6)
+                                .motionRowTransition()
                         }
                     }
+                    .reorderMotion(value: shipped.map(\.id))
                 }
             }
         }

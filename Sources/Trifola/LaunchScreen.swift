@@ -86,7 +86,7 @@ struct LaunchScreen: View {
         .overlay(alignment: .top) {
             if let feedback { Toast(text: feedback).padding(.top, Theme.intraCell) }
         }
-        .animation(.snappy(duration: 0.25), value: feedback)
+        .motion(Theme.Motion.move, value: feedback)
         .task { await services.skills.refreshIfStale() }
         .onAppear(perform: consumeSeed)
         .onChange(of: services.pendingSkillSeed) { _, _ in consumeSeed() }

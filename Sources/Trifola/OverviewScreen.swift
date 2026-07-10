@@ -231,8 +231,11 @@ struct OverviewScreen: View {
             HStack(spacing: 0) {
                 Text(first)
                     .foregroundStyle(Theme.ink)
+                    .liveNumericTransition(value: first)
                 if !rest.isEmpty {
-                    Text(" · \(rest)").foregroundStyle(Theme.muted)
+                    Text(" · \(rest)")
+                        .foregroundStyle(Theme.muted)
+                        .liveNumericTransition(value: rest)
                 }
             }
             .font(.title3)
@@ -283,6 +286,7 @@ struct TierSpendSection: View {
                 Text(fmtUSD(total))
                     .font(.subheadline)
                     .foregroundStyle(Theme.muted)
+                    .liveNumericTransition(value: fmtUSD(total))
             }
             TierSplitBar(stats: stats)
             VStack(spacing: Theme.rhythm) {
@@ -295,14 +299,19 @@ struct TierSpendSection: View {
                         Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tokens excluding cache reads")
                             .font(.footnote)
                             .foregroundStyle(Theme.faint)
+                            .liveNumericTransition(
+                                value: "\(st.sessions)|\(fmtTokens(st.tokens))")
                         Spacer()
                         Text(fmtUSD(st.cost))
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(Theme.ink)
+                            .liveNumericTransition(value: fmtUSD(st.cost))
                         Text(total > 0 ? fmtPct(st.cost / total) : "—")
                             .font(.footnote)
                             .foregroundStyle(Theme.muted)
                             .frame(width: 42, alignment: .trailing)
+                            .liveNumericTransition(
+                                value: total > 0 ? fmtPct(st.cost / total) : "—")
                     }
                 }
             }
@@ -400,6 +409,7 @@ struct LiveNowSection: View {
                                     Text(fmtUSD(s.cost))
                                         .font(.subheadline)
                                         .foregroundStyle(Theme.muted)
+                                        .liveNumericTransition(value: fmtUSD(s.cost))
                                     Text("API-rate estimate")
                                         .font(.caption2)
                                         .foregroundStyle(Theme.faint)
@@ -408,6 +418,7 @@ struct LiveNowSection: View {
                             .padding(.horizontal, Theme.rhythm)
                             .padding(.vertical, Theme.rowVerticalInset)
                         }
+                        .motionRowTransition()
                     }
                 }
                 .reorderMotion(value: live.map(\.id))

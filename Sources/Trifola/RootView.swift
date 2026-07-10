@@ -91,8 +91,6 @@ private struct ContentColumn: View {
             }
         }
         .id(services.section)
-        .transition(.opacity)
-        .animation(.easeOut(duration: 0.18), value: services.section)
     }
 }
 
@@ -233,6 +231,7 @@ private struct SidebarItem: View {
                     Text("\(badge)")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
+                        .liveNumericTransition(value: "\(badge)")
                 }
             }
             .padding(.horizontal, Theme.intraCell)
@@ -247,7 +246,8 @@ private struct SidebarItem: View {
                         ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.6)
                         : .clear)
         }
-        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
+        .motion(Theme.Motion.quick, value: hovering)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -263,9 +263,11 @@ private struct SidebarFooter: View {
                     Image(systemName: "chart.line.uptrend.xyaxis")
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(Theme.muted)
-                    Text("today \(fmtUSD(snapshot.todayCost)) · ≈\(fmtUSD(snapshot.monthProjection))/mo")
+                    let burnLine = "today \(fmtUSD(snapshot.todayCost)) · ≈\(fmtUSD(snapshot.monthProjection))/mo"
+                    Text(burnLine)
                         .font(.footnote)
                         .foregroundStyle(Theme.muted)
+                        .liveNumericTransition(value: burnLine)
                 }
                 Text("public API rates — not your bill")
                     .font(.caption)

@@ -188,6 +188,7 @@ struct SeatMark: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.doorLightReduceMotionOverride) private var reduceMotionOverride
     @State private var ringTrim: CGFloat = 1
+    @State private var ceremonyEndsAt = Date.distantPast
 
     private var effectiveRingWidth: CGFloat {
         ringWidth ?? AppBrand.Geometry.ringWidth(displayScale: displayScale)
@@ -204,8 +205,9 @@ struct SeatMark: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30,
-                                paused: motionReduced || (state != .running && state != .blocked))) { context in
+        TimelineView(AnimationTimelineSchedule(
+            minimumInterval: 1 / 30,
+            paused: motionReduced || (state != .running && state != .blocked))) { context in
             let coreOpacity = runningOpacity(at: context.date)
             let pulse = blockedPulse(at: context.date)
             ZStack {
@@ -227,33 +229,54 @@ struct SeatMark: View {
                         .frame(width: size * AppBrand.Geometry.coreRatio,
                                height: size * AppBrand.Geometry.coreRatio)
                         .opacity(coreOpacity)
+                        // A state identity replaces the old core with the new
+                        // hue, so the ceremony is a true cross-fade rather than
+                        // an interpolated color pass through a muddy midpoint.
+                        .id(state)
+                        .transition(.opacity.animation(
+                            Theme.motion(Theme.Motion.ceremony,
+                                         reduceMotion: motionReduced)))
                 }
             }
+            .doorLightMotion(value: state)
         }
         .frame(width: size, height: size)
         .opacity(active ? 1 : 0.45)
         .onChange(of: state) { _, _ in
             guard !motionReduced else { ringTrim = 1; return }
-            ringTrim = 0
-            withAnimation(.easeOut(duration: 0.30)) { ringTrim = 1 }
+            // A second state flip during the draw keeps the current presentation
+            // value moving toward 1; it never snaps back to zero. A settled ring
+            // starts the next ceremony blank, then draws clockwise on the next
+            // update so the reset and the value-keyed animation cannot coalesce.
+            let now = Date()
+            guard now >= ceremonyEndsAt else { return }
+            ceremonyEndsAt = now.addingTimeInterval(Theme.ceremonyInterval)
+            var reset = Transaction()
+            reset.disablesAnimations = true
+            withTransaction(reset) { ringTrim = 0 }
+            Task { @MainActor in
+                await Task.yield()
+                ringTrim = 1
+            }
         }
+        .doorLightMotion(value: ringTrim)
         .accessibilityHidden(true)
     }
 
     private func runningOpacity(at date: Date) -> Double {
         guard !motionReduced, state == .running else { return 1 }
         let phase = date.timeIntervalSinceReferenceDate
-            .truncatingRemainder(dividingBy: AppBrand.Motion.runningPeriod)
-        return 0.925 + 0.075 * sin(2 * .pi * phase / AppBrand.Motion.runningPeriod)
+            .truncatingRemainder(dividingBy: AppBrand.AmbientPhase.runningPeriod)
+        return 0.925 + 0.075 * sin(2 * .pi * phase / AppBrand.AmbientPhase.runningPeriod)
     }
 
     /// One device-pixel echo at the start of each eight-second blocked interval.
     private func blockedPulse(at date: Date) -> CGFloat {
         guard !motionReduced, state == .blocked else { return 0 }
         let phase = date.timeIntervalSinceReferenceDate
-            .truncatingRemainder(dividingBy: AppBrand.Motion.blockedPeriod)
-        guard phase < AppBrand.Motion.blockedPulseDuration else { return 0 }
-        return CGFloat(phase / AppBrand.Motion.blockedPulseDuration)
+            .truncatingRemainder(dividingBy: AppBrand.AmbientPhase.blockedPeriod)
+        guard phase < AppBrand.AmbientPhase.blockedPulseDuration else { return 0 }
+        return CGFloat(phase / AppBrand.AmbientPhase.blockedPulseDuration)
     }
 
     private var motionReduced: Bool { reduceMotionOverride ?? reduceMotion }
@@ -279,10 +302,10 @@ enum AppBrand {
         }
     }
 
-    enum Motion {
+    enum AmbientPhase {
         static let runningPeriod: TimeInterval = 2.4
         static let blockedPeriod: TimeInterval = 8
-        static let blockedPulseDuration: TimeInterval = 0.35
+        static let blockedPulseDuration: TimeInterval = 0.30
     }
 
     enum MarkState { case quiet, running, needsYou }
@@ -483,9 +506,8 @@ struct StatTile: View {
             }
             Text(value)
                 .font(.system(size: 30, weight: .semibold, design: .rounded))
-                .monospacedDigit()
                 .foregroundStyle(valueColor)
-                .contentTransition(.numericText())
+                .liveNumericTransition(value: value)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             if let sub {
@@ -592,6 +614,7 @@ struct TierSplitBar: View {
                         Text("\(st.tier.label) \(fmtUSD(st.cost))")
                             .font(.caption2)
                             .foregroundStyle(Theme.muted)
+                            .liveNumericTransition(value: fmtUSD(st.cost))
                     }
                 }
                 Spacer(minLength: 0)
@@ -666,8 +689,7 @@ struct TapButton<Label: View>: View {
     var body: some View {
         label()
             .contentShape(Rectangle())
-            .scaleEffect(isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: isPressed)
+            .pressedMotion(isPressed: isPressed)
             .onTapGesture { if isEnabled { action() } }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
@@ -693,6 +715,7 @@ struct TapButton<Label: View>: View {
                     }
                 }
             }
+            .motion(Theme.Motion.quick, value: isFocused)
             .onKeyPress(.return) {
                 guard isEnabled else { return .ignored }
                 action()
@@ -873,9 +896,7 @@ struct TapToggle<L: View>: View {
     private var trackW: CGFloat { mini ? 26 : 38 }
     private var trackH: CGFloat { mini ? 15 : 22 }
 
-    private var flip: () -> Void {
-        { withAnimation(.easeOut(duration: 0.15)) { isOn.toggle() } }
-    }
+    private var flip: () -> Void { { isOn.toggle() } }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -897,6 +918,8 @@ struct TapToggle<L: View>: View {
         .focused($isFocused)
         .focusEffectDisabled()
         .brightness(isFocused && isEnabled ? 0.06 : 0)
+        .motion(Theme.Motion.quick, value: isOn)
+        .motion(Theme.Motion.quick, value: isFocused)
         .onKeyPress(.return) {
             guard isEnabled else { return .ignored }
             flip()
@@ -966,9 +989,8 @@ struct HoverRow<Content: View>: View {
                       ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.6)
                       : .clear)
         )
-        .onHover { h in
-            withAnimation(.easeOut(duration: 0.12)) { hovering = h }
-        }
+        .motion(Theme.Motion.quick, value: hovering)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -1105,6 +1127,7 @@ struct MutedDisclosureRow: View {
                 Text(label)
                     .font(.footnote)
                     .foregroundStyle(Theme.muted)
+                    .liveNumericTransition(value: label)
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.faint)
@@ -1133,6 +1156,7 @@ struct MutedDisclosurePill: View {
                 Text(label)
                     .font(.footnote)
                     .foregroundStyle(Theme.muted)
+                    .liveNumericTransition(value: label)
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.faint)

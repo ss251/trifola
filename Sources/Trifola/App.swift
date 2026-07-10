@@ -80,6 +80,10 @@ struct TrifolaApp: App {
     // see MenuBarPresence.swift).
     @StateObject private var menuPresence = MenuBarPresence()
 
+    init() {
+        Theme.Motion.prepareForLaunch()
+    }
+
     var body: some Scene {
         WindowGroup("Trifola", id: "main") {
             RootView()
@@ -152,6 +156,7 @@ struct MenuBarLabel: View {
             if let title = MenuBarReducer.titleText(board: board, hogFiring: hog != nil,
                                                     todayCost: today) {
                 Text(title)
+                    .liveNumericTransition(value: title)
             }
         }
     }
@@ -258,6 +263,9 @@ struct MenuBarContent: View {
         .padding(Theme.cardPadding)
         .frame(width: 320)
         .background(.regularMaterial)
+        .reorderMotion(value: mb.blocked.map(\.id) + mb.waiting.map(\.id)
+            + suppressedBlocked.map { "suppressed:\($0.id)" }
+            + suppressedWaiting.map { "suppressed:\($0.id)" })
         .onAppear { services.start() }
     }
 
@@ -297,6 +305,7 @@ struct MenuBarContent: View {
             .frame(minHeight: Theme.compactRowHeight)
         }
         .opacity(suppressed ? 0.45 : 1)
+        .motionRowTransition()
         .contextMenu {
             if let session = services.sessions.sessions.first(where: { $0.id == row.id }) {
                 SessionAgencyMenu(session: session)

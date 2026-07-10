@@ -69,7 +69,7 @@ struct BurnGovernorSection: View {
             Text(fmtUSD(today.cost))
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.ink)
-                .contentTransition(.numericText())
+                .liveNumericTransition(value: fmtUSD(today.cost))
             Text("API-rate estimate")
                 .font(.caption2).foregroundStyle(Theme.faint)
             if today.cost > 0 {
@@ -78,6 +78,7 @@ struct BurnGovernorSection: View {
                     Circle().fill(ModelTier.opus.color).frame(width: 6, height: 6)
                     Text("\(fmtPct(today.opusShare)) Opus")
                         .font(.subheadline).foregroundStyle(Theme.muted)
+                        .liveNumericTransition(value: fmtPct(today.opusShare))
                 }
             }
             Spacer()
@@ -89,9 +90,12 @@ struct BurnGovernorSection: View {
                 Text("≈\(fmtUSD(governor.monthProjection))/mo")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(Theme.ink)
+                    .liveNumericTransition(value: fmtUSD(governor.monthProjection))
                 if governor.runRateDays > 0 {
                     Text("· last \(governor.runRateDays)d, \(fmtUSD(governor.dailyRunRate))/day")
                         .font(.caption).foregroundStyle(Theme.faint)
+                        .liveNumericTransition(
+                            value: "\(governor.runRateDays)|\(fmtUSD(governor.dailyRunRate))")
                 }
             }
         }

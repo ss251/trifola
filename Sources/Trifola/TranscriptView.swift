@@ -115,9 +115,7 @@ struct TranscriptView: View {
                 if !pinnedToLive {
                     ProminentTapButton(size: .small, action: {
                         pinnedToLive = true
-                        withAnimation(.snappy(duration: 0.25)) {
-                            proxy.scrollTo("live-bottom", anchor: .bottom)
-                        }
+                        proxy.scrollTo("live-bottom", anchor: .bottom)
                     }) {
                         Label("Jump to live", systemImage: "arrow.down.to.line")
                     }
@@ -125,7 +123,7 @@ struct TranscriptView: View {
                     .motionTransition(edge: .bottom)
                 }
             }
-            .animation(.easeOut(duration: 0.18), value: pinnedToLive)
+            .motion(Theme.Motion.move, value: pinnedToLive)
         }
     }
 }

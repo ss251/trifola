@@ -40,7 +40,7 @@ struct SessionActions: View {
                     .allowsHitTesting(false)
             }
         }
-        .animation(.snappy(duration: 0.25), value: feedback)
+        .motion(Theme.Motion.move, value: feedback)
     }
 
     private func flash(_ text: String) {

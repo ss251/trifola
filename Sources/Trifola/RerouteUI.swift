@@ -94,10 +94,12 @@ struct RerouteTrendRow: View {
                     .monospacedDigit()
                     .foregroundStyle(Theme.muted)
                 if let top = report.pairs.first {
-                    Text("top \(top.pair) ×\(top.count)")
+                    Text("top \(compactPair(top.pair)) ×\(top.count)")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(Theme.faint)
                         .lineLimit(1)
+                        .frame(minWidth: 132, alignment: .leading)
+                        .layoutPriority(1)
                 }
                 Spacer(minLength: 0)
                 Text("14d · /model switches excluded (\(report.totalUserSwitches))")
@@ -105,6 +107,16 @@ struct RerouteTrendRow: View {
                     .foregroundStyle(Theme.faint)
             }
         }
+    }
+
+    /// Raw provider model IDs are too long for the one-line trend. The tier is
+    /// the decision-level information this compact summary promises.
+    private func compactPair(_ pair: String) -> String {
+        let models = pair.components(separatedBy: " → ")
+        guard models.count == 2 else { return pair }
+        return models
+            .map { ModelTier(raw: $0).label.lowercased() }
+            .joined(separator: " → ")
     }
 
 }

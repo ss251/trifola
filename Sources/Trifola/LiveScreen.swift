@@ -66,12 +66,15 @@ struct LiveScreen: View {
             LazyVGrid(columns: columns, spacing: Theme.blockGap) {
                 ForEach(live.prefix(8)) { session in
                     LiveTile(session: session)
+                        .motionRowTransition()
                 }
             }
             if live.count > 8 {
                 Text("+ \(live.count - 8) more active — see Sessions")
                     .font(.footnote)
                     .foregroundStyle(Theme.muted)
+                    .liveNumericTransition(value: "\(live.count - 8)")
+                    .motionRowTransition()
             }
         }
     }
@@ -95,9 +98,14 @@ private struct LiveTile: View {
                             .lineLimit(1)
                         TierBadge(tier: session.tier)
                     }
-                    Text("\(fmtAgo(session.lastActivity)) · \(fmtUSD(session.cost)) at public API rates")
-                        .font(.caption)
-                        .foregroundStyle(Theme.muted)
+                    HStack(spacing: 0) {
+                        Text("\(fmtAgo(session.lastActivity)) · ")
+                        Text(fmtUSD(session.cost))
+                            .liveNumericTransition(value: fmtUSD(session.cost))
+                        Text(" at public API rates")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
                 }
                 Spacer()
                 SessionActions(session: session, compact: true)

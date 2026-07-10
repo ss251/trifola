@@ -121,6 +121,36 @@ enum Theme {
     static let iconGutter: CGFloat = 14
     static let compactRowHeight: CGFloat = 30
     static let sessionRowHeight: CGFloat = 36
+
+    // MARK: Motion
+    // Frequency decides the token. Call sites never invent curves or durations:
+    // ambient numerals use quick, occasional membership/layout changes use move
+    // and exit, and only the Door Light may spend ceremony.
+    private static let motionReviewScale: Double = {
+        ProcessInfo.processInfo.environment["TRIFOLA_MOTION_SLOW"] == nil ? 1 : 4
+    }()
+
+    enum Motion {
+        static let quick = Animation.easeOut(duration: 0.12 * Theme.motionReviewScale)
+        static let move = Animation.spring(duration: 0.25 * Theme.motionReviewScale, bounce: 0)
+        static let exit = Animation.easeOut(duration: 0.16 * Theme.motionReviewScale)
+        static let ceremony = Animation.easeOut(duration: 0.30 * Theme.motionReviewScale)
+
+        /// Keeps the environment read launch-scoped rather than re-reading it at
+        /// every animated surface. The four public animations above are the only
+        /// production motion tokens.
+        static func prepareForLaunch() { _ = Theme.motionReviewScale }
+    }
+
+    /// Used only to keep a mid-draw Door Light flip on its current trim pass;
+    /// this is timing metadata, not a fifth animation token.
+    static var ceremonyInterval: TimeInterval { 0.30 * motionReviewScale }
+
+    /// Reduce Motion uses one quiet, non-spatial fade and never inherits the ×4
+    /// review multiplier, so accessibility transitions remain at or below 200ms.
+    static func motion(_ token: Animation, reduceMotion: Bool) -> Animation {
+        reduceMotion ? .easeOut(duration: 0.16) : token
+    }
 }
 
 // MARK: - Reduce Motion
@@ -143,7 +173,70 @@ private struct ReorderMotion<Value: Equatable>: ViewModifier {
     let value: Value
 
     func body(content: Content) -> some View {
-        content.animation(reduceMotion ? nil : .snappy(duration: 0.25), value: value)
+        content.animation(reduceMotion ? nil : Theme.Motion.move, value: value)
+    }
+}
+
+private struct ValueMotion<Value: Equatable>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let animation: Animation
+    let value: Value
+
+    func body(content: Content) -> some View {
+        content.animation(Theme.motion(animation, reduceMotion: reduceMotion), value: value)
+    }
+}
+
+private struct PressedMotion: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let isPressed: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(reduceMotion ? 1 : (isPressed ? 0.97 : 1))
+            .opacity(reduceMotion && isPressed ? 0.82 : 1)
+            .animation(Theme.motion(Theme.Motion.quick, reduceMotion: reduceMotion),
+                       value: isPressed)
+    }
+}
+
+private struct DoorLightValueMotion<Value: Equatable>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.doorLightReduceMotionOverride) private var reduceMotionOverride
+    let value: Value
+
+    func body(content: Content) -> some View {
+        let motionReduced = reduceMotionOverride ?? reduceMotion
+        content.animation(motionReduced ? nil : Theme.Motion.ceremony, value: value)
+    }
+}
+
+private struct LiveNumericTransition<Value: Equatable>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let value: Value
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if reduceMotion {
+            content.monospacedDigit()
+        } else {
+            content
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .animation(Theme.Motion.quick, value: value)
+        }
+    }
+}
+
+private struct RowMotionTransition: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let insertion = AnyTransition.opacity.animation(
+            Theme.motion(Theme.Motion.move, reduceMotion: reduceMotion))
+        let removal = AnyTransition.opacity.animation(
+            Theme.motion(Theme.Motion.exit, reduceMotion: reduceMotion))
+        content.transition(.asymmetric(insertion: insertion, removal: removal))
     }
 }
 
@@ -152,9 +245,10 @@ private struct MotionTransition: ViewModifier {
     let edge: Edge
 
     func body(content: Content) -> some View {
-        content.transition(reduceMotion
-            ? .opacity
-            : .move(edge: edge).combined(with: .opacity))
+        let transition = reduceMotion
+            ? AnyTransition.opacity.animation(Theme.motion(Theme.Motion.exit, reduceMotion: true))
+            : AnyTransition.move(edge: edge).combined(with: .opacity).animation(Theme.Motion.move)
+        content.transition(transition)
     }
 }
 
@@ -162,6 +256,35 @@ extension View {
     /// The app-standard membership/reorder animation, disabled for Reduce Motion.
     func reorderMotion<Value: Equatable>(value: Value) -> some View {
         modifier(ReorderMotion(value: value))
+    }
+
+    /// A value-keyed use of one of the four app motion tokens. Reduce Motion is
+    /// resolved here, never as a raw conditional at the call site.
+    func motion<Value: Equatable>(_ animation: Animation, value: Value) -> some View {
+        modifier(ValueMotion(animation: animation, value: value))
+    }
+
+    /// Door Light ceremony routing also honors the render harness override.
+    func doorLightMotion<Value: Equatable>(value: Value) -> some View {
+        modifier(DoorLightValueMotion(value: value))
+    }
+
+    /// Pressed feedback keeps the shipped 0.97 scale; Reduce Motion replaces it
+    /// with a quiet opacity change instead of spatial scaling.
+    func pressedMotion(isPressed: Bool) -> some View {
+        modifier(PressedMotion(isPressed: isPressed))
+    }
+
+    /// Ambient live numerals: tabular glyphs + a quick numeric roll only when the
+    /// displayed value changes. Reduce Motion gets a plain, stable swap.
+    func liveNumericTransition<Value: Equatable>(value: Value) -> some View {
+        modifier(LiveNumericTransition(value: value))
+    }
+
+    /// Occasional membership changes: opacity plus container height on entry,
+    /// opacity-led exit. Reduce Motion keeps only the <=200ms opacity transition.
+    func motionRowTransition() -> some View {
+        modifier(RowMotionTransition())
     }
 
     /// A spatial reveal in normal mode and a non-vestibular fade in Reduce Motion.

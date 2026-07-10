@@ -157,6 +157,7 @@ struct SessionsScreen: View {
                         ForEach(shown) { s in
                             SessionRow(session: s, isSelected: services.selectedSessionID == s.id)
                                 .id(s.id)
+                                .motionRowTransition()
                         }
                         if filtered.count > 400 {
                             Text("Showing first 400 — refine the search to narrow down.")

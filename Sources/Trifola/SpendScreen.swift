@@ -140,15 +140,18 @@ struct SpendScreen: View {
                     .font(.subheadline)
                     .foregroundStyle(Theme.muted)
                     .frame(width: 122, alignment: .trailing)
+                    .liveNumericTransition(value: "\(st.sessions)")
                 Text(fmtTokens(st.tokens))
                     .font(.subheadline)
                     .foregroundStyle(Theme.muted)
                     .frame(width: 130, alignment: .trailing)
+                    .liveNumericTransition(value: fmtTokens(st.tokens))
                 Spacer()
                 Text(fmtUSD(st.cost))
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(Theme.ink)
                     .frame(width: 84, alignment: .trailing)
+                    .liveNumericTransition(value: fmtUSD(st.cost))
             }
             .padding(.vertical, Theme.intraCell)
             // "Show the math" (W3): this tier row's receipt — the tier is only

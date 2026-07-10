@@ -81,6 +81,7 @@ struct AttentionStripView: View {
                                       onAgencyAction: onAgencyAction) {
                             onSelect(row.item.session)
                         }
+                        .motionRowTransition()
                         if index < shown.count - 1 {
                             Rectangle().fill(Theme.hairline.opacity(0.65)).frame(height: 1)
                         }
@@ -94,6 +95,8 @@ struct AttentionStripView: View {
                         isExpanded: showsSuppressed) {
                             showsSuppressed.toggle()
                         }
+                        .id("snoozed-disclosure")
+                        .motionRowTransition()
                 }
             }
 
@@ -105,7 +108,7 @@ struct AttentionStripView: View {
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
                 }
-                .motionTransition(edge: .top)
+                .motionRowTransition()
             }
         }
         .padding(Theme.cardPadding)
@@ -116,7 +119,9 @@ struct AttentionStripView: View {
             RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
                 .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
-        .reorderMotion(value: shown.map(\.id) + [acknowledgement?.id ?? ""])
+        .reorderMotion(value: shown.map(\.id)
+            + suppressed.map { "snoozed:\($0.id)" }
+            + [acknowledgement?.id ?? ""])
     }
 
     private func allClearText(_ b: AttentionBoard) -> String {
@@ -254,6 +259,7 @@ private struct AttentionLegend: View {
                         Text("\(n)")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(state.color)
+                            .liveNumericTransition(value: "\(n)")
                         Text(state.label.lowercased())
                             .font(.caption2)
                             .foregroundStyle(Theme.faint)
@@ -264,6 +270,7 @@ private struct AttentionLegend: View {
                 Text("· \(suppressedCount) snoozed")
                     .font(.caption2)
                     .foregroundStyle(Theme.faint)
+                    .liveNumericTransition(value: "\(suppressedCount)")
             }
         }
     }

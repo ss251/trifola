@@ -199,6 +199,7 @@ struct FleetFloor: View {
                                  onAgencyAction: onAgencyAction,
                                  onOpenTerminal: onOpenTerminal,
                                  onSelect: onSelect)
+                        .motionRowTransition()
                 }
             }
             // Seats never re-sort (the ArrivalLedger owns order) — this animates
@@ -352,6 +353,7 @@ private struct FleetBayView: View {
                                        onAgencyAction: onAgencyAction,
                                        onOpenTerminal: onOpenTerminal,
                                        onSelect: onSelect)
+                            .motionRowTransition()
                     }
                 }
             }
@@ -461,7 +463,7 @@ private struct FleetTokenView: View {
                                        onAgencyAction: onAgencyAction,
                                        onOpenTerminal: onOpenTerminal,
                                        onSelect: onSelect)
-                            .motionTransition(edge: .top)
+                            .motionRowTransition()
                     }
                 }
             }

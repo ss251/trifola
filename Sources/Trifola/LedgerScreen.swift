@@ -40,7 +40,7 @@ struct LedgerScreen: View {
         .overlay(alignment: .top) {
             if let feedback { Toast(text: feedback).padding(.top, Theme.intraCell) }
         }
-        .animation(.snappy(duration: 0.25), value: feedback)
+        .motion(Theme.Motion.move, value: feedback)
         .task {
             // On-launch delta pass — opening the app IS the "overnight" experience.
             services.dreamNow(trigger: .onLaunch)
@@ -453,7 +453,7 @@ private struct AdjudicatedLedger: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TapButton(action: { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }) {
+            TapButton(action: { expanded.toggle() }) {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.medium))
@@ -485,5 +485,6 @@ private struct AdjudicatedLedger: View {
                 }
             }
         }
+        .reorderMotion(value: expanded)
     }
 }
