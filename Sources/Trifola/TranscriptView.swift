@@ -35,6 +35,15 @@ struct TranscriptView: View {
 
     private var events: [TranscriptEvent] { previewEvents ?? store.events }
 
+    /// Hoisted out of `body`: a `+`-chained String expression inside the
+    /// modifier chain made Swift 6.1's type-checker time out ("unable to
+    /// type-check this expression in reasonable time") — 6.3 accepts it, CI's
+    /// toolchain does not. Interpolation in a typed property checks instantly
+    /// on both.
+    private var tailingIdentity: String {
+        "\(provider.rawValue)\u{1}\(filePath)\u{1}\(isPaused)"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -50,7 +59,7 @@ struct TranscriptView: View {
                 .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
-        .task(id: provider.rawValue + "\u{1}" + filePath + "\u{1}" + String(isPaused)) {
+        .task(id: tailingIdentity) {
             guard previewEvents == nil else { return }
             guard !isPaused else {
                 store.close()
