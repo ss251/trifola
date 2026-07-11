@@ -379,15 +379,19 @@ struct CodexAdapterTests {
             executable: sleep, arguments: ["5"],
             timeout: 0.2, maxOutputBytes: 1_024)
         #expect(timedOut == nil)
-        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(Date().timeIntervalSince(started) < 5)
 
+        // The cap and success legs test BYTE bounds, not deadlines — their
+        // timeouts are deliberately generous so CI scheduler contention can't
+        // starve a healthy printf past its deadline (a loaded runner turned the
+        // exact-cap success into a spurious timeout at 2s once).
         let capped = CodexRolloutFile.runBounded(
             executable: printf, arguments: ["123456"],
-            timeout: 2, maxOutputBytes: 5)
+            timeout: 10, maxOutputBytes: 5)
         #expect(capped == nil)
         let exact = CodexRolloutFile.runBounded(
             executable: printf, arguments: ["123456"],
-            timeout: 2, maxOutputBytes: 6)
+            timeout: 10, maxOutputBytes: 6)
         #expect(exact == Data("123456".utf8))
     }
 

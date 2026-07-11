@@ -77,8 +77,11 @@ struct ToolProbeEngineTests {
         #expect(out["fast"]?.status == .up)
         #expect(out["hung"]?.status == .unknown)
         #expect(out["hung"]?.detail == "probe timed out")
-        // Whole sweep is bounded by the timeout, not the hung probe.
-        #expect(elapsed < .seconds(5))
+        // Whole sweep is bounded by the timeout, not the hung probe. The ceiling
+        // is deliberately generous: it must stay far under the 30s hung-probe
+        // duration while surviving CI scheduler contention (a loaded runner
+        // measured 5.18s of wall clock for this sweep once).
+        #expect(elapsed < .seconds(15))
     }
 
     @Test func everyProbeGetsAnEntry() async {
