@@ -111,21 +111,111 @@ struct BurnGovernorSection: View {
 
 struct BurnSparkline: View {
     let days: [DailyBurn]
-    var height: CGFloat = 46
+    var height: CGFloat = Theme.Layout.chartHeight
+    @State private var hoveredIndex: Int? = nil
 
     private var peak: Double { max(days.map(\.cost).max() ?? 0, 0.0001) }
 
     var body: some View {
-        // Today gets the spotlight (UI_GRIND BRN-1 / legendary #3): full
-        // saturation + a tick under it; every prior day sits back at 70% — so the
-        // hero "$39" is findable in its own evidence in one glance.
-        HStack(alignment: .bottom, spacing: 2.5) {
-            ForEach(Array(days.enumerated()), id: \.element.id) { i, d in
-                DayBar(day: d, fraction: d.cost / peak, height: height,
-                       isToday: i == days.count - 1, drawIndex: i)
+        GeometryReader { geo in
+            let axisWidth = Theme.Layout.chartAxisWidth
+            let plotWidth = max(1, geo.size.width - axisWidth)
+            ZStack(alignment: .bottomLeading) {
+                chartGrid(axisWidth: axisWidth)
+
+                HStack(alignment: .bottom, spacing: 3) {
+                    ForEach(Array(days.enumerated()), id: \.element.id) { i, d in
+                        DayBar(day: d, fraction: d.cost / peak, height: height - 8,
+                               isToday: i == days.count - 1, drawIndex: i)
+                            .opacity(hoveredIndex == nil || hoveredIndex == i ? 1 : 0.46)
+                    }
+                }
+                .padding(.leading, axisWidth)
+                .frame(width: geo.size.width, height: height, alignment: .bottom)
+
+                if !days.isEmpty {
+                    let todayX = axisWidth + plotWidth - 1
+                    Rectangle()
+                        .fill(Theme.accent.opacity(0.55))
+                        .frame(width: Theme.hairlineWidth, height: height)
+                        .offset(x: todayX)
+                }
+
+                if let hoveredIndex, days.indices.contains(hoveredIndex) {
+                    hoverLabel(for: days[hoveredIndex])
+                        .position(
+                            x: min(max(axisWidth + 62,
+                                       axisWidth + plotWidth
+                                        * CGFloat(hoveredIndex) / CGFloat(max(1, days.count - 1))),
+                                   max(axisWidth + 62, geo.size.width - 62)),
+                            y: 18)
+                }
+            }
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let point):
+                    guard !days.isEmpty, point.x >= axisWidth else {
+                        hoveredIndex = nil; return
+                    }
+                    let fraction = min(0.999, max(0, (point.x - axisWidth) / plotWidth))
+                    hoveredIndex = min(days.count - 1, Int(fraction * CGFloat(days.count)))
+                case .ended:
+                    hoveredIndex = nil
+                }
             }
         }
-        .frame(height: height + 3, alignment: .bottom)
+        .frame(height: height)
+        .animation(Theme.Motion.quick, value: hoveredIndex)
+    }
+
+    private func chartGrid(axisWidth: CGFloat) -> some View {
+        ZStack {
+            gridLine(fmtUSD(peak), axisWidth: axisWidth,
+                     verticalAlignment: .top, opacity: 0.5)
+                .frame(maxHeight: .infinity, alignment: .top)
+            gridLine(fmtUSD(peak / 2), axisWidth: axisWidth,
+                     verticalAlignment: .center, opacity: 0.5)
+                .frame(maxHeight: .infinity, alignment: .center)
+            gridLine("$0", axisWidth: axisWidth,
+                     verticalAlignment: .bottom, opacity: 0.9)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+        .frame(height: height)
+    }
+
+    private func gridLine(_ label: String, axisWidth: CGFloat,
+                          verticalAlignment: VerticalAlignment,
+                          opacity: Double) -> some View {
+        HStack(alignment: verticalAlignment, spacing: Theme.intraCell) {
+            Text(label)
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.muted)
+                .monospacedDigit()
+                .frame(width: axisWidth - Theme.intraCell, alignment: .trailing)
+            Rectangle()
+                .fill(Theme.hairline.opacity(opacity))
+                .frame(height: Theme.hairlineWidth)
+        }
+    }
+
+    private func hoverLabel(for day: DailyBurn) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(day.day, format: .dateTime.month(.abbreviated).day())
+                .font(Theme.Typography.metadataMedium)
+            Text("\(fmtUSD(day.cost)) · \(day.sessions) sessions")
+                .font(Theme.Typography.metadata)
+                .monospacedDigit()
+        }
+        .foregroundStyle(Theme.ink)
+        .padding(.horizontal, Theme.intraCell)
+        .padding(.vertical, Theme.micro)
+        .background(.regularMaterial,
+                    in: RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
+        }
     }
 
     private struct DayBar: View {
@@ -139,41 +229,34 @@ struct BurnSparkline: View {
             let barH = max(2, height * min(1, fraction))
             Reveal.Progress(animation: Theme.Motion.draw(.bar),
                             itemIndex: drawIndex) { progress in
-                VStack(spacing: 1.5) {
-                    Group {
-                        if day.cost > 0 {
-                            VStack(spacing: 0.5) {
-                                // Stack tier slices top-down, tallest tier at the bottom so
-                                // the dominant model reads as the base of the column.
-                                ForEach(day.tierSlices, id: \.tier) { seg in
-                                    Rectangle()
-                                        .fill(seg.tier.color)
-                                        // 1pt floor: a non-zero segment never vanishes
-                                        // (UI_GRIND BRN-3 — the stack stays honest).
-                                        .frame(height: max(
-                                            1,
-                                            barH * (seg.cost / day.cost) * progress))
-                                }
+                Group {
+                    if day.cost > 0 {
+                        VStack(spacing: 0.5) {
+                            // Stack tier slices top-down, tallest tier at the bottom so
+                            // the dominant model reads as the base of the column.
+                            ForEach(day.tierSlices, id: \.tier) { seg in
+                                Rectangle()
+                                    .fill(seg.tier.color)
+                                    // 1pt floor: a non-zero segment never vanishes
+                                    // (UI_GRIND BRN-3 — the stack stays honest).
+                                    .frame(height: max(
+                                        1,
+                                        barH * (seg.cost / day.cost) * progress))
                             }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: max(1, barH * progress), alignment: .bottom)
-                            .clipShape(RoundedRectangle(cornerRadius: Theme.sparkRadius, style: .continuous))
-                            .opacity(isToday ? 1 : 0.7)
-                        } else {
-                            // Quiet day — a faint track tick, not an empty gap.
-                            Capsule()
-                                .fill(Theme.progressTrack)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 2)
                         }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .bottom)
-                    // The single accent now-marker, matching the calendar's now line.
-                    Rectangle()
-                        .fill(isToday ? Theme.accent : .clear)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 1.5)
+                        .frame(height: max(1, barH * progress), alignment: .bottom)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.sparkRadius, style: .continuous))
+                        .opacity(isToday ? 1 : 0.7)
+                    } else {
+                        // Quiet day — a faint track tick, not an empty gap.
+                        Capsule()
+                            .fill(Theme.progressTrack)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 2)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .bottom)
             }
         }
     }

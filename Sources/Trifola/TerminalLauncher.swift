@@ -6,6 +6,7 @@ import TrifolaKit
 /// this layer collapses AppleScript errors to Bool or chooses an arbitrary window.
 @MainActor
 enum TerminalLauncher {
+    @discardableResult
     static func open(
         session: SessionSummary,
         resolver: any TerminalLinkResolving = TerminalLinkResolver(),
@@ -13,7 +14,7 @@ enum TerminalLauncher {
         selectSession: @escaping @MainActor (String) -> Void,
         revealTranscript: @escaping @MainActor (String, TerminalLaunchOutcome) -> Void,
         confirmLaunch: @escaping @MainActor (String) -> Void
-    ) {
+    ) -> Task<Void, Never> {
         let flow = TerminalLaunchFlow(
             resolver: resolver,
             exactTargeter: AppleScriptTerminalTargeter(),
@@ -24,7 +25,7 @@ enum TerminalLauncher {
                 revealTranscript: revealTranscript
             )
         )
-        Task {
+        return Task {
             // The outcome was previously discarded, so a successful Tier-1/2 open
             // gave no in-app signal — invisible when the terminal was already
             // frontmost. Surface a confirmation on success; failures already
@@ -34,6 +35,7 @@ enum TerminalLauncher {
                 cwd: session.cwd,
                 machineID: session.machineID
             )
+            guard !Task.isCancelled else { return }
             if let message = outcome.successMessage {
                 confirmLaunch(message)
             }
@@ -71,11 +73,65 @@ private final class ClosureTerminalWindowAdapter: TerminalWindowAdapting {
 
 @MainActor
 private final class RunningApplicationActivator: TerminalOwnerActivating {
-    func activate(processID: Int32) -> Bool {
-        guard let app = NSRunningApplication(processIdentifier: pid_t(processID)) else {
+    func activate(processID: Int32, application: TerminalApplication?) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let exact = NSRunningApplication(processIdentifier: pid_t(processID))
+        let app = exact ?? NSWorkspace.shared.runningApplications.first {
+            Self.matches($0, application: application)
+        }
+        guard let app else { return false }
+
+        if app.isActive { return true }
+
+        // AppKit only promises that these Bool results mean the activation
+        // request was accepted/sent; it explicitly does not promise the target
+        // became active. Verify `isActive` before telling the user it worked.
+        NSApp.yieldActivation(to: app)
+        if app.activate(from: NSRunningApplication.current,
+                        options: [.activateAllWindows]),
+           await Self.waitUntilActive(app) {
+            return true
+        }
+
+        // Some terminal owners accept the cooperative request without taking
+        // focus. The direct request is the bounded compatibility fallback.
+        guard !Task.isCancelled else { return false }
+        guard app.activate(options: [.activateAllWindows]) else { return false }
+        return await Self.waitUntilActive(app)
+    }
+
+    private static func waitUntilActive(_ app: NSRunningApplication) async -> Bool {
+        for _ in 0..<8 {
+            guard !Task.isCancelled else { return false }
+            if app.isActive { return true }
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                return false
+            }
+        }
+        return !Task.isCancelled && app.isActive
+    }
+
+    private static func matches(_ running: NSRunningApplication,
+                                application: TerminalApplication?) -> Bool {
+        let bundleID = running.bundleIdentifier?.lowercased()
+        let appName = running.bundleURL?.deletingPathExtension()
+            .lastPathComponent.lowercased()
+            ?? running.localizedName?.lowercased()
+        switch application {
+        case .terminal?:
+            return bundleID == "com.apple.terminal" || appName == "terminal"
+        case .iTerm2?:
+            return bundleID == "com.googlecode.iterm2" || appName == "iterm"
+                || appName == "iterm2"
+        case .ghostty?:
+            return bundleID == "com.mitchellh.ghostty" || appName == "ghostty"
+        case .other(let name)?:
+            return appName == name.lowercased()
+        case nil:
             return false
         }
-        return app.activate(options: [.activateAllWindows])
     }
 }
 

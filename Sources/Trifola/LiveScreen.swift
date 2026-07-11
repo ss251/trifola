@@ -14,7 +14,7 @@ struct LiveScreen: View {
     @State private var seatOrder: [String] = []
 
     /// The live pool, freshest-first — the ranking for NEWCOMERS only.
-    private var pool: [SessionSummary] {
+    private func makePool() -> [SessionSummary] {
         services.sessions.activeSessions
             .sorted {
                 ($0.lastActivity ?? .distantPast, $1.id) > ($1.lastActivity ?? .distantPast, $0.id)
@@ -22,13 +22,16 @@ struct LiveScreen: View {
     }
 
     /// The pool in seat order — what the grid actually shows.
-    private var live: [SessionSummary] {
+    private func makeLive(pool: [SessionSummary]) -> [SessionSummary] {
         let byID = Dictionary(pool.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let order = StableOrder.merge(current: seatOrder, incoming: pool.map(\.id))
         return order.compactMap { byID[$0] }
     }
 
     var body: some View {
+        let pool = Perf.span("main:nav.livePool") { makePool() }
+        let live = makeLive(pool: pool)
+        let poolIDs = pool.map(\.id)
         ScreenScaffold(
             title: "Live Now",
             subtitle: live.isEmpty
@@ -43,22 +46,22 @@ struct LiveScreen: View {
                 .frame(minHeight: 460)
                 .motionRowTransition()
             } else {
-                board
+                board(live: live)
                     .motionRowTransition()
             }
         }
         // The one app-standard reorder motion — membership changes glide; a
         // surviving tile never moves at all.
         .reorderMotion(value: live.map(\.id))
-        .onAppear { seatOrder = StableOrder.merge(current: seatOrder, incoming: pool.map(\.id)) }
-        .onChange(of: pool.map(\.id)) { _, ids in
+        .onAppear { seatOrder = StableOrder.merge(current: seatOrder, incoming: poolIDs) }
+        .onChange(of: poolIDs) { _, ids in
             let merged = StableOrder.merge(current: seatOrder, incoming: ids)
             // Compare-before-assign: an unchanged membership never republishes.
             if merged != seatOrder { seatOrder = merged }
         }
     }
 
-    private var board: some View {
+    private func board(live: [SessionSummary]) -> some View {
         VStack(alignment: .leading, spacing: Theme.blockGap) {
             AttentionStrip()
 

@@ -21,10 +21,10 @@ enum Theme {
     // Ground and text. Dark mode follows the measured Notion/Codex warmth;
     // light mode keeps macOS semantic ground and true label contrast.
     static let surfaceWindow = Color(nsColor: .dyn(
-        light: .windowBackgroundColor,
+        light: NSColor(srgbRed: 247 / 255, green: 246 / 255, blue: 243 / 255, alpha: 1),
         dark: NSColor(srgbRed: 25 / 255, green: 25 / 255, blue: 24 / 255, alpha: 1)))
     static let surfaceSidebar = Color(nsColor: .dyn(
-        light: .windowBackgroundColor,
+        light: NSColor(srgbRed: 242 / 255, green: 241 / 255, blue: 237 / 255, alpha: 1),
         dark: NSColor(srgbRed: 25 / 255, green: 25 / 255, blue: 24 / 255, alpha: 1)))
     static let ink = Color(nsColor: .dyn(
         light: .labelColor,
@@ -48,11 +48,11 @@ enum Theme {
     // Elevation. Every stroked surface is paired with a fill; open tables and
     // narration stay directly on the window ground.
     static let cardFill = Color(nsColor: .dyn(
-        light: NSColor.black.withAlphaComponent(0.035),
-        dark: NSColor.white.withAlphaComponent(0.06)))
+        light: NSColor.white.withAlphaComponent(0.52),
+        dark: NSColor.white.withAlphaComponent(0.045)))
     static let cardStroke = Color(nsColor: .dyn(
-        light: NSColor.black.withAlphaComponent(0.08),
-        dark: NSColor.white.withAlphaComponent(0.09)))
+        light: NSColor.black.withAlphaComponent(0.095),
+        dark: NSColor.white.withAlphaComponent(0.085)))
     static let codeFill = Color(nsColor: .dyn(
         light: NSColor.black.withAlphaComponent(0.03),
         dark: NSColor.white.withAlphaComponent(0.04)))
@@ -72,11 +72,51 @@ enum Theme {
         light: NSColor(srgbRed: 125 / 255, green: 98 / 255, blue: 14 / 255, alpha: 1),
         dark: NSColor(srgbRed: 239 / 255, green: 228 / 255, blue: 176 / 255, alpha: 1)))
 
+    // State may tint a row only as a barely-there interruption. The Door Light
+    // remains the saturated signal; these washes exist solely to help a blocked
+    // or waiting seat interrupt a dense scan without turning the board colorful.
+    static let blockedRowFill = Color(nsColor: .dyn(
+        light: NSColor.systemRed.withAlphaComponent(0.045),
+        dark: NSColor.systemRed.withAlphaComponent(0.055)))
+    static let waitingRowFill = Color(nsColor: .dyn(
+        light: NSColor.systemYellow.withAlphaComponent(0.055),
+        dark: NSColor.systemYellow.withAlphaComponent(0.035)))
+    static let hoverFill = Color(nsColor: .dyn(
+        light: NSColor.black.withAlphaComponent(0.045),
+        dark: NSColor.white.withAlphaComponent(0.055)))
+    // Keyboard focus is navigation chrome, not fleet state. Use the platform's
+    // blue focus indicator instead of deriving it from Trifola's teal accent or
+    // the green Door Light status family.
+    static let keyboardFocusRing = Color(nsColor: .keyboardFocusIndicatorColor)
+
     // Status dots — system semantic status colors, auto-adapting, applied
     // ONLY to dots and short warning text runs. Never to bar fills or chrome.
-    static let green = Color(nsColor: .systemGreen)
-    static let amber = Color(nsColor: .systemYellow)
+    static let green = Color(nsColor: .dyn(
+        light: NSColor(srgbRed: 31 / 255, green: 154 / 255, blue: 86 / 255, alpha: 1),
+        dark: .systemGreen))
+    static let amber = Color(nsColor: .dyn(
+        light: NSColor(srgbRed: 184 / 255, green: 126 / 255, blue: 0, alpha: 1),
+        dark: .systemYellow))
     static let red = Color(nsColor: .systemRed)
+
+    // MARK: Type
+    // A native macOS scale with a real jump between orientation, reading, and
+    // measurement. Large numeric roles use rounded SF forms + tabular figures;
+    // prose stays in the platform face for legibility and Dynamic Type behavior.
+    enum Typography {
+        static let screenTitle = Font.system(size: 30, weight: .bold)
+        static let display = Font.system(size: 42, weight: .semibold, design: .rounded)
+        static let heroNumber = Font.system(size: 50, weight: .semibold, design: .rounded)
+        static let metric = Font.system(size: 27, weight: .semibold, design: .rounded)
+        static let supportingMetric = Font.system(size: 21, weight: .semibold, design: .rounded)
+        static let section = Font.system(size: 16, weight: .semibold)
+        static let body = Font.system(size: 13, weight: .regular)
+        static let bodyMedium = Font.system(size: 13, weight: .medium)
+        static let metadata = Font.system(size: 11, weight: .regular)
+        static let metadataMedium = Font.system(size: 11, weight: .medium)
+        static let mono = Font.system(size: 11, weight: .regular, design: .monospaced)
+        static let monoMedium = Font.system(size: 11, weight: .medium, design: .monospaced)
+    }
 
     // Progress bars — 6pt capsule, track at tertiary 22% (CodexBar UsageProgressBar).
     static let barHeight: CGFloat = 6
@@ -92,6 +132,7 @@ enum Theme {
     static let cardPadding: CGFloat = 14
     static let codePadding: CGFloat = 10
     static let hairlineWidth: CGFloat = 1
+    static let keyboardFocusRingWidth: CGFloat = 2
     static let toggleKnobInset: CGFloat = 1.5
     static let sparkRadius: CGFloat = 1.5
     static let rowVerticalInset: CGFloat = 5
@@ -113,7 +154,7 @@ enum Theme {
     // Millimeter layer — stop freehanding (POLISH C7). One inset, one block gap,
     // fixed evidence-table column metrics so every table reads as the same grammar.
     static let rowInsets = EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
-    static let blockGap: CGFloat = 20          // between sections inside a screen
+    static let blockGap: CGFloat = 24          // between sections inside a screen
     static let rankBarWidth: CGFloat = 120     // the evidence rank column
     static let valueColWidth: CGFloat = 76     // primary right-aligned value column
     static let subValueColWidth: CGFloat = 56  // secondary value column
@@ -121,6 +162,26 @@ enum Theme {
     static let iconGutter: CGFloat = 14
     static let compactRowHeight: CGFloat = 30
     static let sessionRowHeight: CGFloat = 36
+
+    // MARK: Layout
+    // Window and instrument geometry belong here so screens compose from one
+    // grid instead of carrying private neighboring numbers.
+    enum Layout {
+        static let sidebarWidth: CGFloat = 248
+        static let minimumWindowWidth: CGFloat = 1120
+        static let minimumWindowHeight: CGFloat = 720
+        static let contentMaxWidth: CGFloat = 1080
+        static let proseMaxWidth: CGFloat = 700
+        static let headerHeight: CGFloat = 72
+        static let screenTopInset: CGFloat = 18
+        static let screenBottomInset: CGFloat = 30
+        static let statBandMinHeight: CGFloat = 112
+        static let chartHeight: CGFloat = 88
+        static let chartAxisWidth: CGFloat = 42
+        static let compactHitHeight: CGFloat = 28
+        static let semanticRailWidth: CGFloat = 3
+        static let menuWidth: CGFloat = 320
+    }
 
     // MARK: Motion
     // Frequency decides the token. Call sites never invent curves or durations:
@@ -344,15 +405,22 @@ private struct ToastTransition: ViewModifier {
 
 private struct SectionTransition: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let enabled: Bool
 
     func body(content: Content) -> some View {
+        let transition: AnyTransition
+        if !enabled {
+            transition = .identity
+        } else {
         let insertion = (reduceMotion
             ? AnyTransition.opacity
             : AnyTransition.opacity.combined(with: .offset(y: 8)))
             .animation(Theme.motion(Theme.Motion.nav, reduceMotion: reduceMotion))
         let removal = AnyTransition.opacity.animation(
             Theme.motion(Theme.Motion.exit, reduceMotion: reduceMotion))
-        content.transition(.asymmetric(insertion: insertion, removal: removal))
+            transition = .asymmetric(insertion: insertion, removal: removal)
+        }
+        return content.transition(transition)
     }
 }
 
@@ -639,8 +707,8 @@ extension View {
         modifier(ToastTransition())
     }
 
-    func sectionTransition() -> some View {
-        modifier(SectionTransition())
+    func sectionTransition(enabled: Bool = true) -> some View {
+        modifier(SectionTransition(enabled: enabled))
     }
 
     func sidebarSelectionTravel(in namespace: Namespace.ID) -> some View {
@@ -730,6 +798,7 @@ struct WindowConfigurator: NSViewRepresentable {
             guard let w = view.window else { return }
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
+            w.identifier = MainWindowPresenter.windowIdentifier
             w.styleMask.insert(.fullSizeContentView)
             w.isMovableByWindowBackground = true
         }

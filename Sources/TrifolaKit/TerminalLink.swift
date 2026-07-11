@@ -10,6 +10,21 @@ public protocol TerminalProcessSnapshotProviding: Sendable {
 
     /// Output shaped like `lsof -a -p <pid> -d cwd -Fn`.
     func workingDirectoryOutput(for processID: Int32) -> String?
+
+    /// CWDs for many candidate processes. The default preserves compatibility
+    /// for fixtures; the system provider overrides this with one `lsof` call so
+    /// an external session never waits on N sequential subprocesses.
+    func workingDirectories(for processIDs: [Int32]) -> [Int32: String]
+}
+
+public extension TerminalProcessSnapshotProviding {
+    func workingDirectories(for processIDs: [Int32]) -> [Int32: String] {
+        processIDs.reduce(into: [:]) { result, processID in
+            guard let output = workingDirectoryOutput(for: processID),
+                  let cwd = TerminalLinkResolver.parseWorkingDirectory(output) else { return }
+            result[processID] = cwd
+        }
+    }
 }
 
 /// The authoritative live-session join written by Claude Code under
@@ -94,6 +109,19 @@ public struct SystemTerminalProcessSnapshotProvider: TerminalProcessSnapshotProv
               ), result.status == 0 else { return nil }
         return String(data: result.stdout, encoding: .utf8)
     }
+
+    public func workingDirectories(for processIDs: [Int32]) -> [Int32: String] {
+        guard !processIDs.isEmpty,
+              let lsof = ProbePrimitives.firstExecutable(["/usr/sbin/lsof", "/usr/bin/lsof"]),
+              let result = ProbePrimitives.runCommand(
+                lsof,
+                ["-a", "-p", processIDs.map(String.init).joined(separator: ","),
+                 "-d", "cwd", "-Fn"],
+                timeout: 2
+              ), result.status == 0 || !result.stdout.isEmpty else { return [:] }
+        guard let output = String(data: result.stdout, encoding: .utf8) else { return [:] }
+        return TerminalLinkResolver.parseWorkingDirectories(output)
+    }
 }
 
 /// A terminal application found in the selected Claude process's ancestry.
@@ -166,6 +194,19 @@ public enum TerminalLinkResolution: Sendable, Equatable {
     case failed(String)
 }
 
+/// One bulk read of the authoritative live registry joined against the process
+/// table. The Sessions browser consumes this instead of running a resolver (and
+/// therefore `ps`) once per visible row.
+public struct TerminalLiveSessionSnapshot: Sendable, Equatable {
+    public let sessionIDs: Set<String>
+    public let failureReason: String?
+
+    public init(sessionIDs: Set<String>, failureReason: String? = nil) {
+        self.sessionIDs = sessionIDs
+        self.failureReason = failureReason
+    }
+}
+
 public protocol TerminalLinkResolving: Sendable {
     func resolve(sessionID: String, cwd: String, machineID: String) -> TerminalLinkResolution
 }
@@ -207,37 +248,85 @@ public struct TerminalLinkResolver: Sendable, TerminalLinkResolving {
             return .failed("live session registry unavailable: \(error.localizedDescription)")
         }
 
-        if !sessionID.isEmpty {
-            let exactPIDs = Set(records.lazy
-                .filter { $0.sessionID == sessionID }
-                .map(\.processID))
+        let exactRecords = sessionID.isEmpty
+            ? [] : records.filter { $0.sessionID == sessionID }
+        if !exactRecords.isEmpty {
+            let exactPIDs = Set(exactRecords.map(\.processID))
             if exactPIDs.count > 1 { return .ambiguous }
             if let processID = exactPIDs.first {
                 guard let process = byPID[processID], process.isClaudeProcess else {
                     // A registry entry whose PID has exited (or been reused by a
                     // different program) is not permission to target a cwd peer.
-                    return .notLive
+                    return .failed("Registry entry exists, but its process is no longer live")
+                }
+                guard Self.isTerminalAttached(process, in: byPID) else {
+                    return .failed(
+                        "Registry entry exists, but its process is not attached to a live terminal")
                 }
                 return .target(Self.target(for: process, match: .sessionID, in: byPID))
             }
         }
 
         guard !cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .notLive
+            return sessionID.isEmpty
+                ? .notLive : .failed("No registry entry for this session")
         }
         let wantedCWD = Self.normalizedPath(cwd)
-
-        let matches = processes.compactMap { process -> TerminalProcess? in
-            guard process.isClaudeProcess,
-                  let cwdOutput = snapshots.workingDirectoryOutput(for: process.processID),
-                  let processCWD = Self.parseWorkingDirectory(cwdOutput),
-                  Self.normalizedPath(processCWD) == wantedCWD else { return nil }
-            return process
+        let claudeProcesses = processes.filter {
+            $0.isClaudeProcess && Self.isTerminalAttached($0, in: byPID)
+        }
+        let cwdByPID = snapshots.workingDirectories(
+            for: claudeProcesses.map(\.processID))
+        let matches = claudeProcesses.filter { process in
+            guard let processCWD = cwdByPID[process.processID] else { return false }
+            return Self.normalizedPath(processCWD) == wantedCWD
         }
 
         guard matches.count <= 1 else { return .ambiguous }
-        guard let selected = matches.first else { return .notLive }
+        guard let selected = matches.first else {
+            return sessionID.isEmpty
+                ? .notLive
+                : .failed("No registry entry for this session and no live terminal matched its working directory")
+        }
         return .target(Self.target(for: selected, match: .cwd, in: byPID))
+    }
+
+    /// Exact terminal-attached identities for filtering. CWD fallback is
+    /// deliberately absent: it can activate an external terminal owner when a
+    /// user opens one selected session, but it cannot honestly identify which of
+    /// many historical rows in that directory is live. A live background Claude
+    /// daemon is not enough: the process must have both a TTY and an app owner.
+    /// Duplicate registry identities are also excluded.
+    public func liveRegisteredSessionSnapshot() -> TerminalLiveSessionSnapshot {
+        guard let output = snapshots.processListOutput() else {
+            return TerminalLiveSessionSnapshot(
+                sessionIDs: [], failureReason: "process snapshot unavailable")
+        }
+        let processes = Self.parseProcessList(output)
+        let byPID = processes.reduce(into: [Int32: TerminalProcess]()) {
+            $0[$1.processID] = $1
+        }
+
+        let records: [TerminalSessionRegistryRecord]
+        do {
+            records = try registry.records()
+        } catch {
+            return TerminalLiveSessionSnapshot(
+                sessionIDs: [],
+                failureReason: "live session registry unavailable: \(error.localizedDescription)")
+        }
+
+        let recordsBySession = Dictionary(grouping: records, by: \.sessionID)
+        let live = recordsBySession.reduce(into: Set<String>()) { result, entry in
+            let processIDs = Set(entry.value.map(\.processID))
+            guard processIDs.count == 1,
+                  let processID = processIDs.first,
+                  let process = byPID[processID],
+                  process.isClaudeProcess,
+                  Self.isTerminalAttached(process, in: byPID) else { return }
+            result.insert(entry.key)
+        }
+        return TerminalLiveSessionSnapshot(sessionIDs: live)
     }
 
     /// Compatibility shim for callers outside the app. Ambiguous and failed
@@ -324,6 +413,21 @@ public struct TerminalLinkResolver: Sendable, TerminalLinkResolving {
         return nil
     }
 
+    /// Parses the `-F` shape emitted by one multi-PID `lsof` call:
+    /// `p<PID>`, `fcwd`, `n<path>`, repeated for each process.
+    public static func parseWorkingDirectories(_ output: String) -> [Int32: String] {
+        var currentPID: Int32?
+        var result: [Int32: String] = [:]
+        for line in output.split(whereSeparator: \.isNewline) {
+            if line.first == "p", let pid = Int32(line.dropFirst()) {
+                currentPID = pid
+            } else if line.first == "n", line.count > 1, let currentPID {
+                result[currentPID] = String(line.dropFirst())
+            }
+        }
+        return result
+    }
+
     public static func normalizedTTY(_ tty: String?) -> String? {
         guard var tty = tty?.trimmingCharacters(in: .whitespacesAndNewlines),
               !tty.isEmpty, tty != "??", tty != "-" else { return nil }
@@ -346,6 +450,20 @@ public struct TerminalLinkResolver: Sendable, TerminalLinkResolving {
             let basename = token.split(separator: "/").last ?? token
             return basename == "claude" || basename == "claude-code"
         }) { return true }
+        // Current standalone installs execute a version-named binary beneath
+        // `.../claude/versions/<semver>`. Constrain the fallback to that path so
+        // an unrelated process whose basename happens to be a version is never
+        // classified as Claude.
+        if lowered.contains("/claude/versions/") {
+            let executable = tokens.first.map { token in
+                String(token.split(separator: "/").last ?? token)
+            } ?? ""
+            if executable.first?.isNumber == true,
+               executable.split(separator: ".").count >= 3,
+               executable.allSatisfy({ $0.isNumber || $0 == "." }) {
+                return true
+            }
+        }
         return lowered.contains("/@anthropic-ai/claude-code/")
     }
 
@@ -366,6 +484,13 @@ public struct TerminalLinkResolver: Sendable, TerminalLinkResolving {
             parentID = parent.parentProcessID
         }
         return nil
+    }
+
+    private static func isTerminalAttached(
+        _ process: TerminalProcess,
+        in processes: [Int32: TerminalProcess]
+    ) -> Bool {
+        normalizedTTY(process.tty) != nil && terminalOwner(for: process, in: processes) != nil
     }
 
     private static func terminalApplication(for command: String) -> TerminalApplication? {
@@ -426,6 +551,9 @@ public enum TerminalExactTargetResult: Sendable, Equatable {
 public enum TerminalLaunchOutcome: Sendable, Equatable {
     case exact(TerminalLinkTarget)
     case ownerActivated(TerminalLinkTarget)
+    /// A newer user action superseded this launch. Intentionally silent: the
+    /// replacement action owns the visible outcome.
+    case cancelled
     case permissionDenied(TerminalAutomationError)
     case notLive
     case ambiguous
@@ -433,16 +561,16 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
 
     public var fallbackMessage: String? {
         switch self {
-        case .exact, .ownerActivated:
+        case .exact, .ownerActivated, .cancelled:
             nil
         case .permissionDenied:
-            "Terminal automation denied — showing transcript"
+            "Terminal automation permission denied — System Settings → Privacy & Security → Automation; showing transcript"
         case .notLive:
             "No live terminal found — showing transcript"
         case .ambiguous:
             "Multiple live terminals matched — showing transcript"
-        case .failed:
-            "Terminal unavailable — showing transcript"
+        case .failed(let failure):
+            failure.fallbackMessage
         }
     }
 
@@ -453,10 +581,18 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
     public var successMessage: String? {
         switch self {
         case .exact(let target):
-            "Jumped to your session in \(target.ownerApplication?.displayName ?? "your terminal")"
+            if target.match == .cwd {
+                "Jumped to \(target.ownerApplication?.displayName ?? "your terminal") using a working-directory match (no registry entry)"
+            } else {
+                "Jumped to your session in \(target.ownerApplication?.displayName ?? "your terminal")"
+            }
         case .ownerActivated(let target):
-            "Brought \(target.ownerApplication?.displayName ?? "your terminal") to the front"
-        case .permissionDenied, .notLive, .ambiguous, .failed:
+            if target.match == .cwd {
+                "Brought \(target.ownerApplication?.displayName ?? "your terminal") to the front using a working-directory match (no registry entry)"
+            } else {
+                "Brought \(target.ownerApplication?.displayName ?? "your terminal") to the front"
+            }
+        case .cancelled, .permissionDenied, .notLive, .ambiguous, .failed:
             nil
         }
     }
@@ -466,6 +602,20 @@ public enum TerminalLaunchFailure: Sendable, Equatable {
     case resolution(String)
     case automation(TerminalAutomationError)
     case noTerminalOwner
+    case ownerActivationFailed(TerminalApplication?)
+
+    public var fallbackMessage: String {
+        switch self {
+        case .resolution(let reason):
+            "\(reason) — showing transcript"
+        case .automation(let error):
+            "Terminal automation failed: \(error.message) — showing transcript"
+        case .noTerminalOwner:
+            "Live process found, but no owning terminal app was identified — showing transcript"
+        case .ownerActivationFailed(let application):
+            "\(application?.displayName ?? "Terminal") was found but could not be brought forward — showing transcript"
+        }
+    }
 }
 
 @MainActor
@@ -475,7 +625,7 @@ public protocol TerminalExactTargeting: AnyObject {
 
 @MainActor
 public protocol TerminalOwnerActivating: AnyObject {
-    func activate(processID: Int32) -> Bool
+    func activate(processID: Int32, application: TerminalApplication?) async -> Bool
 }
 
 /// The three deterministic Tier-3 effects. They are separate calls so tests can
@@ -511,6 +661,7 @@ public struct TerminalLaunchFlow {
     @discardableResult
     public func open(sessionID: String, cwd: String,
                      machineID: String) async -> TerminalLaunchOutcome {
+        guard !Task.isCancelled else { return .cancelled }
         guard machineID == Machine.localID else {
             return presentFallback(.notLive, sessionID: sessionID)
         }
@@ -519,6 +670,7 @@ public struct TerminalLaunchFlow {
         let resolution = await Task.detached(priority: .userInitiated) {
             resolver.resolve(sessionID: sessionID, cwd: cwd, machineID: machineID)
         }.value
+        guard !Task.isCancelled else { return .cancelled }
 
         switch resolution {
         case .notLive:
@@ -528,19 +680,20 @@ public struct TerminalLaunchFlow {
         case .failed(let reason):
             return presentFallback(.failed(.resolution(reason)), sessionID: sessionID)
         case .target(let target):
-            return launch(target: target, sessionID: sessionID)
+            return await launch(target: target, sessionID: sessionID)
         }
     }
 
     private func launch(target: TerminalLinkTarget,
-                        sessionID: String) -> TerminalLaunchOutcome {
+                        sessionID: String) async -> TerminalLaunchOutcome {
+        guard !Task.isCancelled else { return .cancelled }
         var automationFailure: TerminalAutomationError?
         if target.supportsExactTargeting,
            let tty = target.tty,
            let application = target.ownerApplication {
             switch exactTargeter.target(tty: tty, application: application) {
             case .targeted:
-                return .exact(target)
+                return Task.isCancelled ? .cancelled : .exact(target)
             case .notFound:
                 break
             case .permissionDenied(let error):
@@ -550,9 +703,17 @@ public struct TerminalLaunchFlow {
             }
         }
 
-        if let ownerProcessID = target.ownerProcessID,
-           ownerActivator.activate(processID: ownerProcessID) {
-            return .ownerActivated(target)
+        if let ownerProcessID = target.ownerProcessID {
+            let activated = await ownerActivator.activate(
+                processID: ownerProcessID,
+                application: target.ownerApplication)
+            guard !Task.isCancelled else { return .cancelled }
+            if activated {
+                return .ownerActivated(target)
+            }
+            return presentFallback(
+                .failed(.ownerActivationFailed(target.ownerApplication)),
+                sessionID: sessionID)
         }
 
         let failure = automationFailure.map(TerminalLaunchFailure.automation)

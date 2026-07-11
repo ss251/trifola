@@ -20,7 +20,7 @@ struct Card<Content: View>: View {
                 RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
                     .fill(Theme.cardFill)
                 RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
+                    .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
             }
     }
 }
@@ -56,6 +56,7 @@ struct ArtifactPill: View {
             .foregroundStyle(Theme.ink)
             .padding(.horizontal, Theme.intraCell)
             .padding(.vertical, Theme.micro)
+            .frame(minHeight: Theme.Layout.compactHitHeight)
             .background {
                 Capsule().fill(hovering ? Theme.cardStroke : Theme.cardFill)
                 Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
@@ -93,7 +94,7 @@ struct SectionLabel: View {
     init(_ text: String) { self.text = text }
     var body: some View {
         Text(text)
-            .font(.body.weight(.medium))
+            .font(Theme.Typography.section)
             .foregroundStyle(Theme.ink)
     }
 }
@@ -108,7 +109,7 @@ struct ColumnLabel: View {
     init(_ text: String) { self.text = text }
     var body: some View {
         Text(text)
-            .font(.footnote.weight(.medium))
+            .font(Theme.Typography.bodyMedium)
             .foregroundStyle(Theme.ink)
     }
 }
@@ -118,8 +119,8 @@ struct Eyebrow: View {
     init(_ text: String) { self.text = text }
     var body: some View {
         Text(text)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(Theme.faint)
+            .font(Theme.Typography.metadataMedium)
+            .foregroundStyle(Theme.muted)
     }
 }
 
@@ -373,9 +374,23 @@ enum AppBrand {
         static let iconReferenceSize: CGFloat = 512
         static let iconTileInset: CGFloat = 40
         static let iconTileCornerRadius: CGFloat = 108
-        static let iconMarkDiameter: CGFloat = 320
         static let iconRimInset: CGFloat = 1
         static let iconRimLineWidth: CGFloat = 2
+
+        // Brand-identity geometry is intentionally separate from the functional
+        // 8-point Door Light above. The identity may evolve without weakening
+        // the operational state atom used throughout the product.
+        static let identityMarkDiameter: CGFloat = 344
+        static let identityLobeOrbitRatio: CGFloat = 0.145
+        static let identityLobeRadiusRatio: CGFloat = 0.29
+        static let identityApertureRadiusRatio: CGFloat = 0.145
+        static let identityCoreRadiusRatio: CGFloat = 0.072
+        static let identityOpticalYOffsetRatio: CGFloat = 0.012
+
+        static let thresholdMarkDiameter: CGFloat = 304
+        static let thresholdHaloWidth: CGFloat = 24
+        static let thresholdGapDegrees: CGFloat = 38
+        static let thresholdCoreDiameter: CGFloat = 112
 
         static func ringWidth(displayScale: CGFloat) -> CGFloat {
             displayScale >= 2 ? 1.5 : 1
@@ -406,6 +421,31 @@ enum AppBrand {
     }
 
     enum MarkState { case quiet, running, needsYou }
+
+    enum Palette {
+        static var tileTop: NSColor {
+            NSColor(srgbRed: 39 / 255, green: 48 / 255, blue: 45 / 255, alpha: 1)
+        }
+        static var tileBottom: NSColor {
+            NSColor(srgbRed: 19 / 255, green: 22 / 255, blue: 21 / 255, alpha: 1)
+        }
+        static var mark: NSColor {
+            NSColor(srgbRed: 247 / 255, green: 246 / 255, blue: 242 / 255, alpha: 1)
+        }
+        /// A brand teal, deliberately distinct from the live green Door Light.
+        static var staticCore: NSColor {
+            NSColor(srgbRed: 66 / 255, green: 153 / 255, blue: 132 / 255, alpha: 1)
+        }
+    }
+
+    /// The three required launch-study directions. Only `trefoilAperture` is
+    /// used by the shipped identity; the other two remain available solely to
+    /// make the decision artifact reproducible from code.
+    enum IdentityConcept: CaseIterable {
+        case thresholdLight
+        case noduleCut
+        case trefoilAperture
+    }
 
     @MainActor static func applyDockIcon() {
         NSApplication.shared.applicationIconImage = appIcon()
@@ -440,14 +480,202 @@ enum AppBrand {
         NSBezierPath(ovalIn: Geometry.coreRect(in: rect)).fill()
     }
 
-    static func markImage(size: CGFloat, state: MarkState = .needsYou,
-                          color: NSColor = .black, template: Bool = false) -> NSImage {
+    /// Draw the selected three-lobed identity shell around the existing Door
+    /// Light core. A transparency layer makes the aperture a genuine knockout,
+    /// so the mark stays correct over gradients and in template images.
+    static func drawBrandMark(
+        in rect: NSRect,
+        state: MarkState = .needsYou,
+        color: NSColor,
+        coreColor: NSColor? = nil
+    ) {
+        drawTrefoilAperture(in: rect, state: state, color: color,
+                           coreColor: coreColor ?? color)
+    }
+
+    static func brandMarkImage(
+        size: CGFloat,
+        state: MarkState = .needsYou,
+        color: NSColor = .black,
+        coreColor: NSColor? = nil,
+        template: Bool = false
+    ) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            drawMark(in: rect, state: state, color: color)
+            drawBrandMark(in: rect, state: state, color: color,
+                          coreColor: coreColor ?? color)
             return true
         }
         image.isTemplate = template
         return image
+    }
+
+    static func markImage(size: CGFloat, state: MarkState = .needsYou,
+                          color: NSColor = .black, template: Bool = false) -> NSImage {
+        brandMarkImage(size: size, state: state, color: color, template: template)
+    }
+
+    /// Code-drawn concept seam used by `--render-logo`. Each direction is
+    /// normalized to its destination rect and shares the same Door Light core.
+    static func drawConceptMark(
+        _ concept: IdentityConcept,
+        in rect: NSRect,
+        state: MarkState = .needsYou,
+        color: NSColor,
+        coreColor: NSColor
+    ) {
+        switch concept {
+        case .thresholdLight:
+            drawThresholdLight(in: rect, state: state, color: color,
+                               coreColor: coreColor)
+        case .noduleCut:
+            drawNoduleCut(in: rect, state: state, color: color,
+                          coreColor: coreColor)
+        case .trefoilAperture:
+            drawTrefoilAperture(in: rect, state: state, color: color,
+                                coreColor: coreColor)
+        }
+    }
+
+    private static func drawThresholdLight(
+        in rect: NSRect,
+        state: MarkState,
+        color: NSColor,
+        coreColor: NSColor
+    ) {
+        let diameter = min(rect.width, rect.height)
+        let lineWidth = max(1, diameter * Geometry.thresholdHaloWidth
+                            / Geometry.thresholdMarkDiameter)
+        let radius = (diameter - lineWidth) / 2
+        let gap = diameter <= 32 ? CGFloat(44) : Geometry.thresholdGapDegrees
+        let arc = NSBezierPath()
+        arc.appendArc(withCenter: NSPoint(x: rect.midX, y: rect.midY),
+                      radius: radius,
+                      startAngle: -90 + gap / 2,
+                      endAngle: 270 - gap / 2)
+        arc.lineWidth = lineWidth
+        arc.lineCapStyle = .round
+        color.setStroke()
+        arc.stroke()
+        guard state != .quiet else { return }
+        let coreDiameter = diameter * Geometry.thresholdCoreDiameter
+            / Geometry.thresholdMarkDiameter
+        let opticalOffset = diameter > 32 ? diameter * 0.02 : 0
+        coreColor.setFill()
+        NSBezierPath(ovalIn: NSRect(x: rect.midX - coreDiameter / 2,
+                                    y: rect.midY - coreDiameter / 2 + opticalOffset,
+                                    width: coreDiameter, height: coreDiameter)).fill()
+    }
+
+    private static func drawTrefoilAperture(
+        in rect: NSRect,
+        state: MarkState,
+        color: NSColor,
+        coreColor: NSColor
+    ) {
+        let diameter = min(rect.width, rect.height)
+        let center = NSPoint(
+            x: rect.midX,
+            y: rect.midY + diameter * Geometry.identityOpticalYOffsetRatio)
+        let orbit = diameter * Geometry.identityLobeOrbitRatio
+        let lobeRadius = diameter * Geometry.identityLobeRadiusRatio
+        let apertureRadius = diameter * Geometry.identityApertureRadiusRatio
+        let coreStateScale: CGFloat = state == .running ? 0.58 : 1
+        let coreRadius = diameter * Geometry.identityCoreRadiusRatio * coreStateScale
+
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        color.setFill()
+        for degrees in [90.0, 210.0, 330.0] {
+            let radians = CGFloat(degrees) * .pi / 180
+            let lobeCenter = NSPoint(x: center.x + cos(radians) * orbit,
+                                     y: center.y + sin(radians) * orbit)
+            NSBezierPath(ovalIn: NSRect(x: lobeCenter.x - lobeRadius,
+                                        y: lobeCenter.y - lobeRadius,
+                                        width: lobeRadius * 2,
+                                        height: lobeRadius * 2)).fill()
+        }
+        context.setBlendMode(.clear)
+        NSBezierPath(ovalIn: NSRect(x: center.x - apertureRadius,
+                                    y: center.y - apertureRadius,
+                                    width: apertureRadius * 2,
+                                    height: apertureRadius * 2)).fill()
+        if state != .quiet {
+            context.setBlendMode(.normal)
+            coreColor.setFill()
+            NSBezierPath(ovalIn: NSRect(x: center.x - coreRadius,
+                                        y: center.y - coreRadius,
+                                        width: coreRadius * 2,
+                                        height: coreRadius * 2)).fill()
+        }
+        context.endTransparencyLayer()
+        context.restoreGState()
+    }
+
+    private static func drawNoduleCut(
+        in rect: NSRect,
+        state: MarkState,
+        color: NSColor,
+        coreColor: NSColor
+    ) {
+        let normalizedAnchors: [CGPoint] = [
+            CGPoint(x: 0.48, y: 0.06), CGPoint(x: 0.72, y: 0.13),
+            CGPoint(x: 0.90, y: 0.31), CGPoint(x: 0.88, y: 0.55),
+            CGPoint(x: 0.81, y: 0.74), CGPoint(x: 0.58, y: 0.91),
+            CGPoint(x: 0.34, y: 0.87), CGPoint(x: 0.12, y: 0.72),
+            CGPoint(x: 0.08, y: 0.45), CGPoint(x: 0.22, y: 0.19),
+        ]
+        let anchors = normalizedAnchors.map { point in
+            CGPoint(x: rect.minX + point.x * rect.width,
+                    y: rect.minY + point.y * rect.height)
+        }
+        let contour = NSBezierPath()
+        contour.move(to: anchors[0])
+        let tension: CGFloat = 0.72
+        for index in anchors.indices {
+            let p0 = anchors[(index - 1 + anchors.count) % anchors.count]
+            let p1 = anchors[index]
+            let p2 = anchors[(index + 1) % anchors.count]
+            let p3 = anchors[(index + 2) % anchors.count]
+            let c1 = CGPoint(x: p1.x + (p2.x - p0.x) * tension / 6,
+                             y: p1.y + (p2.y - p0.y) * tension / 6)
+            let c2 = CGPoint(x: p2.x - (p3.x - p1.x) * tension / 6,
+                             y: p2.y - (p3.y - p1.y) * tension / 6)
+            contour.curve(to: p2, controlPoint1: c1, controlPoint2: c2)
+        }
+        contour.close()
+
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        color.setFill()
+        contour.fill()
+
+        context.setBlendMode(.clear)
+        let bore = NSBezierPath()
+        bore.move(to: NSPoint(x: rect.minX + rect.width * 0.13,
+                              y: rect.minY + rect.height * 0.69))
+        bore.line(to: NSPoint(x: rect.minX + rect.width * 0.50,
+                              y: rect.minY + rect.height * 0.50))
+        bore.lineWidth = max(1, rect.width * 0.105)
+        bore.lineCapStyle = .round
+        bore.stroke()
+        let target = NSPoint(x: rect.minX + rect.width * 0.57,
+                             y: rect.minY + rect.height * 0.46)
+        let aperture = rect.width * 0.29
+        NSBezierPath(ovalIn: NSRect(x: target.x - aperture / 2,
+                                    y: target.y - aperture / 2,
+                                    width: aperture, height: aperture)).fill()
+        if state != .quiet {
+            context.setBlendMode(.normal)
+            let core = rect.width * 0.13
+            coreColor.setFill()
+            NSBezierPath(ovalIn: NSRect(x: target.x - core / 2,
+                                        y: target.y - core / 2,
+                                        width: core, height: core)).fill()
+        }
+        context.endTransparencyLayer()
+        context.restoreGState()
     }
 
     /// Paint the canonical app-icon composition in an arbitrary destination
@@ -459,18 +687,35 @@ enum AppBrand {
         let tileRadius = Geometry.scaledIconValue(Geometry.iconTileCornerRadius, in: rect)
         let inset = rect.insetBy(dx: tileInset, dy: tileInset)
         let tile = NSBezierPath(roundedRect: inset, xRadius: tileRadius, yRadius: tileRadius)
-        NSGradient(colors: [NSColor(srgbRed: 0.19, green: 0.31, blue: 0.29, alpha: 1),
-                            NSColor(srgbRed: 0.09, green: 0.14, blue: 0.14, alpha: 1)])?
+        NSGradient(colors: [Palette.tileTop, Palette.tileBottom])?
             .draw(in: tile, angle: -90)
-        let markDiameter = Geometry.scaledIconValue(Geometry.iconMarkDiameter, in: rect)
+
+        if rect.width >= 64 {
+            let glow = NSGradient(starting: Palette.staticCore.withAlphaComponent(0.16),
+                                  ending: NSColor.clear)
+            glow?.draw(in: tileRectForGlow(tileRect: inset),
+                       relativeCenterPosition: NSPoint(x: 0, y: 0.08))
+        }
+
+        let markDiameter = Geometry.scaledIconValue(Geometry.identityMarkDiameter, in: rect)
         let markRect = NSRect(x: rect.midX - markDiameter / 2,
                               y: rect.midY - markDiameter / 2,
                               width: markDiameter, height: markDiameter)
-        drawMark(in: markRect, state: .needsYou,
-                 color: NSColor.white.withAlphaComponent(0.94),
-                 displayScale: 2,
-                 lineWidth: max(1, Geometry.ringWidth(displayScale: 2) * scale))
-        NSColor.white.withAlphaComponent(0.12).setStroke()
+
+        NSGraphicsContext.saveGraphicsState()
+        if rect.width >= 64 {
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+            shadow.shadowBlurRadius = 12 * scale
+            shadow.shadowOffset = NSSize(width: 0, height: -6 * scale)
+            shadow.set()
+        }
+        drawBrandMark(in: markRect, state: .needsYou,
+                      color: Palette.mark,
+                      coreColor: Palette.staticCore)
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSColor.white.withAlphaComponent(rect.width >= 32 ? 0.10 : 0).setStroke()
         let rimInset = Geometry.scaledIconValue(Geometry.iconRimInset, in: rect)
         let rim = NSBezierPath(roundedRect: inset.insetBy(dx: rimInset, dy: rimInset),
                                xRadius: max(0, tileRadius - rimInset),
@@ -478,6 +723,10 @@ enum AppBrand {
         rim.lineWidth = max(0.5,
                             Geometry.scaledIconValue(Geometry.iconRimLineWidth, in: rect))
         rim.stroke()
+    }
+
+    private static func tileRectForGlow(tileRect: NSRect) -> NSRect {
+        tileRect.insetBy(dx: tileRect.width * 0.08, dy: tileRect.height * 0.08)
     }
 
     static func appIcon(size: CGFloat = Geometry.iconReferenceSize) -> NSImage {
@@ -522,6 +771,54 @@ enum AppBrand {
             ]
             NSAttributedString(string: text, attributes: attributes)
                 .draw(at: NSPoint(x: badge.minX + 27, y: badge.minY + 8))
+        }
+    }
+}
+
+/// Product-identity mark for mastheads and empty states. Operational rows keep
+/// using `SeatMark`; only this shell changes, while its center still speaks the
+/// established Door Light state language.
+struct BrandMark: View {
+    var state: DoorLightState? = nil
+    var size: CGFloat = 24
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Image(nsImage: AppBrand.brandMarkImage(
+            size: size,
+            state: appKitState,
+            color: shellColor,
+            coreColor: coreColor))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+
+    private var appKitState: AppBrand.MarkState {
+        switch state {
+        case .none: return .needsYou
+        case .some(.idle): return .quiet
+        case .some(.running): return .running
+        case .some(.waiting), .some(.blocked): return .needsYou
+        }
+    }
+
+    private var shellColor: NSColor {
+        colorScheme == .dark
+            ? NSColor(srgbRed: 237 / 255, green: 236 / 255, blue: 233 / 255, alpha: 1)
+            : NSColor(srgbRed: 26 / 255, green: 27 / 255, blue: 25 / 255, alpha: 1)
+    }
+
+    private var coreColor: NSColor {
+        guard let state else { return AppBrand.Palette.staticCore }
+        switch state {
+        case .idle: return shellColor
+        case .running:
+            return colorScheme == .dark
+                ? .systemGreen
+                : NSColor(srgbRed: 31 / 255, green: 154 / 255, blue: 86 / 255, alpha: 1)
+        case .waiting: return .systemYellow
+        case .blocked: return .systemRed
         }
     }
 }
@@ -606,32 +903,44 @@ struct RemoteStatusLine: View {
 // Lives inside StatRow, which separates tiles with hairlines instead of boxes.
 
 struct StatTile: View {
+    enum Emphasis { case hero, standard, supporting }
+
     let label: String
     let value: String
     var sub: String? = nil
     var valueColor: Color = Theme.ink
     var icon: String? = nil
     var live = false
+    var emphasis: Emphasis = .standard
+
+    private var valueFont: Font {
+        switch emphasis {
+        case .hero: Theme.Typography.heroNumber
+        case .standard: Theme.Typography.metric
+        case .supporting: Theme.Typography.supportingMetric
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 if live { Circle().fill(Theme.green).frame(width: 6, height: 6) }
                 Text(label)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(Theme.Typography.metadataMedium)
                     .foregroundStyle(Theme.muted)
             }
             Text(value)
-                .font(.system(size: 30, weight: .semibold, design: .rounded))
+                .font(valueFont)
                 .foregroundStyle(valueColor)
+                .monospacedDigit()
                 .liveNumericTransition(value: value)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             if let sub {
                 Text(sub)
-                    .font(.system(size: 11))
+                    .font(Theme.Typography.metadata)
                     .foregroundStyle(Theme.muted)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -647,14 +956,15 @@ struct StatRow<Content: View>: View {
         HStack(alignment: .top, spacing: Theme.sectionGap) {
             content()
         }
-        .padding(20)
+        .padding(.horizontal, Theme.cardPadding + Theme.micro)
+        .padding(.vertical, Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 150, alignment: .top)
+        .frame(minHeight: Theme.Layout.statBandMinHeight, alignment: .top)
         .background {
             RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
                 .fill(Theme.cardFill)
             RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                .strokeBorder(Theme.cardStroke, lineWidth: 1)
+                .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
         }
     }
 }
@@ -793,6 +1103,73 @@ struct BarStrip: View {
 /// `.link`-styled Button (verified immune) so ⌘-shortcuts keep working.
 enum TapFocusVisual { case row, card, capsule, none }
 
+private struct TapFocusEvidenceOverrideKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
+}
+
+extension EnvironmentValues {
+    /// Headless evidence only. Production is always driven by the physical-input
+    /// monitor plus `@FocusState`.
+    var tapFocusEvidenceOverride: Bool? {
+        get { self[TapFocusEvidenceOverrideKey.self] }
+        set { self[TapFocusEvidenceOverrideKey.self] = newValue }
+    }
+}
+
+/// The last physical input source. SwiftUI may keep a custom control focused
+/// after a click, so `@FocusState` alone cannot decide whether its halo belongs
+/// on screen. The local monitor changes only on modality transitions, keeping
+/// all shared controls in sync without publishing every mouse event.
+@MainActor
+final class InputModalityMonitor: ObservableObject {
+    enum Modality { case pointer, keyboard }
+
+    static let shared = InputModalityMonitor()
+    @Published private(set) var modality: Modality = .pointer
+    private var eventMonitor: Any?
+
+    private init() {
+        eventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            let modality: Modality = switch event.type {
+            case .keyDown: .keyboard
+            default: .pointer
+            }
+            Task { @MainActor [weak self] in self?.record(modality) }
+            return event
+        }
+    }
+
+    func record(_ newValue: Modality) {
+        guard modality != newValue else { return }
+        modality = newValue
+    }
+}
+
+/// Shared geometry for the actual keyboard halo and its evidence render.
+struct TapFocusOutline: View {
+    let visual: TapFocusVisual
+
+    @ViewBuilder var body: some View {
+        switch visual {
+        case .row:
+            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                .strokeBorder(Theme.keyboardFocusRing,
+                              lineWidth: Theme.keyboardFocusRingWidth)
+        case .card:
+            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                .strokeBorder(Theme.keyboardFocusRing,
+                              lineWidth: Theme.keyboardFocusRingWidth)
+        case .capsule:
+            Capsule().strokeBorder(Theme.keyboardFocusRing,
+                                   lineWidth: Theme.keyboardFocusRingWidth)
+        case .none:
+            Color.clear
+        }
+    }
+}
+
 struct TapButton<Label: View>: View {
     var shortcut: KeyboardShortcut? = nil
     var focusVisual: TapFocusVisual = .row
@@ -803,6 +1180,14 @@ struct TapButton<Label: View>: View {
     @Environment(\.isEnabled) private var isEnabled
     @GestureState private var isPressed = false
     @FocusState private var isFocused: Bool
+    @State private var isHovering = false
+    @ObservedObject private var inputModality = InputModalityMonitor.shared
+    @Environment(\.tapFocusEvidenceOverride) private var focusEvidenceOverride
+
+    private var showsKeyboardFocus: Bool {
+        if let focusEvidenceOverride { return focusEvidenceOverride && isEnabled }
+        return isFocused && isEnabled && inputModality.modality == .keyboard
+    }
 
     init(shortcut: KeyboardShortcut? = nil,
          focusVisual: TapFocusVisual = .row,
@@ -820,9 +1205,14 @@ struct TapButton<Label: View>: View {
 
     var body: some View {
         label()
+            .frame(minWidth: Theme.Layout.compactHitHeight,
+                   minHeight: Theme.Layout.compactHitHeight)
             .contentShape(Rectangle())
             .pressedMotion(isPressed: pressFeedback && isPressed, visual: focusVisual)
-            .onTapGesture { if isEnabled { action() } }
+            .onTapGesture {
+                inputModality.record(.pointer)
+                if isEnabled { action() }
+            }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                     .updating($isPressed) { _, pressed, _ in
@@ -833,8 +1223,8 @@ struct TapButton<Label: View>: View {
             .focused($isFocused)
             .focusEffectDisabled()
             .background {
-                if isFocused && isEnabled {
-                    let wash = Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.5)
+                if (isFocused || isHovering) && isEnabled {
+                    let wash = Theme.hoverFill
                     switch focusVisual {
                     case .row:
                         RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous).fill(wash)
@@ -847,14 +1237,23 @@ struct TapButton<Label: View>: View {
                     }
                 }
             }
-            .motion(Theme.Motion.quick, value: isFocused)
+            .overlay {
+                if showsKeyboardFocus {
+                    TapFocusOutline(visual: focusVisual)
+                }
+            }
+            .motion(Theme.Motion.quick, value: showsKeyboardFocus)
+            .motion(Theme.Motion.quick, value: isHovering)
+            .onHover { isHovering = $0 }
             .onKeyPress(.return) {
                 guard isEnabled else { return .ignored }
+                inputModality.record(.keyboard)
                 (keyboardAction ?? action)()
                 return .handled
             }
             .onKeyPress(.space) {
                 guard isEnabled else { return .ignored }
+                inputModality.record(.keyboard)
                 (keyboardAction ?? action)()
                 return .handled
             }
@@ -913,6 +1312,7 @@ struct QuietTapButton<Label: View>: View {
                 .foregroundStyle(Theme.ink)
                 .padding(.horizontal, size == .small ? Theme.intraCell : Theme.codePadding)
                 .padding(.vertical, size == .small ? Theme.micro : Theme.rhythm)
+                .frame(minHeight: Theme.Layout.compactHitHeight)
                 .background {
                     Capsule().fill(Theme.cardFill)
                     Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
@@ -943,6 +1343,13 @@ struct ProminentTapButton<Label: View>: View {
     @GestureState private var isPressed = false
     @State private var hovering = false
     @FocusState private var isFocused: Bool
+    @ObservedObject private var inputModality = InputModalityMonitor.shared
+    @Environment(\.tapFocusEvidenceOverride) private var focusEvidenceOverride
+
+    private var showsKeyboardFocus: Bool {
+        if let focusEvidenceOverride { return focusEvidenceOverride && isEnabled }
+        return isFocused && isEnabled && inputModality.modality == .keyboard
+    }
 
     init(size: Size = .regular, tint: Color = Theme.accent,
          shortcut: KeyboardShortcut? = nil,
@@ -977,6 +1384,7 @@ struct ProminentTapButton<Label: View>: View {
             .foregroundStyle(.white)
             .padding(.horizontal, hPad)
             .padding(.vertical, vPad)
+            .frame(minHeight: Theme.Layout.compactHitHeight)
             .background {
                 Capsule().fill(tint)
                 Capsule().strokeBorder(Color.black.opacity(0.20), lineWidth: 0.5)
@@ -985,11 +1393,21 @@ struct ProminentTapButton<Label: View>: View {
                         Rectangle().frame(height: size == .large ? 13 : 9)
                     }
             }
+            .overlay {
+                if showsKeyboardFocus {
+                    TapFocusOutline(visual: .capsule)
+                }
+            }
             .brightness((hovering || isFocused) && isEnabled ? 0.06 : 0)
+            .motion(Theme.Motion.quick, value: hovering)
+            .motion(Theme.Motion.quick, value: showsKeyboardFocus)
             .opacity(isEnabled ? 1 : 0.45)
             .contentShape(Capsule())
             .pressedMotion(isPressed: isPressed && isEnabled, visual: .capsule)
-            .onTapGesture { if isEnabled { action() } }
+            .onTapGesture {
+                inputModality.record(.pointer)
+                if isEnabled { action() }
+            }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                     .updating($isPressed) { _, pressed, _ in
@@ -1002,11 +1420,13 @@ struct ProminentTapButton<Label: View>: View {
             .focusEffectDisabled()
             .onKeyPress(.return) {
                 guard isEnabled else { return .ignored }
+                inputModality.record(.keyboard)
                 action()
                 return .handled
             }
             .onKeyPress(.space) {
                 guard isEnabled else { return .ignored }
+                inputModality.record(.keyboard)
                 action()
                 return .handled
             }
@@ -1044,7 +1464,6 @@ struct TapToggle<L: View>: View {
     var mini = false
     @ViewBuilder let label: () -> L
     @Environment(\.isEnabled) private var isEnabled
-    @FocusState private var isFocused: Bool
 
     init(isOn: Binding<Bool>, mini: Bool = false,
          @ViewBuilder label: @escaping () -> L) {
@@ -1059,45 +1478,27 @@ struct TapToggle<L: View>: View {
     private var flip: () -> Void { { isOn.toggle() } }
 
     var body: some View {
-        HStack(spacing: 8) {
-            label()
-            ZStack(alignment: isOn ? .trailing : .leading) {
-                Capsule()
-                    .fill(isOn ? Theme.graphite
-                               : Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
-                Circle()
-                    .fill(.white)
-                    .padding(Theme.toggleKnobInset)
+        TapButton(focusVisual: .capsule, action: flip) {
+            HStack(spacing: 8) {
+                label()
+                ZStack(alignment: isOn ? .trailing : .leading) {
+                    Capsule()
+                        .fill(isOn ? Theme.graphite
+                                  : Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
+                    Circle()
+                        .fill(.white)
+                        .padding(Theme.toggleKnobInset)
+                }
+                .frame(width: trackW, height: trackH)
             }
-            .frame(width: trackW, height: trackH)
+            .frame(minHeight: Theme.Layout.compactHitHeight)
+            .contentShape(Rectangle())
         }
         .opacity(isEnabled ? 1 : 0.5)
-        .contentShape(Rectangle())
-        .onTapGesture { if isEnabled { flip() } }
-        .focusable(isEnabled)
-        .focused($isFocused)
-        .focusEffectDisabled()
-        .brightness(isFocused && isEnabled ? 0.06 : 0)
         .motion(Theme.Motion.quick, value: isOn)
-        .motion(Theme.Motion.quick, value: isFocused)
-        .onKeyPress(.return) {
-            guard isEnabled else { return .ignored }
-            flip()
-            return .handled
-        }
-        .onKeyPress(.space) {
-            guard isEnabled else { return .ignored }
-            flip()
-            return .handled
-        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isToggle)
         .accessibilityValue(isOn ? "On" : "Off")
-        .accessibilityRespondsToUserInteraction(true, isEnabled: isEnabled)
-        .accessibilityAction {
-            guard isEnabled else { return }
-            flip()
-        }
     }
 }
 
@@ -1129,6 +1530,7 @@ struct FilterChip: View {
                 .foregroundStyle(isOn ? Theme.selectionText : Theme.muted)
                 .padding(.horizontal, Theme.codePadding)
                 .padding(.vertical, Theme.micro)
+                .frame(minHeight: Theme.Layout.compactHitHeight)
                 .background {
                     if isOn {
                         Capsule().fill(Theme.selectionBG)
@@ -1148,20 +1550,10 @@ struct HoverRow<Content: View>: View {
     var radius: CGFloat = 6
     let action: () -> Void
     @ViewBuilder let content: () -> Content
-    @State private var hovering = false
-
     var body: some View {
-        TapButton(action: action) {
+        TapButton(focusVisual: .row, action: action) {
             content()
         }
-        .background(
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(hovering
-                      ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.6)
-                      : .clear)
-        )
-        .motion(Theme.Motion.quick, value: hovering)
-        .onHover { hovering = $0 }
     }
 }
 
@@ -1412,20 +1804,24 @@ struct EmptyState: View {
     let detail: String
     var tint: Color = Theme.faint
     var maxWidth: CGFloat = 360
+    var state: DoorLightState = .idle
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: Theme.sectionGap) {
-            Image(systemName: icon)
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(tint)
+            BrandMark(state: state, size: 26)
             Text(title)
-                .font(.headline)
+                .font(Theme.Typography.section)
                 .foregroundStyle(Theme.ink)
             Text(detail)
-                .font(.subheadline)
+                .font(Theme.Typography.body)
                 .foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: maxWidth)
+            if let actionTitle, let action {
+                QuietTapButton(actionTitle, size: .regular, action: action)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(Theme.gutter)
@@ -1477,11 +1873,11 @@ struct FlagRow: View {
 // 20pt gutters, headline-scale title, hairline under the header.
 
 enum ScreenScaffoldMetrics {
-    static let topInset: CGFloat = 18
-    static let bottomInset: CGFloat = 28
-    static let maxWidth: CGFloat = 1040
-    static let proseMaxWidth: CGFloat = 720
-    static let headerHeight: CGFloat = 70
+    static let topInset = Theme.Layout.screenTopInset
+    static let bottomInset = Theme.Layout.screenBottomInset
+    static let maxWidth = Theme.Layout.contentMaxWidth
+    static let proseMaxWidth = Theme.Layout.proseMaxWidth
+    static let headerHeight = Theme.Layout.headerHeight
 }
 
 struct ScreenScaffold<Content: View, Trailing: View>: View {
@@ -1490,44 +1886,54 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     /// An earned one-word epithet worn beside the title (POLISH C4) — coined in a
     /// doc first, worn in the app second. Same treatment Fleet's "the floor" uses.
     var epithet: String? = nil
+    /// Production screens scroll; bounded headless compositions opt out so
+    /// ImageRenderer realizes the exact shared chrome and content eagerly.
+    var scrolls = true
     @ViewBuilder let trailing: () -> Trailing
     @ViewBuilder let content: () -> Content
 
+    @ViewBuilder
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.blockGap) {
-                VStack(alignment: .leading, spacing: Theme.blockGap) {
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 8) {
-                                Text(title)
-                                    .font(.system(size: 28, weight: .bold))
-                                    .tracking(-0.4)
-                                    .foregroundStyle(Theme.ink)
-                                if let epithet {
-                                    Text(epithet)
-                                        .font(.caption)
-                                        .foregroundStyle(Theme.faint)
-                                }
-                            }
-                            Text(subtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(Theme.muted)
-                        }
-                        Spacer()
-                        trailing()
-                    }
-                    .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
-                    Divider()
-                }
-                .launchReveal(.header)
-
-                Reveal.StaggeredContent { content() }
-                    .launchReveal(.content)
-            }
-            .screenScaffoldFrame()
+        if scrolls {
+            ScrollView { scaffoldBody }
+                .scrollIndicators(.never)
+        } else {
+            scaffoldBody
         }
-        .scrollIndicators(.never)
+    }
+
+    private var scaffoldBody: some View {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Text(title)
+                                .font(Theme.Typography.screenTitle)
+                                .tracking(-0.55)
+                                .foregroundStyle(Theme.ink)
+                            if let epithet {
+                                Text(epithet)
+                                    .font(Theme.Typography.metadata)
+                                    .foregroundStyle(Theme.faint)
+                            }
+                        }
+                        Text(subtitle)
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    Spacer()
+                    trailing()
+                }
+                .frame(height: ScreenScaffoldMetrics.headerHeight, alignment: .top)
+                Divider()
+            }
+            .launchReveal(.header)
+
+            Reveal.StaggeredContent { content() }
+                .launchReveal(.content)
+        }
+        .screenScaffoldFrame()
     }
 }
 
@@ -1546,9 +1952,9 @@ extension View {
 }
 
 extension ScreenScaffold where Trailing == EmptyView {
-    init(title: String, subtitle: String, epithet: String? = nil,
+    init(title: String, subtitle: String, epithet: String? = nil, scrolls: Bool = true,
          @ViewBuilder content: @escaping () -> Content) {
-        self.init(title: title, subtitle: subtitle, epithet: epithet,
+        self.init(title: title, subtitle: subtitle, epithet: epithet, scrolls: scrolls,
                   trailing: { EmptyView() }, content: content)
     }
 }

@@ -41,6 +41,7 @@ struct ReleaseSurfaceTests {
             in: ["--self-chek"]) == ["--self-chek"])
         #expect(TrifolaCommandLine.usage.contains("--help"))
         #expect(TrifolaCommandLine.usage.contains("--render-icon <iconset-dir>"))
+        #expect(TrifolaCommandLine.usage.contains("--render-logo <output-dir>"))
     }
 
     @Test("brand renderer declares Apple's full iconset")
@@ -64,5 +65,7 @@ struct ReleaseSurfaceTests {
         }
         #expect(BrandAssetManifest.bannerWidth == 1_280)
         #expect(BrandAssetManifest.bannerHeight == 360)
+        #expect(BrandAssetManifest.socialWidth == 1_280)
+        #expect(BrandAssetManifest.socialHeight == 640)
     }
 }

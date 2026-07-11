@@ -108,15 +108,16 @@ struct FleetScreen: View {
     @EnvironmentObject var services: AppServices
     @StateObject private var heartbeat = HeartbeatDriver()
 
-    private var board: FleetBoard { services.fleetBoard(now: services.now) }
-
     var body: some View {
+        let board = Perf.span("main:nav.fleetBoard") {
+            services.fleetBoard(now: services.now)
+        }
+        let watches = makeWatches(board: board)
         Group {
             if board.bays.isEmpty {
                 ScreenScaffold(
                     title: "Fleet Board",
-                    subtitle: "No active agents · dollar estimates use public API rates, not your bill",
-                    epithet: "the floor") {
+                    subtitle: "No active agents · dollar estimates use public API rates, not your bill") {
                     EmptyState(
                         icon: "square.grid.3x3",
                         title: "The floor is empty",
@@ -154,7 +155,7 @@ struct FleetScreen: View {
 
     /// The seats the heartbeat watches — every non-idle live token (mains +
     /// subagents), with blocked ones flagged still.
-    private var watches: [HeartbeatDriver.Watch] {
+    private func makeWatches(board: FleetBoard) -> [HeartbeatDriver.Watch] {
         board.bays.flatMap(\.allTokens)
             .filter { $0.state != .idle && !$0.session.filePath.isEmpty }
             .map { .init(id: $0.id, filePath: $0.session.filePath, isStill: $0.isStill) }
@@ -178,7 +179,7 @@ struct FleetFloor: View {
     var onSelect: (SessionSummary) -> Void = { _ in }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.blockGap) {
+        VStack(alignment: .leading, spacing: 0) {
             header
                 .launchReveal(.header)
             Divider()
@@ -193,23 +194,31 @@ struct FleetFloor: View {
                                onAgencyAction: onAgencyAction) {
                 (onOpenTerminal ?? onSelect)($0)
             }
+            .padding(.vertical, Theme.sectionGap)
             .launchReveal(.content)
             .sectionRevealBlock(index: 0)
             Divider()
-            VStack(alignment: .leading, spacing: Theme.blockGap) {
-                ForEach(Array(board.bays.enumerated()), id: \.element.id) { bayIndex, bay in
-                    FleetBayView(bay: bay,
-                                 revealIndex: bayIndex,
-                                 chipForced: duplicatedProjects.contains(bay.project),
-                                 pulses: pulses,
-                                 suppressionState: suppressionState,
-                                 defaultSnoozeMinutes: defaultSnoozeMinutes,
-                                 onAgencyAction: onAgencyAction,
-                                 onOpenTerminal: onOpenTerminal,
-                                 onSelect: onSelect)
-                        .motionRowTransition()
+
+            VStack(alignment: .leading, spacing: 0) {
+                FleetColumnHeader()
+                Rectangle().fill(Theme.hairline).frame(height: Theme.hairlineWidth)
+                VStack(alignment: .leading, spacing: Theme.sectionGap) {
+                    ForEach(Array(board.bays.enumerated()), id: \.element.id) { bayIndex, bay in
+                        FleetBayView(bay: bay,
+                                     revealIndex: bayIndex,
+                                     chipForced: duplicatedProjects.contains(bay.project),
+                                     pulses: pulses,
+                                     suppressionState: suppressionState,
+                                     defaultSnoozeMinutes: defaultSnoozeMinutes,
+                                     onAgencyAction: onAgencyAction,
+                                     onOpenTerminal: onOpenTerminal,
+                                     onSelect: onSelect)
+                            .motionRowTransition()
+                    }
                 }
+                .padding(.top, Theme.intraCell)
             }
+            .padding(.top, Theme.micro)
             // Seats never re-sort (the ArrivalLedger owns order) — this animates
             // only ARRIVALS and DEPARTURES with the one app-standard motion
             // (W6 wave 4), so a bay appearing never snaps the room.
@@ -233,18 +242,13 @@ struct FleetFloor: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text("Fleet Board")
-                        .font(.system(size: 28, weight: .bold))
-                        .tracking(-0.4)
-                        .foregroundStyle(Theme.ink)
-                    Text("the floor")
-                        .font(.caption)
-                        .foregroundStyle(Theme.faint)
-                }
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                Text("Fleet Board")
+                    .font(Theme.Typography.screenTitle)
+                    .tracking(-0.55)
+                    .foregroundStyle(Theme.ink)
                 Text(subtitle)
-                    .font(.subheadline)
+                    .font(Theme.Typography.body)
                     .foregroundStyle(Theme.muted)
             }
             Spacer()
@@ -272,6 +276,28 @@ struct FleetFloor: View {
     }
 }
 
+/// One table grammar for every bay. The project headers group stable seats; these
+/// columns make the changing facts scan vertically without moving the seats.
+private struct FleetColumnHeader: View {
+    var body: some View {
+        HStack(spacing: Theme.intraCell) {
+            Color.clear.frame(width: Theme.subValueColWidth)
+            Eyebrow("Model")
+                .frame(width: Theme.subValueColWidth, alignment: .leading)
+            Eyebrow("Session")
+                .frame(width: Theme.rankBarWidth * 2,
+                       alignment: .leading)
+            Eyebrow("Current work")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Eyebrow("State")
+                .frame(width: Theme.valueColWidth, alignment: .leading)
+            Eyebrow("Today")
+                .frame(width: Theme.valueColWidth, alignment: .trailing)
+        }
+        .padding(Theme.rowInsets)
+    }
+}
+
 // MARK: - One bay (a repo's stable place)
 
 private struct FleetBayView: View {
@@ -287,88 +313,32 @@ private struct FleetBayView: View {
     var onSelect: (SessionSummary) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 0) {
             BayHeader(bay: bay, chipForced: chipForced,
                       revealIndex: revealIndex)
-            if bay.isIdle {
-                // Compressed dimmed line — the bay sinks via the ember fade, not by
-                // reordering. Its cost stays legible.
-                ForEach(Array(bay.tokens.enumerated()), id: \.element.id) { tokenIndex, t in
-                    let now = Date()
-                    let snoozed = suppressionState?.isSnoozed(sessionID: t.id, at: now) == true
-                    let muted = suppressionState?.isMuted(projectKey: t.session.project) == true
-                    HStack(spacing: 10) {
-                        SeatMark(state: .idle, size: 8,
-                                 revealIndex: revealIndex + tokenIndex + 1)
-                        if snoozed || muted { SuppressionMark() }
-                        Text(t.session.tier.label).font(.caption).foregroundStyle(Theme.muted)
-                        if let q = t.taskQuote {
-                            Text("last: \(q)").font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
-                        } else {
-                            Text(t.session.displayTitle).font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
-                        }
-                        Spacer(minLength: 8)
-                        Text(fmtUSD(t.session.cost)).font(.caption).foregroundStyle(Theme.muted)
-                    }
-                    .padding(.leading, Theme.micro / 2)
-                    .opacity(snoozed || muted ? 0.45 : 0.85)
-                    .contextMenu {
-                        Button("Focus transcript") { onSelect(t.session) }
-                        if let onOpenTerminal {
-                            Button("Open terminal") { onOpenTerminal(t.session) }
-                        }
-                        if let onAgencyAction {
-                            Divider()
-                            if snoozed {
-                                Button("Un-snooze") { onAgencyAction(.unsnooze(sessionID: t.id)) }
-                            } else {
-                                Button("Snooze 1h") {
-                                    onAgencyAction(.snooze(
-                                        sessionID: t.id,
-                                        until: now.addingTimeInterval(60 * 60)))
-                                }
-                                if defaultSnoozeMinutes != 60 {
-                                    Button("Snooze default (\(formatSnoozeDuration(defaultSnoozeMinutes)))") {
-                                        onAgencyAction(.snooze(
-                                            sessionID: t.id,
-                                            until: now.addingTimeInterval(
-                                                TimeInterval(defaultSnoozeMinutes * 60))))
-                                    }
-                                }
-                                Button("Snooze until tomorrow") {
-                                    onAgencyAction(.snooze(
-                                        sessionID: t.id,
-                                        until: AttentionSuppressionReducer.startOfTomorrow(after: now)))
-                                }
-                            }
-                            Button(muted ? "Unmute project" : "Mute project") {
-                                onAgencyAction(muted
-                                    ? .unmute(projectKey: t.session.project)
-                                    : .mute(projectKey: t.session.project))
-                            }
-                        }
-                    }
+            if let c = bay.collision {
+                HStack(spacing: Theme.rhythm) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(Theme.Typography.metadataMedium)
+                        .foregroundStyle(Theme.amber)
+                    Text(c.message)
+                        .font(Theme.Typography.metadata)
+                        .foregroundStyle(Theme.muted)
                 }
-            } else {
-                if let c = bay.collision {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.caption2.weight(.medium)).foregroundStyle(Theme.amber)
-                        Text(c.message).font(.caption2).foregroundStyle(Theme.muted)
-                    }
-                    .padding(.leading, Theme.micro / 2)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(bay.tokens.enumerated()), id: \.element.id) { tokenIndex, token in
-                        FleetTokenView(token: token, depth: 0, pulses: pulses,
-                                       revealIndex: revealIndex + tokenIndex + 1,
-                                       suppressionState: suppressionState,
-                                       defaultSnoozeMinutes: defaultSnoozeMinutes,
-                                       onAgencyAction: onAgencyAction,
-                                       onOpenTerminal: onOpenTerminal,
-                                       onSelect: onSelect)
-                            .motionRowTransition()
-                    }
+                .padding(.leading, Theme.subValueColWidth + Theme.intraCell)
+                .padding(.horizontal, Theme.intraCell)
+                .padding(.vertical, Theme.micro)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(bay.tokens.enumerated()), id: \.element.id) { tokenIndex, token in
+                    FleetTokenView(token: token, depth: 0, pulses: pulses,
+                                   revealIndex: revealIndex + tokenIndex + 1,
+                                   suppressionState: suppressionState,
+                                   defaultSnoozeMinutes: defaultSnoozeMinutes,
+                                   onAgencyAction: onAgencyAction,
+                                   onOpenTerminal: onOpenTerminal,
+                                   onSelect: onSelect)
+                        .motionRowTransition()
                 }
             }
         }
@@ -381,11 +351,12 @@ private struct BayHeader: View {
     let revealIndex: Int
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Theme.intraCell) {
             SeatMark(state: bayDoorState, size: 8,
                      revealIndex: revealIndex)
+                .frame(width: Theme.subValueColWidth, alignment: .leading)
             Text(bay.project)
-                .font(.subheadline.weight(.semibold))
+                .font(Theme.Typography.section)
                 .foregroundStyle(bay.isIdle ? Theme.muted : Theme.ink)
                 .lineLimit(1)
             // The bay carries its machine tag — a remote bay ("workstation") reads
@@ -395,28 +366,36 @@ private struct BayHeader: View {
             if bay.isRemote || chipForced {
                 MachineChip(machineID: bay.machineID)
             }
-            // The stretching hairline — dotted when the bay has cooled to embers.
-            HRule()
-                .stroke(Theme.hairline, style: StrokeStyle(lineWidth: 1, dash: bay.isIdle ? [2, 3] : []))
-                .frame(height: 1)
-                .frame(maxWidth: .infinity)
+            Spacer(minLength: Theme.sectionGap)
             trailing
+        }
+        .padding(Theme.rowInsets)
+        .background {
+            Rectangle().fill(Theme.cardFill)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: Theme.hairlineWidth)
         }
     }
 
     @ViewBuilder private var trailing: some View {
-        HStack(spacing: 6) {
-            if bay.isIdle {
-                Text("idle \(fmtAgeShort(bay.age))").font(.caption).foregroundStyle(Theme.muted)
-            } else if bay.blockedCount > 0 {
-                Text("\(bay.blockedCount) blocked").font(.caption.weight(.medium)).foregroundStyle(Theme.ink)
-                Text("· \(fmtUSD(bay.costSubtotal)) today").font(.caption).foregroundStyle(Theme.muted)
-            } else {
-                Text("\(bay.liveCount) live").font(.caption.weight(.medium)).foregroundStyle(Theme.ink)
-                Text("· \(fmtUSD(bay.costSubtotal)) today").font(.caption).foregroundStyle(Theme.muted)
-            }
+        HStack(spacing: Theme.intraCell) {
+            Text(bayStateSummary)
+                .font(Theme.Typography.metadataMedium)
+                .foregroundStyle(bay.blockedCount > 0 ? Theme.blockedText : Theme.muted)
+                .frame(width: Theme.valueColWidth, alignment: .trailing)
+            Text(fmtUSD(bay.costSubtotal))
+                .font(Theme.Typography.monoMedium)
+                .foregroundStyle(bay.isIdle ? Theme.muted : Theme.ink)
+                .frame(width: Theme.valueColWidth, alignment: .trailing)
         }
         .fixedSize()
+    }
+
+    private var bayStateSummary: String {
+        if bay.isIdle { return "idle \(fmtAgeShort(bay.age))" }
+        if bay.blockedCount > 0 { return "\(bay.blockedCount) blocked" }
+        return "\(bay.liveCount) live"
     }
 
     private var bayDoorState: DoorLightState {
@@ -436,16 +415,6 @@ private struct BayHeader: View {
     }
 }
 
-/// A single horizontal rule that the bay header stretches between name and status.
-private struct HRule: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.minX, y: rect.midY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
-        return p
-    }
-}
-
 // MARK: - One token row (a seat) + nested subagents
 
 private struct FleetTokenView: View {
@@ -462,7 +431,7 @@ private struct FleetTokenView: View {
     @State private var showsChildren = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Theme.micro / 2) {
             row
             if !token.children.isEmpty {
                 MutedDisclosureRow(
@@ -470,7 +439,7 @@ private struct FleetTokenView: View {
                     isExpanded: showsChildren) {
                         showsChildren.toggle()
                     }
-                    .padding(.leading, Theme.gutter)
+                    .padding(.leading, Theme.subValueColWidth * 2 + Theme.intraCell * 2)
                 if showsChildren {
                     ForEach(Array(token.children.enumerated()), id: \.element.id) { i, child in
                         FleetTokenView(token: child, depth: depth + 1,
@@ -494,43 +463,66 @@ private struct FleetTokenView: View {
         let snoozed = suppressionState?.isSnoozed(sessionID: token.id, at: now) == true
         let muted = suppressionState?.isMuted(projectKey: token.session.project) == true
         let suppressed = snoozed || muted
-        return HoverRow(action: { onSelect(token.session) }) {
-            HStack(spacing: 9) {
-                if depth > 0 {
-                    Image(systemName: isLast ? "arrow.turn.down.right" : "arrow.turn.right.down")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Theme.faint)
-                        .frame(width: 10)
+        return HoverRow(radius: Theme.radiusRow, action: { onSelect(token.session) }) {
+            HStack(spacing: Theme.intraCell) {
+                HStack(spacing: Theme.micro) {
+                    if depth > 0 {
+                        Image(systemName: isLast ? "arrow.turn.down.right" : "arrow.turn.right.down")
+                            .font(Theme.Typography.metadataMedium)
+                            .foregroundStyle(Theme.faint)
+                    }
+                    HeartbeatDot(state: token.state, ring: token.tier.color,
+                                 pulse: pulses[token.id] ?? 0, still: token.isStill,
+                                 revealIndex: revealIndex)
+                    if suppressed { SuppressionMark() }
                 }
-                HeartbeatDot(state: token.state, ring: token.tier.color,
-                             pulse: pulses[token.id] ?? 0, still: token.isStill,
-                             revealIndex: revealIndex)
-                if suppressed { SuppressionMark() }
+                .padding(.leading, CGFloat(max(0, depth - 1)) * Theme.intraCell)
+                .frame(width: Theme.subValueColWidth, alignment: .leading)
+
                 Text(token.tier.label)
-                    .font(.caption)
+                    .font(Theme.Typography.metadata)
                     .foregroundStyle(Theme.muted)
-                    .frame(width: 58, alignment: .leading)
-                Text("\(token.session.displayTitle) · \(fmtAgeShort(token.age))")
-                    .font(.caption)
-                    .foregroundStyle(Theme.muted)
-                    .lineLimit(1)
-                    .frame(minWidth: 160, alignment: .leading)
-                    .layoutPriority(1)
+                    .frame(width: Theme.subValueColWidth, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: Theme.micro / 2) {
+                    Text(token.session.displayTitle)
+                        .font(Theme.Typography.bodyMedium)
+                        .foregroundStyle(token.state == .idle ? Theme.muted : Theme.ink)
+                        .lineLimit(1)
+                    Text(fmtAgeShort(token.age))
+                        .font(Theme.Typography.mono)
+                        .foregroundStyle(Theme.muted)
+                }
+                .frame(width: Theme.rankBarWidth * 2,
+                       alignment: .leading)
+
                 middle
-                HRule()
-                    .stroke(Theme.hairline.opacity(0.5),
-                            style: StrokeStyle(lineWidth: 1, dash: [1, 3]))
-                    .frame(height: 1)
-                    .frame(maxWidth: .infinity)
+
+                Text(token.state.label.capitalized)
+                    .font(token.state.needsAttention
+                          ? Theme.Typography.bodyMedium : Theme.Typography.body)
+                    .foregroundStyle(stateTone)
+                    .frame(width: Theme.valueColWidth, alignment: .leading)
+
                 Text(fmtUSD(token.session.cost))
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.ink)
-                    .frame(minWidth: 52, alignment: .trailing)
+                    .font(Theme.Typography.bodyMedium)
+                    .foregroundStyle(token.state == .idle ? Theme.muted : Theme.ink)
+                    .frame(width: Theme.valueColWidth, alignment: .trailing)
                     .monospacedDigit()
             }
-            .padding(.horizontal, Theme.intraCell)
-            .padding(.vertical, Theme.rowVerticalInset)
-            .padding(.leading, CGFloat(depth) * Theme.paneInset)
+            .padding(Theme.rowInsets)
+            .background {
+                if token.state.needsAttention {
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: Theme.radiusInline,
+                                         style: .continuous)
+                            .fill(attentionWash)
+                        Rectangle()
+                            .fill(token.state.color)
+                            .frame(width: Theme.Layout.semanticRailWidth)
+                    }
+                }
+            }
         }
         .opacity(suppressed ? 0.45 : emberOpacity)
         .contextMenu {
@@ -575,28 +567,36 @@ private struct FleetTokenView: View {
         .help(hoverEvidence)
     }
 
-    /// now-line (the current tool + path) when present, else the task quote. For
-    /// a BLOCKED/WAITING seat with a distinct task quote, a dim second line carries
-    /// the quote — matching the spec's blocked row (tool on top, quote below).
+    /// Current tool + path when present; otherwise the state. The session column
+    /// already owns the human handle, so this cell never repeats it as filler.
     @ViewBuilder private var middle: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: Theme.micro / 2) {
             if let n = token.nowLine {
-                (Text(n.tool).font(.caption.weight(.semibold))
-                    .foregroundStyle(token.state == .blocked ? Theme.red : Theme.ink)
+                (Text(n.tool).font(Theme.Typography.bodyMedium)
+                    .foregroundStyle(Theme.ink)
                  + Text(n.detail.isEmpty ? "" : "  \(midTruncate(n.detail, 44))")
-                    .font(.caption)
+                    .font(Theme.Typography.body)
                     .foregroundStyle(Theme.muted))
                     .lineLimit(1)
-                if token.state.needsAttention, let q = token.taskQuote {
-                    Text("“\(q)”").font(.footnote).foregroundStyle(Theme.muted).lineLimit(1)
-                }
-            } else if let q = token.taskQuote {
-                Text("“\(q)”").font(.footnote).foregroundStyle(Theme.muted).lineLimit(1)
             } else {
-                Text(token.state.label.lowercased()).font(.caption).foregroundStyle(Theme.muted)
+                Text(token.state.label.lowercased())
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
             }
         }
-        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var stateTone: Color {
+        switch token.state {
+        case .blocked: return Theme.blockedText
+        case .waiting: return Theme.waitingText
+        case .running, .idle: return Theme.muted
+        }
+    }
+
+    private var attentionWash: Color {
+        token.state == .blocked ? Theme.blockedRowFill : Theme.waitingRowFill
     }
 
     /// Findings-as-evidence hover (VISION §5): the classification's basis, not a

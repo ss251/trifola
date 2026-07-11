@@ -13,7 +13,7 @@ struct AuditScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Audit",
-            subtitle: "Explainable estimates from recorded usage · dollar values use public API rates, not your bill",
+            subtitle: "Ranked cost causes from recorded usage · public API-rate estimates, never your bill",
             epithet: "evidence, not nags"
         ) {
             AuditContent(
@@ -97,13 +97,16 @@ private struct AuditHeadline: View {
         let l = report.skillLedger
         return StatRow {
             StatTile(label: "Context re-billed above a warm cache", value: fmtUSD(report.totalLeakDollars),
-                     sub: "API-rate estimate · excludes \(fmtUSD(report.totalFirstTouchDollars)) needed to build cache")
+                     sub: "API-rate estimate · excludes \(fmtUSD(report.totalFirstTouchDollars)) needed to build cache",
+                     emphasis: .standard)
             Divider()
             StatTile(label: "Unused catalog skills", value: "\(l.deadCount)/\(l.catalogCount)",
-                     sub: "never explicitly invoked · ≈\(fmtTokens(l.deadPromptTaxTokens)) prompt tokens")
+                     sub: "never explicitly invoked · ≈\(fmtTokens(l.deadPromptTaxTokens)) prompt tokens",
+                     emphasis: .supporting)
             Divider()
             StatTile(label: "Cheaper-model review candidates", value: "\(report.mismatchCount)",
-                     sub: "≈\(fmtUSD(report.totalMismatchOverspend)) at API rates · heuristic")
+                     sub: "≈\(fmtUSD(report.totalMismatchOverspend)) at API rates · heuristic",
+                     emphasis: .supporting)
         }
     }
 }
@@ -113,13 +116,25 @@ private struct AuditHeadline: View {
 private struct AuditSectionHeader: View {
     let title: String
     let caption: String
+    @State private var showsMethod = false
+
+    private var summary: String {
+        guard let end = caption.range(of: ". ") else { return caption }
+        return String(caption[..<end.upperBound]).trimmingCharacters(in: .whitespaces)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: Theme.micro) {
             SectionLabel(title)
-            Text(caption)
-                .font(.footnote)
+            Text(showsMethod ? caption : summary)
+                .font(Theme.Typography.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
+            MutedDisclosureRow(label: showsMethod ? "Hide calculation" : "How this is calculated",
+                               isExpanded: showsMethod) {
+                showsMethod.toggle()
+            }
+            .frame(maxWidth: 220)
         }
     }
 }
@@ -146,7 +161,7 @@ private struct CacheMissSection: View {
                     ("rank", Theme.rankBarWidth, .leading),
                     ("cached", Theme.subValueColWidth, .trailing),
                     ("setup", Theme.subValueColWidth, .trailing),
-                    ("fresh-vs-warm", Theme.valueColWidth, .trailing),
+                    ("extra cost", Theme.valueColWidth, .trailing),
                 ])
                 ForEach(findings) { f in
                     VStack(alignment: .leading, spacing: 2) {

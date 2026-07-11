@@ -2,6 +2,92 @@ import SwiftUI
 import AppKit
 import TrifolaKit
 
+// MARK: - UX acceptance evidence (`--render-ux`)
+
+@MainActor
+enum UXEvidenceRender {
+    static func run(directory: String) {
+        let root = URL(fileURLWithPath: directory, isDirectory: true)
+        try? FileManager.default.createDirectory(at: root,
+                                                 withIntermediateDirectories: true)
+        for dark in [false, true] {
+            for keyboardFocus in [false, true] {
+                let mode = keyboardFocus ? "keyboard" : "pointer"
+                let theme = dark ? "dark" : "light"
+                let url = root.appendingPathComponent("focus-\(mode)-\(theme).png")
+                renderFocus(keyboardFocus: keyboardFocus, dark: dark, to: url)
+            }
+        }
+    }
+
+    private static func renderFocus(keyboardFocus: Bool, dark: Bool, to url: URL) {
+        let content = FocusAcceptanceCard(keyboardFocus: keyboardFocus)
+            .frame(width: 820, height: 360)
+            .background(Theme.surfaceWindow)
+            .environment(\.colorScheme, dark ? .dark : .light)
+            .environment(\.tapFocusEvidenceOverride, keyboardFocus)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = 2
+        var rendered: NSImage?
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+        appearance.performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
+        guard let image = rendered,
+              let data = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: data),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: url, options: .atomic)
+    }
+}
+
+private struct FocusAcceptanceCard: View {
+    let keyboardFocus: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                Text(keyboardFocus ? "Tab focus" : "Pointer click")
+                    .font(Theme.Typography.screenTitle)
+                    .foregroundStyle(Theme.ink)
+                Text(keyboardFocus
+                     ? "Keyboard-origin focus uses the macOS focus token."
+                     : "Pointer-origin focus leaves no halo behind.")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
+            }
+
+            HStack(spacing: 56) {
+                VStack(alignment: .leading, spacing: Theme.intraCell) {
+                    Eyebrow("Shared capsule control")
+                    QuietTapButton(action: {}) {
+                        Label("Open session", systemImage: "terminal")
+                    }
+                    .frame(width: 180, alignment: .leading)
+                }
+
+                VStack(alignment: .leading, spacing: Theme.intraCell) {
+                    Eyebrow("State green (semantic comparison)")
+                    HStack(spacing: Theme.intraCell) {
+                        SeatMark(state: .running, size: 12)
+                        Text("Running Door Light")
+                            .font(Theme.Typography.bodyMedium)
+                            .foregroundStyle(Theme.green)
+                    }
+                    .frame(height: Theme.Layout.compactHitHeight)
+                }
+            }
+
+            Divider()
+            Text(keyboardFocus
+                 ? "Visible ring: keyboard navigation only"
+                 : "No ring: click, secondary click, or other pointer input")
+                .font(Theme.Typography.metadataMedium)
+                .foregroundStyle(Theme.muted)
+        }
+        .padding(48)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
 /// The ONLY chrome a render may add (POLISH C11): a caption-scale, faint,
 /// sentence-case annotation. Renders compose real shared pure views + this —
 /// never a fabricated title2 header or a tracked-uppercase eyebrow, which is how
@@ -17,8 +103,8 @@ struct RenderCaption: View {
 // MARK: - Release brand assets (`--render-icon`)
 
 /// Headless release-artwork exporter. The iconset calls AppBrand.drawAppIcon
-/// directly at every required pixel size; the banner calls the same Door Light
-/// mark geometry. There is no render-only recreation of the tile, ring or core.
+/// directly at every required pixel size; banner and social call the same
+/// Trefoil Aperture geometry. There is no render-only reconstruction.
 enum BrandAssetRender {
     enum RenderError: Error, CustomStringConvertible {
         case bitmap(width: Int, height: Int)
@@ -34,11 +120,14 @@ enum BrandAssetRender {
         }
     }
 
-    /// Exports the complete macOS iconset plus the repository banner. The two
-    /// destinations are explicit so make-app.sh and focused tests can keep all
-    /// filesystem mutation deterministic.
+    /// Exports the complete macOS iconset plus the repository banner and social
+    /// card. Destinations are explicit so the release pipeline stays deterministic.
     @MainActor
-    static func run(iconsetDirectory: URL, bannerURL: URL) throws -> [URL] {
+    static func run(
+        iconsetDirectory: URL,
+        bannerURL: URL,
+        socialURL: URL
+    ) throws -> [URL] {
         let fm = FileManager.default
         try fm.createDirectory(at: iconsetDirectory,
                                withIntermediateDirectories: true)
@@ -60,10 +149,18 @@ enum BrandAssetRender {
                                    draw: drawBanner)
         try banner.write(to: bannerURL, options: .atomic)
         outputs.append(bannerURL)
+
+        try fm.createDirectory(at: socialURL.deletingLastPathComponent(),
+                               withIntermediateDirectories: true)
+        let social = try renderPNG(width: BrandAssetManifest.socialWidth,
+                                   height: BrandAssetManifest.socialHeight,
+                                   draw: drawSocial)
+        try social.write(to: socialURL, options: .atomic)
+        outputs.append(socialURL)
         return outputs
     }
 
-    private static func renderPNG(
+    static func renderPNG(
         width: Int,
         height: Int,
         draw: (NSRect) -> Void
@@ -104,9 +201,9 @@ enum BrandAssetRender {
         return png
     }
 
-    /// Dark, warm and deliberately sparse: one Door Light, one wordmark and the
-    /// read-only promise. The green core is the only saturated color.
-    private static func drawBanner(in bounds: NSRect) {
+    /// Dark, warm and deliberately sparse: one Trefoil Aperture, one wordmark
+    /// and the read-only promise. The static teal core is the sole saturated hue.
+    static func drawBanner(in bounds: NSRect) {
         let warmGround = NSGradient(colors: [
             NSColor(srgbRed: 0.12, green: 0.11, blue: 0.09, alpha: 1),
             NSColor(srgbRed: 0.065, green: 0.067, blue: 0.062, alpha: 1),
@@ -121,15 +218,11 @@ enum BrandAssetRender {
 
         let ink = NSColor(srgbRed: 0.93, green: 0.88, blue: 0.78, alpha: 0.94)
         let mutedInk = ink.withAlphaComponent(0.52)
-        let core = NSColor(srgbRed: 0.34, green: 0.72, blue: 0.48, alpha: 1)
         let markRect = NSRect(x: 214, y: 112, width: 136, height: 136)
 
-        // AppBrand draws the canonical ring. Its coreRect helper places the one
-        // state-colored element without copying the core-ratio arithmetic here.
-        AppBrand.drawMark(in: markRect, state: .quiet, color: ink,
-                          displayScale: 2, lineWidth: 4)
-        core.setFill()
-        NSBezierPath(ovalIn: AppBrand.Geometry.coreRect(in: markRect)).fill()
+        AppBrand.drawBrandMark(in: markRect, state: .needsYou,
+                               color: ink.withAlphaComponent(1),
+                               coreColor: AppBrand.Palette.staticCore)
 
         let wordmark: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 78, weight: .semibold),
@@ -153,6 +246,403 @@ enum BrandAssetRender {
         hairline.line(to: NSPoint(x: bounds.maxX - 84, y: 42))
         hairline.lineWidth = 1
         hairline.stroke()
+    }
+
+    static func drawSocial(in bounds: NSRect) {
+        let ground = NSGradient(colors: [
+            NSColor(srgbRed: 0.105, green: 0.098, blue: 0.082, alpha: 1),
+            NSColor(srgbRed: 0.048, green: 0.052, blue: 0.048, alpha: 1),
+        ])
+        ground?.draw(in: bounds, angle: -8)
+
+        let glow = NSGradient(starting: AppBrand.Palette.staticCore.withAlphaComponent(0.15),
+                              ending: NSColor.clear)
+        glow?.draw(in: NSRect(x: 22, y: 120, width: 520, height: 430),
+                   relativeCenterPosition: NSPoint(x: -0.06, y: 0.04))
+
+        let ink = NSColor(srgbRed: 0.95, green: 0.92, blue: 0.85, alpha: 1)
+        let muted = ink.withAlphaComponent(0.58)
+        AppBrand.drawBrandMark(in: NSRect(x: 108, y: 238, width: 190, height: 190),
+                               state: .needsYou,
+                               color: ink,
+                               coreColor: AppBrand.Palette.staticCore)
+
+        NSAttributedString(string: "Trifola", attributes: [
+            .font: NSFont.systemFont(ofSize: 88, weight: .semibold),
+            .foregroundColor: ink,
+            .kern: -1.8,
+        ]).draw(at: NSPoint(x: 370, y: 384))
+        NSAttributedString(string: "LOCAL · READ-ONLY", attributes: [
+            .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
+            .foregroundColor: muted,
+            .kern: 2.6,
+        ]).draw(at: NSPoint(x: 377, y: 349))
+
+        let claim = "The command center for your coding-agent fleet —\nClaude Code and Codex"
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 8
+        NSAttributedString(string: claim, attributes: [
+            .font: NSFont.systemFont(ofSize: 33, weight: .medium),
+            .foregroundColor: ink.withAlphaComponent(0.88),
+            .kern: -0.25,
+            .paragraphStyle: paragraph,
+        ]).draw(with: NSRect(x: 374, y: 190, width: 820, height: 130),
+                options: [.usesLineFragmentOrigin, .usesFontLeading])
+
+        ink.withAlphaComponent(0.11).setStroke()
+        let hairline = NSBezierPath()
+        hairline.move(to: NSPoint(x: 84, y: 76))
+        hairline.line(to: NSPoint(x: bounds.maxX - 84, y: 76))
+        hairline.lineWidth = 1
+        hairline.stroke()
+    }
+}
+
+// MARK: - Logo decision artifacts (`--render-logo`)
+
+/// Reproducible 512-point concept studies. Each board contains the mark alone,
+/// the Dock squircle, and the exact 16-pixel raster enlarged without smoothing.
+enum LogoConceptRender {
+    private struct Study {
+        let concept: AppBrand.IdentityConcept
+        let filename: String
+        let title: String
+        let note: String
+    }
+
+    private static let studies: [Study] = [
+        .init(concept: .thresholdLight,
+              filename: "concept-a-door-light.png",
+              title: "A  THRESHOLD LIGHT",
+              note: "The Door Light gains an open threshold and a confident halo."),
+        .init(concept: .noduleCut,
+              filename: "concept-b-truffle.png",
+              title: "B  THE NODULE CUT",
+              note: "A restrained truffle cross-section makes discovery the story."),
+        .init(concept: .trefoilAperture,
+              filename: "concept-c-trefoil.png",
+              title: "C  TREFOIL APERTURE",
+              note: "Three product surfaces converge around the Door Light core."),
+    ]
+
+    @MainActor
+    static func run(directory: URL) throws -> [URL] {
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        var outputs: [URL] = []
+        for study in studies {
+            let smallData = try BrandAssetRender.renderPNG(width: 16, height: 16) { bounds in
+                drawConceptIcon(study.concept, in: bounds)
+            }
+            guard let smallImage = NSImage(data: smallData) else {
+                throw BrandAssetRender.RenderError.pngEncoding
+            }
+            let board = try BrandAssetRender.renderPNG(width: 512, height: 512) { bounds in
+                drawBoard(study, smallImage: smallImage, in: bounds)
+            }
+            let output = directory.appendingPathComponent(study.filename)
+            try board.write(to: output, options: .atomic)
+            outputs.append(output)
+        }
+        outputs.append(contentsOf: try renderChosenSystem(directory: directory))
+        return outputs
+    }
+
+    @MainActor
+    private static func renderChosenSystem(directory: URL) throws -> [URL] {
+        var outputs: [URL] = []
+        var iconImages: [Int: NSImage] = [:]
+        let sizes = [1_024, 512, 256, 128, 64, 32, 16]
+        for size in sizes {
+            let data = try BrandAssetRender.renderPNG(width: size, height: size) { bounds in
+                AppBrand.drawAppIcon(in: bounds)
+            }
+            let output = directory.appendingPathComponent("app-icon-\(size).png")
+            try data.write(to: output, options: .atomic)
+            outputs.append(output)
+            guard let image = NSImage(data: data) else {
+                throw BrandAssetRender.RenderError.pngEncoding
+            }
+            iconImages[size] = image
+        }
+
+        let ladder = try BrandAssetRender.renderPNG(width: 1_280, height: 420) { bounds in
+            drawSquintLadder(images: iconImages, sizes: sizes, in: bounds)
+        }
+        let ladderURL = directory.appendingPathComponent("squint-ladder.png")
+        try ladder.write(to: ladderURL, options: .atomic)
+        outputs.append(ladderURL)
+
+        for dark in [false, true] {
+            let glyphs = try glyphImages(dark: dark)
+            let board = try BrandAssetRender.renderPNG(width: 640, height: 280) { bounds in
+                drawGlyphBoard(images: glyphs, dark: dark, in: bounds)
+            }
+            let output = directory.appendingPathComponent(
+                dark ? "glyph-menubar-dark.png" : "glyph-menubar-light.png")
+            try board.write(to: output, options: .atomic)
+            outputs.append(output)
+        }
+
+        let lockup = try BrandAssetRender.renderPNG(width: 900, height: 300,
+                                                    draw: drawWordmarkBoard)
+        let lockupURL = directory.appendingPathComponent("wordmark-lockup.png")
+        try lockup.write(to: lockupURL, options: .atomic)
+        outputs.append(lockupURL)
+
+        let banner = try BrandAssetRender.renderPNG(width: BrandAssetManifest.bannerWidth,
+                                                    height: BrandAssetManifest.bannerHeight,
+                                                    draw: BrandAssetRender.drawBanner)
+        let bannerURL = directory.appendingPathComponent("banner-preview.png")
+        try banner.write(to: bannerURL, options: .atomic)
+        outputs.append(bannerURL)
+
+        let social = try BrandAssetRender.renderPNG(width: BrandAssetManifest.socialWidth,
+                                                    height: BrandAssetManifest.socialHeight,
+                                                    draw: BrandAssetRender.drawSocial)
+        let socialURL = directory.appendingPathComponent("social-preview.png")
+        try social.write(to: socialURL, options: .atomic)
+        outputs.append(socialURL)
+        return outputs
+    }
+
+    private static func drawSquintLadder(
+        images: [Int: NSImage],
+        sizes: [Int],
+        in bounds: NSRect
+    ) {
+        let paper = NSColor(srgbRed: 0.945, green: 0.935, blue: 0.90, alpha: 1)
+        let ink = NSColor(srgbRed: 0.10, green: 0.105, blue: 0.095, alpha: 1)
+        paper.setFill()
+        bounds.fill()
+        NSAttributedString(string: "TREFOIL APERTURE · SQUINT LADDER", attributes: [
+            .font: NSFont.systemFont(ofSize: 25, weight: .bold),
+            .foregroundColor: ink,
+            .kern: 0.6,
+        ]).draw(at: NSPoint(x: 38, y: 365))
+        NSAttributedString(
+            string: "The same canonical icon raster, from the 1024 master to the true 16 px edge case.",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 14, weight: .medium),
+                .foregroundColor: ink.withAlphaComponent(0.53),
+            ]).draw(at: NSPoint(x: 39, y: 335))
+
+        let slotWidth: CGFloat = 171
+        for (index, size) in sizes.enumerated() {
+            guard let icon = images[size] else { continue }
+            let slotX = 38 + CGFloat(index) * slotWidth
+            let previewSize: CGFloat = size >= 128 ? 132 : 112
+            let preview = NSRect(x: slotX + (132 - previewSize) / 2,
+                                 y: 145 + (132 - previewSize) / 2,
+                                 width: previewSize, height: previewSize)
+            NSGraphicsContext.current?.imageInterpolation = size <= 64 ? .none : .high
+            icon.draw(in: preview,
+                      from: NSRect(origin: .zero, size: icon.size),
+                      operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.current?.imageInterpolation = .high
+
+            let label = "\(size) PX"
+            NSAttributedString(string: label, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: ink.withAlphaComponent(0.62),
+                .kern: 0.7,
+            ]).draw(at: NSPoint(x: slotX + 38, y: 111))
+
+            if size <= 64 {
+                icon.draw(in: NSRect(x: slotX + (CGFloat(132) - CGFloat(size)) / 2,
+                                     y: 35, width: CGFloat(size), height: CGFloat(size)),
+                          from: NSRect(origin: .zero, size: icon.size),
+                          operation: .sourceOver, fraction: 1)
+            } else {
+                NSAttributedString(string: "preview", attributes: [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                    .foregroundColor: ink.withAlphaComponent(0.35),
+                ]).draw(at: NSPoint(x: slotX + 45, y: 51))
+            }
+        }
+    }
+
+    private static func glyphImages(dark: Bool) throws -> [NSImage] {
+        let color = dark ? NSColor.white : NSColor.black
+        var images: [NSImage] = []
+        for state in [AppBrand.MarkState.quiet, .running, .needsYou] {
+            let data = try BrandAssetRender.renderPNG(width: 18, height: 18) { bounds in
+                AppBrand.drawBrandMark(in: bounds, state: state,
+                                       color: color, coreColor: color)
+            }
+            guard let image = NSImage(data: data) else {
+                throw BrandAssetRender.RenderError.pngEncoding
+            }
+            image.isTemplate = false
+            images.append(image)
+        }
+        return images
+    }
+
+    private static func drawGlyphBoard(images: [NSImage], dark: Bool, in bounds: NSRect) {
+        let ground = dark
+            ? NSColor(srgbRed: 0.105, green: 0.105, blue: 0.10, alpha: 1)
+            : NSColor(srgbRed: 0.94, green: 0.94, blue: 0.925, alpha: 1)
+        let ink = dark ? NSColor.white : NSColor.black.withAlphaComponent(0.86)
+        ground.setFill()
+        bounds.fill()
+        NSAttributedString(string: dark ? "18 PX TEMPLATE · DARK" : "18 PX TEMPLATE · LIGHT",
+                           attributes: [
+                               .font: NSFont.systemFont(ofSize: 19, weight: .bold),
+                               .foregroundColor: ink,
+                               .kern: 0.8,
+                           ]).draw(at: NSPoint(x: 28, y: 238))
+
+        let labels = ["QUIET", "RUNNING", "NEEDS YOU"]
+        for index in images.indices {
+            let x = 76 + CGFloat(index) * 195
+            images[index].draw(in: NSRect(x: x + 30, y: 171, width: 18, height: 18),
+                               from: NSRect(origin: .zero, size: images[index].size),
+                               operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.current?.imageInterpolation = .none
+            images[index].draw(in: NSRect(x: x, y: 53, width: 78, height: 78),
+                               from: NSRect(origin: .zero, size: images[index].size),
+                               operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.current?.imageInterpolation = .high
+            NSAttributedString(string: labels[index], attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: ink.withAlphaComponent(0.56),
+                .kern: 1.0,
+            ]).draw(at: NSPoint(x: x + 4, y: 28))
+        }
+    }
+
+    private static func drawWordmarkBoard(in bounds: NSRect) {
+        let ground = NSGradient(colors: [
+            NSColor(srgbRed: 0.12, green: 0.11, blue: 0.09, alpha: 1),
+            NSColor(srgbRed: 0.065, green: 0.067, blue: 0.062, alpha: 1),
+        ])
+        ground?.draw(in: bounds, angle: 0)
+        let ink = NSColor(srgbRed: 0.93, green: 0.88, blue: 0.78, alpha: 0.96)
+        AppBrand.drawBrandMark(in: NSRect(x: 92, y: 77, width: 146, height: 146),
+                               state: .needsYou,
+                               color: ink.withAlphaComponent(1),
+                               coreColor: AppBrand.Palette.staticCore)
+        NSAttributedString(string: "Trifola", attributes: [
+            .font: NSFont.systemFont(ofSize: 82, weight: .semibold),
+            .foregroundColor: ink,
+            .kern: -1.6,
+        ]).draw(at: NSPoint(x: 296, y: 132))
+        NSAttributedString(string: "local · read-only", attributes: [
+            .font: NSFont.systemFont(ofSize: 20, weight: .medium),
+            .foregroundColor: ink.withAlphaComponent(0.52),
+            .kern: 0.65,
+        ]).draw(at: NSPoint(x: 301, y: 94))
+    }
+
+    private static func drawBoard(_ study: Study, smallImage: NSImage, in bounds: NSRect) {
+        let paper = NSColor(srgbRed: 0.945, green: 0.935, blue: 0.90, alpha: 1)
+        paper.setFill()
+        bounds.fill()
+
+        let ink = NSColor(srgbRed: 0.10, green: 0.105, blue: 0.095, alpha: 1)
+        let muted = ink.withAlphaComponent(0.53)
+        let hairline = ink.withAlphaComponent(0.10)
+        let accent = NSColor(srgbRed: 0.258, green: 0.60, blue: 0.515, alpha: 1)
+
+        NSAttributedString(string: study.title, attributes: [
+            .font: NSFont.systemFont(ofSize: 24, weight: .bold),
+            .foregroundColor: ink,
+            .kern: 0.7,
+        ]).draw(at: NSPoint(x: 32, y: 457))
+        NSAttributedString(string: study.note, attributes: [
+            .font: NSFont.systemFont(ofSize: 14, weight: .medium),
+            .foregroundColor: muted,
+        ]).draw(at: NSPoint(x: 33, y: 426))
+
+        hairline.setStroke()
+        let divider = NSBezierPath()
+        divider.move(to: NSPoint(x: 32, y: 405))
+        divider.line(to: NSPoint(x: 480, y: 405))
+        divider.lineWidth = 1
+        divider.stroke()
+
+        AppBrand.drawConceptMark(study.concept,
+                                 in: NSRect(x: 46, y: 218, width: 126, height: 126),
+                                 color: ink, coreColor: accent)
+        drawConceptIcon(study.concept,
+                        in: NSRect(x: 198, y: 190, width: 184, height: 184))
+
+        let pixelFrame = NSRect(x: 397, y: 236, width: 96, height: 96)
+        NSColor.white.withAlphaComponent(0.42).setFill()
+        NSBezierPath(roundedRect: pixelFrame.insetBy(dx: -7, dy: -7),
+                     xRadius: 12, yRadius: 12).fill()
+        NSGraphicsContext.current?.imageInterpolation = .none
+        smallImage.draw(in: pixelFrame,
+                        from: NSRect(origin: .zero, size: smallImage.size),
+                        operation: .sourceOver, fraction: 1)
+        smallImage.draw(in: NSRect(x: 437, y: 200, width: 16, height: 16),
+                        from: NSRect(origin: .zero, size: smallImage.size),
+                        operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.current?.imageInterpolation = .high
+
+        label("MARK ALONE", at: NSPoint(x: 54, y: 164), color: muted)
+        label("DOCK SQUIRCLE", at: NSPoint(x: 226, y: 164), color: muted)
+        label("16 PX × 6", at: NSPoint(x: 413, y: 164), color: muted)
+
+        let footer = "One geometry · code-drawn · no imported artwork"
+        NSAttributedString(string: footer, attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: muted,
+            .kern: 0.3,
+        ]).draw(at: NSPoint(x: 32, y: 52))
+        hairline.setStroke()
+        let footline = NSBezierPath()
+        footline.move(to: NSPoint(x: 32, y: 88))
+        footline.line(to: NSPoint(x: 480, y: 88))
+        footline.lineWidth = 1
+        footline.stroke()
+    }
+
+    private static func label(_ string: String, at point: NSPoint, color: NSColor) {
+        NSAttributedString(string: string, attributes: [
+            .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+            .foregroundColor: color,
+            .kern: 1.0,
+        ]).draw(at: point)
+    }
+
+    private static func drawConceptIcon(
+        _ concept: AppBrand.IdentityConcept,
+        in rect: NSRect
+    ) {
+        let scale = min(rect.width, rect.height) / AppBrand.Geometry.iconReferenceSize
+        let inset = AppBrand.Geometry.iconTileInset * scale
+        let radius = AppBrand.Geometry.iconTileCornerRadius * scale
+        let tileRect = rect.insetBy(dx: inset, dy: inset)
+        let tile = NSBezierPath(roundedRect: tileRect, xRadius: radius, yRadius: radius)
+        NSGradient(colors: [
+            NSColor(srgbRed: 0.153, green: 0.188, blue: 0.176, alpha: 1),
+            NSColor(srgbRed: 0.075, green: 0.086, blue: 0.082, alpha: 1),
+        ])?.draw(in: tile, angle: -90)
+        NSColor.white.withAlphaComponent(rect.width >= 32 ? 0.10 : 0).setStroke()
+        let rim = NSBezierPath(roundedRect: tileRect.insetBy(dx: max(0.5, scale),
+                                                             dy: max(0.5, scale)),
+                               xRadius: max(0, radius - scale),
+                               yRadius: max(0, radius - scale))
+        rim.lineWidth = max(0.5, scale * 1.2)
+        rim.stroke()
+
+        let referenceDiameter: CGFloat
+        switch concept {
+        case .thresholdLight: referenceDiameter = AppBrand.Geometry.thresholdMarkDiameter
+        case .noduleCut: referenceDiameter = 306
+        case .trefoilAperture: referenceDiameter = AppBrand.Geometry.identityMarkDiameter
+        }
+        let diameter = referenceDiameter * scale
+        let markRect = NSRect(x: rect.midX - diameter / 2,
+                              y: rect.midY - diameter / 2,
+                              width: diameter, height: diameter)
+        AppBrand.drawConceptMark(
+            concept,
+            in: markRect,
+            color: NSColor(srgbRed: 0.965, green: 0.96, blue: 0.93, alpha: 1),
+            coreColor: NSColor(srgbRed: 0.258, green: 0.60, blue: 0.515, alpha: 1))
     }
 }
 
@@ -410,13 +900,15 @@ enum FleetRender {
 
     private static func sig(tool: String? = nil, detail: String = "",
                             kind: AttentionSignals.LastKind, stop: String? = nil,
-                            dangling: Bool = false, ageSecs: TimeInterval, now: Date) -> AttentionSignals {
+                            dangling: Bool = false, hasPermissionGate: Bool = false,
+                            ageSecs: TimeInterval, now: Date) -> AttentionSignals {
         let at = now.addingTimeInterval(-ageSecs)
         return AttentionSignals(
             lastEventAt: at, lastKind: kind, lastStopReason: stop,
             hasDanglingToolUse: dangling, danglingToolUseAt: dangling ? at : nil,
             lastToolActivityAt: (kind == .toolUse || kind == .toolResult) ? at : nil,
-            lastToolName: tool, lastToolDetail: detail.isEmpty ? nil : detail)
+            lastToolName: tool, lastToolDetail: detail.isEmpty ? nil : detail,
+            hasPermissionGate: hasPermissionGate)
     }
 
     static func seeded(now: Date) -> (board: FleetBoard, attention: AttentionBoard,
@@ -456,7 +948,8 @@ enum FleetRender {
             opusID: sig(tool: "Edit", detail: "Sources/Trifola/FleetScreen.swift", kind: .toolResult, ageSecs: 46, now: now),
             subA: sig(kind: .assistantText, stop: "tool_use", ageSecs: 12, now: now),
             subB: sig(tool: "Bash", detail: "swift test", kind: .toolUse, ageSecs: 60, now: now),
-            webappID: sig(tool: "Bash", detail: "approval · bun run dev", kind: .toolUse, dangling: true, ageSecs: 250, now: now),
+            webappID: sig(tool: "Bash", detail: "approval · bun run dev", kind: .toolUse,
+                          dangling: true, hasPermissionGate: true, ageSecs: 250, now: now),
             slackID: sig(tool: "Bash", detail: "provision sandbox", kind: .toolResult, ageSecs: 30, now: now),
             devID: sig(tool: "Bash", detail: "docs index sync", kind: .toolResult, ageSecs: 44 * 60, now: now),
         ]
@@ -607,6 +1100,169 @@ private func writePNG<V: View>(_ content: V, to path: String, dark: Bool, width:
     print("RENDER: \(path)")
 }
 
+// MARK: - Sessions browser headless render (`--render-sessions`)
+
+/// The redesigned production browser over deterministic rows. State is seeded
+/// explicitly so one still verifies the complete blocked / waiting / running /
+/// idle grammar; the selected inspector uses the real TranscriptView hierarchy
+/// over deterministic preview events instead of waiting on a file tail.
+enum SessionsRender {
+    static let now = Date(timeIntervalSince1970: 1_752_000_000)
+
+    private static func item(id: String, project: String, name: String,
+                             tier: ModelTier, state: AttentionState,
+                             age: TimeInterval, usage: SessionUsage,
+                             context: Int, messages: Int,
+                             prompt: String, suppressed: Bool = false,
+                             subagentOf: String? = nil) -> SessionsRenderItem {
+        let session = SessionSummary(
+            id: id,
+            project: project,
+            cwd: "/tmp/trifola-render/\(project)",
+            model: tier.rawValue,
+            lastActivity: now.addingTimeInterval(-age),
+            messageCount: messages,
+            usage: usage,
+            contextWeight: context,
+            filePath: subagentOf.map {
+                "/tmp/trifola-render/\($0)/subagents/agent-\(id).jsonl"
+            } ?? "/tmp/trifola-render/\(id).jsonl",
+            lastUserMessage: prompt,
+            name: name,
+            fileEdits: state == .running ? 8 : 2)
+        return SessionsRenderItem(session: session, state: state, suppressed: suppressed)
+    }
+
+    static func seededItems() -> [SessionsRenderItem] {
+        [
+            item(id: "sess-checkout-8f21", project: "checkout-web",
+                 name: "Release checkout redesign", tier: .opus, state: .blocked,
+                 age: 7 * 60, usage: SessionUsage(inputTokens: 1_820_000,
+                                                  outputTokens: 96_000,
+                                                  cacheReadTokens: 5_400_000),
+                 context: 312_000, messages: 84,
+                 prompt: "Run the production migration after approval"),
+            item(id: "sess-ios-41bc", project: "mobile-app",
+                 name: "Polish onboarding transitions", tier: .sonnet, state: .waiting,
+                 age: 3 * 60, usage: SessionUsage(inputTokens: 740_000,
+                                                  outputTokens: 44_000,
+                                                  cacheReadTokens: 1_900_000),
+                 context: 184_000, messages: 51,
+                 prompt: "Which empty-state direction should we ship?"),
+            item(id: "sess-api-c190", project: "api-gateway",
+                 name: "Harden webhook retries", tier: .user, state: .running,
+                 age: 18, usage: SessionUsage(inputTokens: 520_000,
+                                              outputTokens: 31_000,
+                                              cacheReadTokens: 1_260_000),
+                 context: 126_000, messages: 37,
+                 prompt: "Add retry jitter and run the integration suite"),
+            item(id: "sess-docs-220d", project: "docs-site",
+                 name: "Refresh launch guide", tier: .haiku, state: .idle,
+                 age: 42 * 60, usage: SessionUsage(inputTokens: 210_000,
+                                                  outputTokens: 18_000,
+                                                  cacheReadTokens: 640_000),
+                 context: 48_000, messages: 19,
+                 prompt: "Update screenshots and cross-links"),
+            item(id: "sess-billing-920a", project: "billing-worker",
+                 name: "Trace invoice drift", tier: .opus, state: .running,
+                 age: 46, usage: SessionUsage(inputTokens: 980_000,
+                                              outputTokens: 72_000,
+                                              cacheReadTokens: 2_800_000),
+                 context: 238_000, messages: 63,
+                 prompt: "Compare the ledger export against production events"),
+            item(id: "sess-search-19dd", project: "search-service",
+                 name: "Index relevance pass", tier: .sonnet, state: .idle,
+                 age: 2 * 60 * 60, usage: SessionUsage(inputTokens: 410_000,
+                                                       outputTokens: 29_000,
+                                                       cacheReadTokens: 860_000),
+                 context: 91_000, messages: 28,
+                 prompt: "Measure the new ranking weights"),
+            item(id: "sess-checkout-8f21/agent-review", project: "checkout-web",
+                 name: "Review migration plan", tier: .sonnet, state: .idle,
+                 age: 11 * 60, usage: SessionUsage(inputTokens: 180_000,
+                                                   outputTokens: 11_000,
+                                                   cacheReadTokens: 420_000),
+                 context: 62_000, messages: 14,
+                 prompt: "Review the migration diff", subagentOf: "sess-checkout-8f21"),
+        ]
+    }
+
+    private static func transcriptEvents() -> [TranscriptEvent] {
+        [
+            TranscriptEvent(id: "event-1", timestamp: now.addingTimeInterval(-92),
+                            kind: .userPrompt("Run the production migration after approval")),
+            TranscriptEvent(id: "event-2", timestamp: now.addingTimeInterval(-78),
+                            kind: .assistantText("I verified the migration plan and isolated the write step.")),
+            TranscriptEvent(id: "event-3", timestamp: now.addingTimeInterval(-61),
+                            kind: .toolUse(name: "Bash", detail: "bun run db:migrate --production")),
+            TranscriptEvent(id: "event-4", timestamp: now.addingTimeInterval(-58),
+                            kind: .toolResult(preview: "Permission required before executing the production migration.",
+                                              isError: false)),
+            TranscriptEvent(id: "event-5", timestamp: now.addingTimeInterval(-47),
+                            kind: .assistantText("The migration is ready. Approve the command when you want me to continue.")),
+        ]
+    }
+
+    @MainActor
+    static func run(to path: String, dark: Bool) {
+        let services = AppServices()
+        services.now = now
+        let content = SessionsRenderContent(
+            items: seededItems(),
+            selectedID: "sess-checkout-8f21",
+            transcriptEvents: transcriptEvents())
+            .frame(width: 1180, height: 760, alignment: .topLeading)
+            .environmentObject(services)
+        writePNG(content, to: path, dark: dark,
+                 width: 1180 + Theme.renderInset * 2)
+    }
+}
+
+// MARK: - Menu-bar popover headless render (`--render-menubar`)
+
+/// A deterministic MenuBarModel fed into the same MenuBarPanel used by the live
+/// MenuBarExtra. The still covers blocked and waiting rows plus time/quota
+/// signals while the fleet line records the concurrent running work.
+enum MenuBarRender {
+    private static func row(id: String, title: String, project: String,
+                            age: TimeInterval, tier: ModelTier) -> MenuBarModel.AttentionRow {
+        MenuBarModel.AttentionRow(
+            id: id,
+            title: title,
+            project: project,
+            cwd: "/tmp/trifola-render/\(project)",
+            lastUserMessage: nil,
+            age: age,
+            tier: tier,
+            classifierConfidence: .high,
+            classifierReason: "deterministic visual fixture")
+    }
+
+    @MainActor
+    static func run(to path: String, dark: Bool) {
+        let items = SessionsRender.seededItems()
+        let sessionsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.session) })
+        let model = MenuBarModel(
+            glyph: .needsYou(blockedCount: 1),
+            title: "1",
+            fleetLine: "1 blocked · 1 waiting · 2 running · $84 today",
+            blocked: [row(id: "sess-checkout-8f21", title: "Release checkout redesign",
+                          project: "checkout-web", age: 7 * 60, tier: .opus)],
+            waiting: [row(id: "sess-ios-41bc", title: "Polish onboarding transitions",
+                          project: "mobile-app", age: 3 * 60, tier: .sonnet)],
+            jeopardy: MenuBarModel.JeopardyLine(
+                projectKey: "checkout-web", countdown: "18h", stateLabel: "At risk"),
+            quotaLine: "Session (5h) 86% used · resets 42m")
+
+        let services = AppServices()
+        services.now = SessionsRender.now
+        let content = MenuBarPanel(model: model, sessionsByID: sessionsByID)
+            .environmentObject(services)
+        writePNG(content, to: path, dark: dark,
+                 width: Theme.Layout.menuWidth + Theme.renderInset * 2)
+    }
+}
+
 // MARK: - Permanent full-window layout render (`--render-layout`)
 
 /// The production rail + scaffold + Overview hero at the two launch widths the
@@ -643,6 +1299,7 @@ enum LayoutRender {
         }
 
         var body: some View {
+            let contentWidth = viewportWidth - Theme.Layout.sidebarWidth - 1
             let sidebar = SidebarSnapshot(
                 selected: .overview,
                 worstState: .blocked,
@@ -657,21 +1314,22 @@ enum LayoutRender {
 
             HStack(spacing: 0) {
                 SidebarRail(snapshot: sidebar)
-                    .frame(width: 248)
+                    .frame(width: Theme.Layout.sidebarWidth)
                     .background(Theme.surfaceSidebar)
                 Divider()
-                VStack(alignment: .leading, spacing: Theme.blockGap) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Overview")
-                                .font(.system(size: 28, weight: .bold))
-                                .tracking(-0.4)
-                                .foregroundStyle(Theme.ink)
-                            Text("6,166 sessions across 42 projects · refreshed now · dollar values are API-rate estimates, not your bill")
-                                .font(.subheadline)
-                                .foregroundStyle(Theme.muted)
+                ScreenScaffold(
+                    title: "Overview",
+                    subtitle: "6,166 sessions across 42 projects · refreshed now · dollar values are API-rate estimates, not your bill",
+                    scrolls: false,
+                    trailing: {
+                        QuietTapButton(action: {}) {
+                            HStack(spacing: Theme.rhythm) {
+                                RefreshActivityGlyph(working: false)
+                                Text("Refresh")
+                            }
                         }
-                        .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
-                        Divider()
+                    }) {
+                    VStack(alignment: .leading, spacing: Theme.blockGap) {
                         VStack(alignment: .leading, spacing: Theme.intraCell) {
                             Text("2 sessions need you · \(fmtUSD(burn.today.cost)) today at public API rates")
                                 .font(.title3)
@@ -693,10 +1351,9 @@ enum LayoutRender {
                             tierStats: tierStats,
                             tierTotal: 8_542,
                             liveSessions: liveSessions))
-                            .padding(.top, 12)
+                    }
                 }
-                .screenScaffoldFrame()
-                .frame(width: viewportWidth - 249, height: 900, alignment: .top)
+                .frame(width: contentWidth, height: 900, alignment: .top)
                 .background(Theme.surfaceWindow)
             }
             .frame(width: viewportWidth, height: 900)
@@ -938,13 +1595,15 @@ enum CrossMachineRender {
 
     private static func sig(tool: String? = nil, detail: String = "",
                             kind: AttentionSignals.LastKind, stop: String? = nil,
-                            dangling: Bool = false, ageSecs: TimeInterval, now: Date) -> AttentionSignals {
+                            dangling: Bool = false, hasPermissionGate: Bool = false,
+                            ageSecs: TimeInterval, now: Date) -> AttentionSignals {
         let at = now.addingTimeInterval(-ageSecs)
         return AttentionSignals(
             lastEventAt: at, lastKind: kind, lastStopReason: stop,
             hasDanglingToolUse: dangling, danglingToolUseAt: dangling ? at : nil,
             lastToolActivityAt: (kind == .toolUse || kind == .toolResult) ? at : nil,
-            lastToolName: tool, lastToolDetail: detail.isEmpty ? nil : detail)
+            lastToolName: tool, lastToolDetail: detail.isEmpty ? nil : detail,
+            hasPermissionGate: hasPermissionGate)
     }
 
     static func seeded(now: Date) -> (sessions: [SessionSummary], board: FleetBoard,
@@ -997,7 +1656,9 @@ enum CrossMachineRender {
             "0ed7bc81": sig(tool: "Write", detail: "Sources/TrifolaKit/Machine.swift", kind: .toolUse, ageSecs: 3, now: now),
             localOpus: sig(tool: "Edit", detail: "Sources/Trifola/AppServices.swift", kind: .toolResult, ageSecs: 40, now: now),
             localSub: sig(tool: "Bash", detail: "swift test", kind: .toolUse, ageSecs: 14, now: now),
-            "b5f4e5e5": sig(tool: "Bash", detail: "approval · bun run dev", kind: .toolUse, dangling: true, ageSecs: 240, now: now),
+            "b5f4e5e5": sig(tool: "Bash", detail: "approval · bun run dev", kind: .toolUse,
+                              dangling: true, hasPermissionGate: true,
+                              ageSecs: 240, now: now),
             "c91d22f0": sig(tool: "Bash", detail: "api-client fetch", kind: .toolResult, ageSecs: 8, now: now),
             "9942ce11": sig(tool: "WebFetch", detail: "docs.example.com/api", kind: .toolResult, ageSecs: 25, now: now),
             "e2290b7c": sig(kind: .assistantText, stop: "end_turn", ageSecs: 70, now: now),
@@ -1467,10 +2128,9 @@ enum PaletteRender {
 }
 
 // MARK: - Identity render (`--render-identity`)
-// The signature made visible (POLISH II.A): the SIDEBAR LOCKUP (the door light
-// leading the wordmark, its core carrying the fleet's worst live state) at every
-// state, the MENU-BAR template glyph's three honest states, and the dock tile — so
-// the door light can be Read + judged as the app's identity without a window/Space.
+// The signature made visible: the Trefoil Aperture leads the wordmark while its
+// Door Light core carries the fleet's worst live state. Operational entity rows
+// retain the original ring-and-core atom.
 
 enum IdentityRender {
 
@@ -1481,10 +2141,7 @@ enum IdentityRender {
             VStack(alignment: .leading, spacing: 6) {
                 RenderCaption(caption)
                 HStack(spacing: Theme.intraCell) {
-                    SeatMark(state: state, fill: Theme.ink,
-                             ring: Theme.ink.opacity(0.35), size: 23,
-                             coreUsesState: true,
-                             stateEffectsUseColor: false)
+                    BrandMark(state: state, size: 24)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Trifola")
                             .font(.system(size: 18, weight: .semibold))
@@ -1514,6 +2171,7 @@ enum IdentityRender {
             VStack(spacing: 6) {
                 HStack(spacing: 3) {
                     Image(nsImage: img)
+                        .renderingMode(.original)
                     if let count {
                         Text("\(count)").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
                     }
@@ -1529,18 +2187,91 @@ enum IdentityRender {
         }
     }
 
+    /// CG-backed canonical icon tile. Freezing it keeps ImageRenderer from
+    /// applying appearance-dependent template treatment to the ivory mark.
+    private struct AppIconSample: View {
+        let image: CGImage
+
+        var body: some View {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .frame(width: 96, height: 96)
+        }
+    }
+
+    /// Freeze AppBrand's deferred AppKit drawing handlers into CG-backed images.
+    /// ImageRenderer otherwise reinterprets them under the light appearance and
+    /// can drop the signature mark even when the source image is non-template.
+    private static func frozenRaster(_ source: NSImage) -> NSImage {
+        var rect = NSRect(origin: .zero, size: source.size)
+        guard let cgImage = source.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            source.isTemplate = false
+            return source
+        }
+        let image = NSImage(cgImage: cgImage, size: source.size)
+        image.isTemplate = false
+        return image
+    }
+
+    /// Draw the canonical icon directly into a concrete RGBA bitmap. A deferred
+    /// NSImage handler still lost its white Door Light when ImageRenderer drew a
+    /// light-mode frame; this path preserves AppBrand.drawAppIcon as the source
+    /// while removing all later template/appearance interpretation.
+    private static func frozenAppIcon() -> NSImage {
+        let size = NSSize(width: AppBrand.Geometry.iconReferenceSize,
+                          height: AppBrand.Geometry.iconReferenceSize)
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+            return frozenRaster(AppBrand.dockIcon())
+        }
+        bitmap.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        AppBrand.drawAppIcon(in: NSRect(origin: .zero, size: size))
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        // PNG round-trip strips any AppKit representation/template metadata;
+        // both ImageRenderer appearances must consume identical source pixels.
+        if let data = bitmap.representation(using: .png, properties: [:]),
+           let image = NSImage(data: data) {
+            image.isTemplate = false
+            return image
+        }
+        let fallback = NSImage(size: size)
+        fallback.addRepresentation(bitmap)
+        fallback.isTemplate = false
+        return fallback
+    }
+
     @MainActor
     static func run(to path: String, dark: Bool) {
         // The menu-bar glyph is a template at runtime (the system tints it); here we
         // draw it in the theme's label color so its geometry reads in the render.
-        let markColor: NSColor = dark ? .white : NSColor.black.withAlphaComponent(0.85)
-        let quiet = AppBrand.markImage(size: 15, state: .quiet, color: markColor)
-        let running = AppBrand.markImage(size: 15, state: .running, color: markColor)
-        let needs = AppBrand.markImage(size: 15, state: .needsYou, color: markColor)
-        let dock = AppBrand.dockIcon()
+        let markColor: NSColor = dark ? .white : .black
+        let quiet = frozenRaster(AppBrand.markImage(size: 18, state: .quiet, color: markColor))
+        let running = frozenRaster(AppBrand.markImage(size: 18, state: .running, color: markColor))
+        let needs = frozenRaster(AppBrand.markImage(size: 18, state: .needsYou, color: markColor))
+        let dockImage = frozenAppIcon()
+        var dockRect = NSRect(origin: .zero, size: dockImage.size)
+        guard let dock = dockImage.cgImage(forProposedRect: &dockRect, context: nil, hints: nil) else {
+            FileHandle.standardError.write(Data("identity icon render failed\n".utf8))
+            return
+        }
 
         let content = VStack(alignment: .leading, spacing: 20) {
-            RenderCaption("The Door Light — one ring-and-core atom: 23pt masthead, 8pt entity rows, template menu glyph, packaged app icon and Dock badge.")
+            RenderCaption("Trefoil Aperture identity shell + Door Light core: 24pt masthead, 18pt template glyph, packaged icon; operational rows keep the 8pt Door Light.")
 
             SectionLabel("Sidebar lockup — the mark's core takes the fleet's worst live state")
             HStack(alignment: .top, spacing: 16) {
@@ -1551,7 +2282,7 @@ enum IdentityRender {
             }
             Divider()
 
-            SectionLabel("Entity rows — fixed 8pt mark, monochrome ring, state core")
+            SectionLabel("Operational entity rows — unchanged 8pt Door Light semantics")
             HStack(spacing: 26) {
                 ForEach([DoorLightState.idle, .running, .waiting, .blocked], id: \.self) { state in
                     HStack(spacing: 8) {
@@ -1565,9 +2296,9 @@ enum IdentityRender {
 
             SectionLabel("Menu-bar glyph — a template mark, three honest states")
             HStack(spacing: 26) {
-                MenuMark(img: quiet, label: "quiet · hollow ring")
-                MenuMark(img: running, label: "running · dot-in-ring")
-                MenuMark(img: needs, label: "needs you · filled + count", count: 2)
+                MenuMark(img: quiet, label: "quiet · open aperture")
+                MenuMark(img: running, label: "running · small core")
+                MenuMark(img: needs, label: "needs you · full core + count", count: 2)
                 Spacer()
             }
             Divider()
@@ -1575,12 +2306,12 @@ enum IdentityRender {
             HStack(alignment: .top, spacing: 28) {
                 VStack(alignment: .leading, spacing: 8) {
                     SectionLabel("App icon")
-                    Image(nsImage: dock).resizable().frame(width: 96, height: 96)
+                    AppIconSample(image: dock)
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     SectionLabel("Dock badge — blocked light + count")
                     ZStack(alignment: .bottomTrailing) {
-                        Image(nsImage: dock).resizable().frame(width: 96, height: 96)
+                        AppIconSample(image: dock)
                         HStack(spacing: 4) {
                             SeatMark(state: .blocked, ring: Theme.red, size: 14)
                             Text("2").font(.caption.weight(.semibold)).foregroundStyle(.white)

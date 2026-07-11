@@ -54,7 +54,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 ICONSET="$TMP_ROOT/Trifola.iconset"
 mkdir -p "$ICONSET"
 
-echo "==> Rendering canonical iconset + docs banner…"
+echo "==> Rendering canonical iconset + docs brand artwork…"
 "$BIN_PATH" --render-icon "$ICONSET"
 
 required_icons=(
@@ -72,6 +72,10 @@ for icon in "${required_icons[@]}"; do
 done
 if [[ ! -s "$ROOT/docs/assets/banner.png" ]]; then
   echo "error: renderer did not produce docs/assets/banner.png" >&2
+  exit 1
+fi
+if [[ ! -s "$ROOT/docs/assets/social.png" ]]; then
+  echo "error: renderer did not produce docs/assets/social.png" >&2
   exit 1
 fi
 

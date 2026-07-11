@@ -49,48 +49,72 @@ struct AttentionStripView: View {
         let suppressed = needs.filter(\.isSuppressed)
         let shown = suppressed.count > 1 && !showsSuppressed ? unsuppressed : needs
 
-        return VStack(alignment: .leading, spacing: Theme.rhythm) {
-            HStack(spacing: 8) {
-                Image(systemName: alertingBoard.needsAttention.isEmpty
-                      ? (needs.isEmpty ? "checkmark.circle" : "bell.slash")
-                      : "bell.badge")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(alertingBoard.needsAttention.isEmpty ? Theme.green : Theme.red)
-                Text("Attention")
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(Theme.ink)
-                Spacer()
-                AttentionLegend(board: alertingBoard,
-                                suppressedCount: suppression?.suppressedCount ?? 0)
-            }
-
+        return Group {
             if needs.isEmpty {
-                HStack(spacing: 8) {
-                    Text(allClearText(board))
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.muted)
+                // No empty card for the healthy state. This is a status line in an
+                // instrument panel: calm, compact, and subordinate to the fleet.
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: Theme.intraCell) {
+                        SeatMark(state: board.runningCount > 0 ? .running : .idle, size: 8)
+                            .frame(width: Theme.iconGutter)
+                        Text("All clear")
+                            .font(Theme.Typography.bodyMedium)
+                            .foregroundStyle(Theme.ink)
+                        Text("· \(allClearDetail(board))")
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.muted)
+                        Spacer(minLength: Theme.sectionGap)
+                        AttentionLegend(board: alertingBoard,
+                                        suppressedCount: suppression?.suppressedCount ?? 0)
+                    }
+                    .padding(.horizontal, Theme.intraCell)
+                    .padding(.vertical, Theme.rowVerticalInset)
+                    .motionRowTransition()
+
+                    recoveryLine
                 }
-                .padding(.vertical, Theme.hairlineWidth)
-                .motionRowTransition()
             } else {
-                VStack(alignment: .leading, spacing: Theme.rhythm) {
-                    VStack(spacing: 0) {
-                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
-                            AttentionChip(row: row,
-                                          revealIndex: index,
-                                          suppressionState: suppression?.state,
-                                          signal: signals[row.id],
-                                          defaultSnoozeMinutes: defaultSnoozeMinutes,
-                                          onAgencyAction: onAgencyAction) {
-                                onSelect(row.item.session)
-                            }
-                            .motionRowTransition()
-                            if index < shown.count - 1 {
-                                Rectangle().fill(Theme.hairline.opacity(0.65)).frame(height: 1)
-                            }
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: Theme.intraCell) {
+                        SeatMark(
+                            state: alertingBoard.blockedCount > 0 ? .blocked :
+                                (alertingBoard.waitingCount > 0 ? .waiting : .idle),
+                            size: 8)
+                            .frame(width: Theme.iconGutter)
+                        Text(alertingBoard.needsAttention.isEmpty
+                             ? "Attention muted"
+                             : "Needs attention")
+                            .font(Theme.Typography.section)
+                            .foregroundStyle(Theme.ink)
+                        Spacer(minLength: Theme.sectionGap)
+                        AttentionLegend(board: alertingBoard,
+                                        suppressedCount: suppression?.suppressedCount ?? 0)
+                    }
+                    .padding(.horizontal, Theme.sectionGap)
+                    .padding(.vertical, Theme.intraCell)
+
+                    Rectangle().fill(Theme.hairline).frame(height: Theme.hairlineWidth)
+                    AttentionColumnHeader()
+                    Rectangle().fill(Theme.hairline).frame(height: Theme.hairlineWidth)
+
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
+                        AttentionChip(row: row,
+                                      revealIndex: index,
+                                      suppressionState: suppression?.state,
+                                      signal: signals[row.id],
+                                      defaultSnoozeMinutes: defaultSnoozeMinutes,
+                                      onAgencyAction: onAgencyAction) {
+                            onSelect(row.item.session)
+                        }
+                        .motionRowTransition()
+                        if index < shown.count - 1 {
+                            Rectangle().fill(Theme.hairline)
+                                .frame(height: Theme.hairlineWidth)
                         }
                     }
+
                     if suppressed.count > 1 {
+                        Rectangle().fill(Theme.hairline).frame(height: Theme.hairlineWidth)
                         MutedDisclosurePill(
                             label: showsSuppressed
                                 ? "Hide snoozed sessions"
@@ -98,43 +122,78 @@ struct AttentionStripView: View {
                             isExpanded: showsSuppressed) {
                                 showsSuppressed.toggle()
                             }
+                            .padding(Theme.intraCell)
                             .id("snoozed-disclosure")
                             .motionRowTransition()
                     }
-                }
-                .motionRowTransition()
-            }
 
-            if let acknowledgement,
-               now.timeIntervalSince(acknowledgement.startedAt) < 8 {
-                HStack(spacing: 8) {
-                    SeatMark(state: .running, size: 8)
-                    Text("\(acknowledgement.project) moving again — approved \(fmtAgeShort(max(0, now.timeIntervalSince(acknowledgement.startedAt)))) ago")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.muted)
+                    recoveryLine
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                        .fill(Theme.cardFill)
+                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                        .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard,
+                                            style: .continuous))
                 .motionRowTransition()
             }
-        }
-        .padding(Theme.cardPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                .fill(Theme.cardFill)
-            RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
         .reorderMotion(value: shown.map(\.id)
             + suppressed.map { "snoozed:\($0.id)" }
             + [acknowledgement?.id ?? ""])
     }
 
-    private func allClearText(_ b: AttentionBoard) -> String {
-        if b.runningCount > 0 {
-            return "All clear — \(b.runningCount) running, nothing needs you"
+    @ViewBuilder private var recoveryLine: some View {
+        if let acknowledgement,
+           now.timeIntervalSince(acknowledgement.startedAt) < 8 {
+            Rectangle().fill(Theme.hairline).frame(height: Theme.hairlineWidth)
+            HStack(spacing: Theme.intraCell) {
+                SeatMark(state: .running, size: 8)
+                    .frame(width: Theme.iconGutter)
+                Text("\(acknowledgement.project) moving again — approved \(fmtAgeShort(max(0, now.timeIntervalSince(acknowledgement.startedAt)))) ago")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, Theme.intraCell)
+            .padding(.vertical, Theme.rowVerticalInset)
+            .motionRowTransition()
         }
-        if b.idleCount > 0 { return "All clear — the fleet is idle" }
-        return "No live sessions right now"
+    }
+
+    private func allClearDetail(_ b: AttentionBoard) -> String {
+        if b.runningCount > 0 {
+            return "\(b.runningCount) running, nothing needs you"
+        }
+        if b.idleCount > 0 { return "the fleet is idle" }
+        return "no live sessions right now"
+    }
+}
+
+/// The header and rows share these exact cells. Fixed utility columns stop age,
+/// tier, and host metadata from drifting as project names and asks change.
+private struct AttentionColumnHeader: View {
+    var body: some View {
+        HStack(spacing: Theme.intraCell) {
+            Color.clear.frame(width: Theme.iconGutter)
+            Eyebrow("State")
+                .frame(width: Theme.valueColWidth, alignment: .leading)
+            Eyebrow("Project")
+                .frame(width: Theme.rankBarWidth * 2,
+                       alignment: .leading)
+            Eyebrow("Needs")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Eyebrow("Age")
+                .frame(width: Theme.microColWidth, alignment: .trailing)
+            Eyebrow("Tier")
+                .frame(width: Theme.subValueColWidth, alignment: .trailing)
+            Eyebrow("Host")
+                .frame(width: Theme.microColWidth, alignment: .trailing)
+        }
+        .padding(.horizontal, Theme.sectionGap)
+        .padding(.vertical, Theme.micro)
     }
 }
 
@@ -167,48 +226,79 @@ private struct AttentionChip: View {
     var body: some View {
         let item = row.item
         HoverRow(radius: Theme.radiusRow, action: onTap) {
-            HStack(alignment: .top, spacing: Theme.intraCell) {
+            HStack(alignment: .center, spacing: Theme.intraCell) {
                 SeatMark(state: DoorLightState(item.state), size: 8,
                          revealIndex: revealIndex)
-                    .padding(.top, 3)
-                VStack(alignment: .leading, spacing: Theme.micro) {
-                    HStack(spacing: Theme.intraCell) {
-                        Text(item.session.project)
-                            .font(.subheadline.weight(.medium))
+                    .frame(width: Theme.iconGutter)
+
+                HStack(spacing: Theme.micro) {
+                    Text(item.state == .blocked ? "Blocked" : "Waiting")
+                        .font(Theme.Typography.bodyMedium)
+                        .foregroundStyle(item.state == .blocked
+                                         ? Theme.blockedText : Theme.waitingText)
+                    if row.isSuppressed { SuppressionMark() }
+                }
+                .frame(width: Theme.valueColWidth, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: Theme.micro / 2) {
+                    Text(item.session.project)
+                        .font(Theme.Typography.bodyMedium)
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                    Text(item.session.displayTitle)
+                        .font(Theme.Typography.metadata)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                }
+                .frame(width: Theme.rankBarWidth * 2,
+                       alignment: .leading)
+
+                Group {
+                    if let ask {
+                        Text(ask)
+                            .font(Theme.Typography.bodyMedium)
                             .foregroundStyle(Theme.ink)
                             .lineLimit(1)
-                            .layoutPriority(1)
-                        AttentionStatusPill(state: item.state)
-                        if row.isSuppressed { SuppressionMark() }
-                        Text(fmtAgeShort(item.age))
-                            .font(.caption2)
-                            .foregroundStyle(Theme.muted)
-                        Spacer(minLength: 0)
-                        Text(item.session.tier.label)
-                            .font(.caption2)
-                            .foregroundStyle(Theme.muted)
-                        if item.session.isRemote {
-                            MachineChip(machineID: item.session.machineID, compact: true)
-                        }
-                    }
-                    HStack(spacing: Theme.rhythm) {
-                        Text(item.session.displayTitle)
-                            .font(.caption2)
-                            .foregroundStyle(Theme.muted)
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                        if let ask {
-                            Text("· \(ask)")
-                                .font(.caption2)
-                                .foregroundStyle(Theme.muted)
-                                .lineLimit(1)
-                        }
+                    } else {
+                        Text("—")
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.faint)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(fmtAgeShort(item.age))
+                    .font(Theme.Typography.mono)
+                    .foregroundStyle(Theme.muted)
+                    .frame(width: Theme.microColWidth, alignment: .trailing)
+
+                Text(item.session.tier.label)
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.muted)
+                    .frame(width: Theme.subValueColWidth, alignment: .trailing)
+
+                Group {
+                    if item.session.isRemote {
+                        MachineChip(machineID: item.session.machineID, compact: true)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(width: Theme.microColWidth, alignment: .trailing)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Theme.sectionGap)
-            .padding(.vertical, Theme.intraCell)
+            .padding(.vertical, Theme.rowVerticalInset)
+            .background {
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: Theme.radiusInline,
+                                     style: .continuous)
+                        .fill(stateWash)
+                    Rectangle()
+                        .fill(item.state.color)
+                        .frame(width: Theme.Layout.semanticRailWidth)
+                }
+            }
             .contentShape(Rectangle())
         }
         .opacity(row.isSuppressed ? 0.45 : 1)
@@ -249,6 +339,10 @@ private struct AttentionChip: View {
         }
         .help("\(item.session.id) · opens your terminal — macOS asks permission the first time")
     }
+
+    private var stateWash: Color {
+        row.item.state == .blocked ? Theme.blockedRowFill : Theme.waitingRowFill
+    }
 }
 
 // MARK: - Per-state count legend
@@ -258,25 +352,27 @@ private struct AttentionLegend: View {
     var suppressedCount = 0
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Theme.sectionGap) {
             ForEach(AttentionState.allCases, id: \.self) { state in
                 let n = board.count(state)
                 if n > 0 {
-                    HStack(spacing: 4) {
+                    HStack(spacing: Theme.micro) {
                         Text("\(n)")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(state.color)
+                            .font(Theme.Typography.metadataMedium)
+                            .foregroundStyle(state.needsAttention ? state.color : Theme.muted)
+                            .monospacedDigit()
                             .liveNumericTransition(value: "\(n)")
                         Text(state.label.lowercased())
-                            .font(.caption2)
+                            .font(Theme.Typography.metadata)
                             .foregroundStyle(Theme.muted)
                     }
                 }
             }
             if suppressedCount > 0 {
-                Text("· \(suppressedCount) snoozed")
-                    .font(.caption2)
+                Text("\(suppressedCount) snoozed")
+                    .font(Theme.Typography.metadata)
                     .foregroundStyle(Theme.muted)
+                    .monospacedDigit()
                     .liveNumericTransition(value: "\(suppressedCount)")
             }
         }

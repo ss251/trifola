@@ -21,7 +21,7 @@ struct LedgerScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Dreaming Ledger",
-            subtitle: "Each lesson is built deterministically from audit evidence, then offers an exact copy-able edit you approve. Dollar values are estimates at public API rates, not your bill. Lessons flow to the clipboard; the app never writes ~/.claude.",
+            subtitle: "Deterministic proposals from audit evidence · copy only, never writes your configuration",
             epithet: "findings become fixes",
             trailing: { dreamButton }
         ) {
@@ -34,7 +34,8 @@ struct LedgerScreen: View {
                 onReveal: reveal,
                 onInspect: inspect,
                 onKeep: { store.keep($0) },
-                onDismiss: { store.dismiss($0) }
+                onDismiss: { store.dismiss($0) },
+                onDistill: runDistillation
             )
         }
         .overlay(alignment: .top) {
@@ -45,17 +46,15 @@ struct LedgerScreen: View {
             }
         }
         .motion(Theme.Motion.move, value: feedback)
-        .task {
-            // On-launch delta pass — opening the app IS the "overnight" experience.
-            services.dreamNow(trigger: .onLaunch)
-        }
     }
 
     private var dreamButton: some View {
-        DreamNowButton {
-            services.dreamNow(trigger: .manual)
-            flash("Distilled · \(store.pending.count) proposal\(store.pending.count == 1 ? "" : "s")")
-        }
+        DreamNowButton(action: runDistillation)
+    }
+
+    private func runDistillation() {
+        services.dreamNow(trigger: .manual)
+        flash("Distilled · \(store.pending.count) proposal\(store.pending.count == 1 ? "" : "s")")
     }
 
     // MARK: Actions (the write path — clipboard + Finder, never ~/.claude)
@@ -116,13 +115,14 @@ struct LedgerContent: View {
     let onInspect: (String) -> Void
     let onKeep: (Lesson) -> Void
     let onDismiss: (Lesson) -> Void
+    var onDistill: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
             DreamLine(dream: dream, proposals: pending.count)
             Divider()
             if pending.isEmpty {
-                LedgerEmptyState(dream: dream)
+                LedgerEmptyState(dream: dream, onDistill: onDistill)
                     .motionRowTransition()
             } else {
                 ForEach(pending) { adj in
@@ -189,6 +189,7 @@ private struct DreamLine: View {
 
 private struct LedgerEmptyState: View {
     let dream: DreamResult?
+    let onDistill: (() -> Void)?
     var body: some View {
         // The shared EmptyState (POLISH C6), keeping the pride: the green
         // checkmark.seal + 460 width + the verbatim copy that IS the trust engine.
@@ -199,7 +200,9 @@ private struct LedgerEmptyState: View {
                 "Distilled over \(fmtGrouped($0.sessionsScanned)) sessions — no finding crossed the threshold worth proposing. A ledger that mostly says nothing is believed the day it says something."
             } ?? "Press Distill findings to mine the audit findings into candidate fixes.",
             tint: Theme.green,
-            maxWidth: 460)
+            maxWidth: 460,
+            actionTitle: onDistill == nil ? nil : "Distill findings",
+            action: onDistill)
     }
 }
 
@@ -216,17 +219,17 @@ struct LessonCard: View {
     private var lesson: Lesson { adj.lesson }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+        VStack(alignment: .leading, spacing: Theme.paneInset) {
             header
             Text(lesson.why)
-                .font(.subheadline).foregroundStyle(Theme.muted)
+                .font(Theme.Typography.body).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             if let v = adj.verification { verificationBanner(v) }
             EvidenceTable(evidence: lesson.evidence, onReveal: onReveal, onInspect: onInspect)
             CandidateFixBlock(fix: lesson.candidate, onReveal: onReveal)
             actions
         }
-        .padding(Theme.cardPadding)
+        .padding(Theme.cardPadding + Theme.micro)
         .background {
             RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
                 .fill(Theme.cardFill)
@@ -234,7 +237,7 @@ struct LessonCard: View {
             // the edit is taking" line — evidence, not chrome. A green border is a
             // colored panel by another name (POLISH C5 / UI_GRIND LDG-3).
             RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                .strokeBorder(Theme.cardStroke, lineWidth: 1)
+                .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
         }
     }
 
@@ -246,11 +249,13 @@ struct LessonCard: View {
                 .padding(.horizontal, Theme.rhythm).padding(.vertical, Theme.micro / 2)
                 .background(Capsule().fill(Theme.codeFill))
             Text(lesson.kind.title)
-                .font(.headline).foregroundStyle(Theme.ink)
+                .font(Theme.Typography.section).foregroundStyle(Theme.ink)
             StatusPill(status: adj.status)
             Spacer()
             Text(lesson.metricLabel)
-                .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Theme.ink)
             Text(lesson.detectorVersion)
                 .font(.caption2).foregroundStyle(Theme.faint)
         }
@@ -284,6 +289,8 @@ struct LessonCard: View {
             QuietTapButton("Keep") { onKeep(lesson) }
             QuietTapButton("Dismiss") { onDismiss(lesson) }
         }
+        .padding(.top, Theme.intraCell)
+        .overlay(alignment: .top) { Divider() }
     }
 }
 
@@ -370,19 +377,16 @@ private struct CandidateFixBlock: View {
     let onReveal: (String) -> Void
 
     var body: some View {
-        // Repeated proposal cards stay graphite; the one screen-level primary
-        // action owns the accent budget.
-        CalloutPanel(tone: Theme.graphite) {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Theme.intraCell) {
                 HStack(spacing: 6) {
                     Image(systemName: "wrench.and.screwdriver")
                         .font(.caption.weight(.medium)).foregroundStyle(Theme.muted)
-                    Text("Candidate fix")
-                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.ink)
+                    Text("Suggested change")
+                        .font(Theme.Typography.bodyMedium).foregroundStyle(Theme.ink)
                     Spacer()
                 }
                 Text(fix.summary)
-                    .font(.caption).foregroundStyle(Theme.muted)
+                    .font(Theme.Typography.metadata).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
 
                 // Diff hunk (before/after) when the candidate is a concrete text edit.
@@ -432,8 +436,9 @@ private struct CandidateFixBlock: View {
                         .font(.caption2).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-            }
         }
+        .padding(.top, Theme.sectionGap)
+        .overlay(alignment: .top) { Divider() }
     }
 }
 

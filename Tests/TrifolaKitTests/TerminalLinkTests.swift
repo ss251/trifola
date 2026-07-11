@@ -30,6 +30,51 @@ private func lsofCWD(_ path: String) -> String {
 
 @Suite("Terminal deep-link mapping")
 struct TerminalLinkTests {
+    @Test("bulk live registry snapshot keeps only unique terminal-attached identities")
+    func liveRegistrySnapshot() {
+        let ps = """
+          500     1 ??       Fri Jul 10 09:00:00 2026 /Applications/ExampleTerm.app/Contents/MacOS/example-term
+          600   500 ttys001  Fri Jul 10 09:01:00 2026 /usr/bin/login
+          700   600 ttys001  Fri Jul 10 09:02:00 2026 claude
+          701     1 ttys002  Fri Jul 10 09:03:00 2026 /Applications/Safari.app/Contents/MacOS/Safari
+          702     1 ??       Fri Jul 10 09:04:00 2026 claude
+          703     1 ttys003  Fri Jul 10 09:05:00 2026 claude
+        """
+        let resolver = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(ps: ps),
+            registry: FakeTerminalRegistry(value: [
+                TerminalSessionRegistryRecord(sessionID: "live", processID: 700),
+                TerminalSessionRegistryRecord(sessionID: "reused", processID: 701),
+                TerminalSessionRegistryRecord(sessionID: "background", processID: 702),
+                TerminalSessionRegistryRecord(sessionID: "orphan", processID: 703),
+                TerminalSessionRegistryRecord(sessionID: "stale", processID: 999),
+                TerminalSessionRegistryRecord(sessionID: "ambiguous", processID: 700),
+                TerminalSessionRegistryRecord(sessionID: "ambiguous", processID: 999),
+            ]))
+
+        let snapshot = resolver.liveRegisteredSessionSnapshot()
+        #expect(snapshot.sessionIDs == ["live"])
+        #expect(snapshot.failureReason == nil)
+    }
+
+    @Test("bulk live registry snapshot preserves discovery failures")
+    func liveRegistryFailures() {
+        let noProcessSnapshot = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(ps: nil),
+            registry: FakeTerminalRegistry())
+            .liveRegisteredSessionSnapshot()
+        #expect(noProcessSnapshot.sessionIDs.isEmpty)
+        #expect(noProcessSnapshot.failureReason == "process snapshot unavailable")
+
+        let unreadableRegistry = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(ps: ""),
+            registry: FakeTerminalRegistry(fails: true))
+            .liveRegisteredSessionSnapshot()
+        #expect(unreadableRegistry.sessionIDs.isEmpty)
+        #expect(unreadableRegistry.failureReason?.hasPrefix(
+            "live session registry unavailable:") == true)
+    }
+
     @Test("found: cwd maps through Claude PID and ancestry to exact Terminal tab")
     func found() {
         let ps = """
@@ -131,15 +176,45 @@ struct TerminalLinkTests {
 
         #expect(resolver.resolve(
             sessionID: "wanted", cwd: cwd, machineID: Machine.localID
-        ) == .notLive)
+        ) == .failed("Registry entry exists, but its process is no longer live"))
+    }
+
+    @Test("an exact registry process must still be attached to a terminal")
+    func exactRegistryRequiresTerminalAttachment() {
+        let cwd = "/Users/dev/shared-project"
+        let ps = """
+          500     1 ??       Fri Jul 10 09:00:00 2026 /Applications/ExampleTerm.app/Contents/MacOS/example-term
+          700   500 ??       Fri Jul 10 09:01:00 2026 /usr/local/bin/claude
+          701     1 ttys002  Fri Jul 10 09:02:00 2026 /usr/local/bin/claude
+        """
+        let resolver = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(
+                ps: ps,
+                lsofByPID: [700: lsofCWD(cwd), 701: lsofCWD(cwd)]),
+            registry: FakeTerminalRegistry(value: [
+                TerminalSessionRegistryRecord(sessionID: "background", processID: 700),
+                TerminalSessionRegistryRecord(sessionID: "orphan", processID: 701),
+            ]))
+
+        for sessionID in ["background", "orphan"] {
+            #expect(resolver.resolve(
+                sessionID: sessionID, cwd: cwd, machineID: Machine.localID
+            ) == .failed(
+                "Registry entry exists, but its process is not attached to a live terminal"))
+        }
+        #expect(resolver.resolve(
+            sessionID: "external", cwd: cwd, machineID: Machine.localID
+        ) == .failed(
+            "No registry entry for this session and no live terminal matched its working directory"))
     }
 
     @Test("typed cwd fallback reports ambiguity")
     func typedAmbiguity() {
         let cwd = "/Users/dev/shared-project"
         let ps = """
-          702     1 ttys001  Fri Jul 10 09:02:00 2026 claude
-          703     1 ttys002  Fri Jul 10 10:02:00 2026 claude --resume other
+          700     1 ??       Fri Jul 10 09:00:00 2026 /Applications/ExampleTerm.app/Contents/MacOS/example-term
+          702   700 ttys001  Fri Jul 10 09:02:00 2026 claude
+          703   700 ttys002  Fri Jul 10 10:02:00 2026 claude --resume other
         """
         let resolver = TerminalLinkResolver(
             snapshots: FakeTerminalSnapshots(
@@ -168,6 +243,25 @@ struct TerminalLinkTests {
         #expect(resolver.resolve(sessionCWD: "/Users/dev/wanted-project") == nil)
     }
 
+    @Test("typed external resolution preserves missing-registry and cwd-miss reasons")
+    func typedMissingRegistryReason() {
+        let ps = """
+          801     1 ttys003  Fri Jul 10 09:01:00 2026 /usr/local/bin/claude
+        """
+        let resolver = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(
+                ps: ps, lsofByPID: [801: lsofCWD("/Users/dev/other")]),
+            registry: FakeTerminalRegistry())
+
+        #expect(resolver.resolve(
+            sessionID: "wanted", cwd: "/Users/dev/wanted", machineID: Machine.localID
+        ) == .failed(
+            "No registry entry for this session and no live terminal matched its working directory"))
+        #expect(resolver.resolve(
+            sessionID: "wanted", cwd: "", machineID: Machine.localID
+        ) == .failed("No registry entry for this session"))
+    }
+
     @Test("Ghostty resolves for app-level fallback but not exact targeting")
     func ghosttyUsesTierTwo() {
         let ps = """
@@ -187,6 +281,33 @@ struct TerminalLinkTests {
         #expect(target?.supportsExactTargeting == false)
     }
 
+    @Test("an unknown macOS terminal resolves as a generic owner and uses Tier 2")
+    func genericTerminalUsesTierTwo() {
+        let ps = """
+          500     1 ??       Fri Jul 10 09:00:00 2026 /Applications/ExampleTerm.app/Contents/MacOS/example-term
+          600   500 ttys009  Fri Jul 10 09:01:00 2026 /usr/bin/login
+          650   600 ttys009  Fri Jul 10 09:01:30 2026 -zsh
+          700   650 ttys009  Fri Jul 10 09:02:00 2026 /usr/local/bin/claude
+        """
+        let resolver = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(ps: ps),
+            registry: FakeTerminalRegistry(value: [
+                TerminalSessionRegistryRecord(sessionID: "generic-live", processID: 700)
+            ]))
+
+        let resolution = resolver.resolve(
+            sessionID: "generic-live", cwd: "/repo", machineID: Machine.localID)
+
+        guard case .target(let target) = resolution else {
+            Issue.record("expected generic terminal target, got \(resolution)")
+            return
+        }
+        #expect(target.tty == "/dev/ttys009")
+        #expect(target.ownerProcessID == 500)
+        #expect(target.ownerApplication == .other(name: "ExampleTerm"))
+        #expect(target.supportsExactTargeting == false)
+    }
+
     @Test("parser accepts tabular lsof diagnostics and rejects malformed ps")
     func parserTolerance() {
         let tabular = "claude 100 test cwd DIR 1,2 64 123 /Users/dev/My Project\n"
@@ -194,6 +315,27 @@ struct TerminalLinkTests {
         #expect(TerminalLinkResolver.parseProcessList("not ps output").isEmpty)
         #expect(TerminalLinkResolver.normalizedTTY("ttys004") == "/dev/ttys004")
         #expect(TerminalLinkResolver.normalizedTTY("??") == nil)
+        #expect(TerminalLinkResolver.parseWorkingDirectories(
+            "p101\nfcwd\nn/repo/one\np202\nfcwd\nn/repo/two\n")
+            == [101: "/repo/one", 202: "/repo/two"])
+    }
+
+    @Test("standalone versioned Claude executables remain registry-live")
+    func versionedClaudeExecutable() {
+        let ps = """
+          700     1 ??       Fri Jul 10 09:00:00 2026 /Applications/ExampleTerm.app/Contents/MacOS/example-term
+          701   700 ttys001  Fri Jul 10 09:01:00 2026 /usr/bin/login
+          702   701 ttys001  Fri Jul 10 09:02:00 2026 /opt/claude/versions/2.1.202
+          703   701 ttys002  Fri Jul 10 09:02:00 2026 /opt/other/versions/2.1.202
+        """
+        let resolver = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(ps: ps),
+            registry: FakeTerminalRegistry(value: [
+                TerminalSessionRegistryRecord(sessionID: "claude", processID: 702),
+                TerminalSessionRegistryRecord(sessionID: "other", processID: 703),
+            ]))
+
+        #expect(resolver.liveRegisteredSessionSnapshot().sessionIDs == ["claude"])
     }
 }
 
@@ -224,12 +366,28 @@ private final class FakeExactTargeter: TerminalExactTargeting {
 private final class FakeOwnerActivator: TerminalOwnerActivating {
     var result: Bool
     private(set) var processIDs: [Int32] = []
+    private(set) var applications: [TerminalApplication?] = []
 
     init(_ result: Bool) { self.result = result }
 
-    func activate(processID: Int32) -> Bool {
+    func activate(processID: Int32, application: TerminalApplication?) async -> Bool {
         processIDs.append(processID)
+        applications.append(application)
         return result
+    }
+}
+
+private final class SuspendingOwnerActivator: TerminalOwnerActivating {
+    private(set) var started = false
+
+    func activate(processID: Int32, application: TerminalApplication?) async -> Bool {
+        started = true
+        do {
+            try await Task.sleep(for: .seconds(5))
+            return true
+        } catch {
+            return false
+        }
     }
 }
 
@@ -263,14 +421,15 @@ private final class FakeTerminalWindows: TerminalWindowAdapting {
 
 private func launchTarget(ownerProcessID: Int32? = 500,
                           application: TerminalApplication? = .terminal,
-                          tty: String? = "/dev/ttys005") -> TerminalLinkTarget {
+                          tty: String? = "/dev/ttys005",
+                          match: TerminalLinkTarget.Match = .sessionID) -> TerminalLinkTarget {
     TerminalLinkTarget(
         processID: 502,
         tty: tty,
         startedAt: Date(timeIntervalSince1970: 1_700_000_000),
         ownerProcessID: ownerProcessID,
         ownerApplication: application,
-        match: .sessionID
+        match: match
     )
 }
 
@@ -292,6 +451,33 @@ struct TerminalLaunchOutcomeCopyTests {
         #expect(TerminalLaunchOutcome.permissionDenied(
             TerminalAutomationError(number: -1743, message: "denied", dictionary: [:])).successMessage == nil)
         #expect(TerminalLaunchOutcome.failed(.noTerminalOwner).successMessage == nil)
+        #expect(TerminalLaunchOutcome.cancelled.successMessage == nil)
+        #expect(TerminalLaunchOutcome.cancelled.fallbackMessage == nil)
+        #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(
+            application: .ghostty, match: .cwd)).successMessage
+                == "Brought Ghostty to the front using a working-directory match (no registry entry)")
+        #expect(TerminalLaunchOutcome.permissionDenied(
+            TerminalAutomationError(number: -1743, message: "denied", dictionary: [:]))
+            .fallbackMessage?.contains("System Settings → Privacy & Security → Automation") == true)
+    }
+
+    @Test("every completed user-visible outcome has exactly one message")
+    func everyOutcomeSpeaksOnce() {
+        let error = TerminalAutomationError(number: 1, message: "failed", dictionary: [:])
+        let outcomes: [TerminalLaunchOutcome] = [
+            .exact(launchTarget()),
+            .ownerActivated(launchTarget(application: .ghostty)),
+            .permissionDenied(error),
+            .notLive,
+            .ambiguous,
+            .failed(.resolution("No registry entry for this session")),
+            .failed(.automation(error)),
+            .failed(.noTerminalOwner),
+            .failed(.ownerActivationFailed(.ghostty)),
+        ]
+        for outcome in outcomes {
+            #expect((outcome.successMessage != nil) != (outcome.fallbackMessage != nil))
+        }
     }
 }
 
@@ -366,7 +552,76 @@ struct TerminalLaunchFlowTests {
 
         #expect(outcome == .ownerActivated(target))
         #expect(owner.processIDs == [500])
+        #expect(owner.applications == [.terminal])
         #expect(windows.events.isEmpty)
+    }
+
+    @Test("Ghostty skips exact targeting and activates its discovered owner PID")
+    func ghosttyActivatesOwner() async {
+        let target = launchTarget(ownerProcessID: 900, application: .ghostty, tty: "/dev/ttys009")
+        let exact = FakeExactTargeter(.targeted)
+        let owner = FakeOwnerActivator(true)
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            exactTargeter: exact,
+            ownerActivator: owner,
+            windows: windows)
+
+        let outcome = await flow.open(
+            sessionID: "ghost", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .ownerActivated(target))
+        #expect(exact.calls.isEmpty)
+        #expect(owner.processIDs == [900])
+        #expect(owner.applications == [.ghostty])
+        #expect(windows.events.isEmpty)
+        #expect(outcome.successMessage == "Brought Ghostty to the front")
+    }
+
+    @Test("an unknown macOS terminal skips exact targeting and activates its owner PID")
+    func genericTerminalActivatesOwner() async {
+        let target = launchTarget(
+            ownerProcessID: 500,
+            application: .other(name: "ExampleTerm"),
+            tty: "/dev/ttys009")
+        let exact = FakeExactTargeter(.targeted)
+        let owner = FakeOwnerActivator(true)
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            exactTargeter: exact,
+            ownerActivator: owner,
+            windows: windows)
+
+        let outcome = await flow.open(
+            sessionID: "generic-live", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .ownerActivated(target))
+        #expect(exact.calls.isEmpty)
+        #expect(owner.processIDs == [500])
+        #expect(owner.applications == [.other(name: "ExampleTerm")])
+        #expect(windows.events.isEmpty)
+        #expect(outcome.successMessage == "Brought ExampleTerm to the front")
+    }
+
+    @Test("a known terminal owner that rejects activation reports that cause")
+    func ownerActivationFailure() async {
+        let target = launchTarget(application: .ghostty, tty: nil)
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            exactTargeter: FakeExactTargeter(.notFound),
+            ownerActivator: FakeOwnerActivator(false),
+            windows: windows)
+
+        let outcome = await flow.open(
+            sessionID: "ghost", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .failed(.ownerActivationFailed(.ghostty)))
+        #expect(outcome.fallbackMessage
+            == "Ghostty was found but could not be brought forward — showing transcript")
+        #expect(windows.events == ["open:main", "select:ghost", "reveal:ghost"])
     }
 
     @Test("daemon with no terminal owner visibly falls back")
@@ -466,5 +721,30 @@ struct TerminalLaunchFlowTests {
 
         #expect(outcome == .notLive)
         #expect(windows.events == ["open:main", "select:remote", "reveal:remote"])
+    }
+
+    @Test("a superseded launch is silent and publishes no stale fallback")
+    func cancelledLaunchIsSilent() async {
+        let exact = FakeExactTargeter(.notFound)
+        let owner = SuspendingOwnerActivator()
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(launchTarget())),
+            exactTargeter: exact,
+            ownerActivator: owner,
+            windows: windows)
+
+        let task = Task {
+            await flow.open(
+                sessionID: "superseded", cwd: "/repo", machineID: Machine.localID)
+        }
+        while !owner.started { await Task.yield() }
+        task.cancel()
+        let outcome = await task.value
+
+        #expect(outcome == .cancelled)
+        #expect(exact.calls.count == 1)
+        #expect(owner.started)
+        #expect(windows.events.isEmpty)
     }
 }

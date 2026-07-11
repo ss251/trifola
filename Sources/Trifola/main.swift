@@ -2,6 +2,100 @@ import Foundation
 import TrifolaKit
 
 let cliArguments = Array(CommandLine.arguments.dropFirst())
+
+if cliArguments.contains("--benchmark-nav") {
+    NavBenchmark.run()
+    exit(0)
+}
+
+if let index = cliArguments.firstIndex(of: "--render-ux") {
+    let next = cliArguments.index(after: index)
+    let directory = next < cliArguments.endIndex && !cliArguments[next].hasPrefix("--")
+        ? cliArguments[next] : "renders/ux"
+    MainActor.assumeIsolated { UXEvidenceRender.run(directory: directory) }
+    exit(0)
+}
+
+/// UI-only render flags are dispatched before TrifolaKit's general headless
+/// validator so adding visual-verification coverage does not expand the Kit's
+/// production CLI contract. With no appearance flag both themes are written;
+/// `--output` is an exact PNG path when one theme is selected and a base path
+/// when both are selected.
+private struct UIHeadlessRenderTarget {
+    let path: String
+    let dark: Bool
+}
+
+private func uiHeadlessRenderTargets(flag: String, defaultBase: String,
+                                     arguments: [String]) -> [UIHeadlessRenderTarget]? {
+    guard let flagIndex = arguments.firstIndex(of: flag) else { return nil }
+
+    let wantsLight = arguments.contains("--light")
+    let wantsDark = arguments.contains("--dark")
+    let themes: [(suffix: String, dark: Bool)] = {
+        if wantsLight && !wantsDark { return [("light", false)] }
+        if wantsDark && !wantsLight { return [("dark", true)] }
+        return [("dark", true), ("light", false)]
+    }()
+
+    let positional: String? = {
+        let next = arguments.index(after: flagIndex)
+        guard next < arguments.endIndex, !arguments[next].hasPrefix("--") else { return nil }
+        return arguments[next]
+    }()
+    let output: String? = {
+        guard let index = arguments.firstIndex(of: "--output") else { return nil }
+        let next = arguments.index(after: index)
+        guard next < arguments.endIndex, !arguments[next].hasPrefix("--") else { return nil }
+        return arguments[next]
+    }()
+
+    if let output, themes.count == 1 {
+        return [UIHeadlessRenderTarget(path: output, dark: themes[0].dark)]
+    }
+
+    var base = output ?? positional ?? defaultBase
+    if base.lowercased().hasSuffix(".png") { base.removeLast(4) }
+    return themes.map { UIHeadlessRenderTarget(path: "\(base)-\($0.suffix).png", dark: $0.dark) }
+}
+
+if let targets = uiHeadlessRenderTargets(
+    flag: "--render-sessions", defaultBase: "/tmp/sessions", arguments: cliArguments) {
+    MainActor.assumeIsolated {
+        for target in targets { SessionsRender.run(to: target.path, dark: target.dark) }
+    }
+    exit(0)
+}
+
+if let targets = uiHeadlessRenderTargets(
+    flag: "--render-menubar", defaultBase: "/tmp/menubar", arguments: cliArguments) {
+    MainActor.assumeIsolated {
+        for target in targets { MenuBarRender.run(to: target.path, dark: target.dark) }
+    }
+    exit(0)
+}
+
+// Three 512-point concept studies used to make the launch identity decision.
+if let i = cliArguments.firstIndex(of: "--render-logo") {
+    guard i + 1 < cliArguments.count, !cliArguments[i + 1].hasPrefix("--") else {
+        FileHandle.standardError.write(Data(
+            "trifola: --render-logo requires an output directory\n".utf8))
+        exit(64)
+    }
+    let directory = URL(fileURLWithPath: cliArguments[i + 1], isDirectory: true)
+    do {
+        let outputs = try MainActor.assumeIsolated {
+            try LogoConceptRender.run(directory: directory)
+        }
+        for output in outputs { print("RENDER: \(output.path)") }
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data(
+            "trifola: logo concept render failed: \(error)\n".utf8))
+        exit(1)
+    }
+}
+
 let unknownHeadlessFlags = TrifolaCommandLine.unknownHeadlessFlags(in: cliArguments)
 if !unknownHeadlessFlags.isEmpty {
     FileHandle.standardError.write(Data(
@@ -31,9 +125,14 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-icon") {
     let banner = URL(fileURLWithPath: FileManager.default.currentDirectoryPath,
                      isDirectory: true)
         .appendingPathComponent("docs/assets/banner.png")
+    let social = URL(fileURLWithPath: FileManager.default.currentDirectoryPath,
+                     isDirectory: true)
+        .appendingPathComponent("docs/assets/social.png")
     do {
         let outputs = try MainActor.assumeIsolated {
-            try BrandAssetRender.run(iconsetDirectory: iconset, bannerURL: banner)
+            try BrandAssetRender.run(iconsetDirectory: iconset,
+                                     bannerURL: banner,
+                                     socialURL: social)
         }
         for output in outputs { print("RENDER: \(output.path)") }
         exit(0)
@@ -158,10 +257,9 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-palette") {
     exit(0)
 }
 
-// `--render-identity <base>` rasterizes THE SIGNATURE — the door light: the
-// sidebar lockup (mark + wordmark, state-colored core for the fleet's worst live state) at
-// every state, the menu-bar template glyph's three honest states, and the dock
-// tile — so the app's identity can be Read + judged without a window/Space.
+// `--render-identity <base>` rasterizes the identity shell, functional Door
+// Light rows, stateful template glyph, app icon and Dock badge as one in-app
+// consistency check that does not require a live window or Screen Recording.
 if let i = CommandLine.arguments.firstIndex(of: "--render-identity") {
     let base = i + 1 < CommandLine.arguments.count ? CommandLine.arguments[i + 1] : "/tmp/identity"
     MainActor.assumeIsolated {

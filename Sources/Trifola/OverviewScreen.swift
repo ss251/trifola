@@ -22,31 +22,65 @@ struct OverviewHeroComposition: View {
     var onSelectSession: (SessionSummary) -> Void = { _ in }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 32) {
-            StatRow {
-                StatTile(label: "Usage at API rates", value: snapshot.usageValue,
-                         sub: snapshot.usageReading)
-                Divider()
-                StatTile(label: "Active now", value: "\(snapshot.activeCount)",
-                         sub: snapshot.activeReading, live: snapshot.activeCount > 0)
-                Divider()
-                StatTile(label: "Cache savings — net of write premiums",
-                         value: snapshot.savingsValue, sub: snapshot.savingsReading)
-            }
-            Card(padding: 20, fixedHeight: 180) {
+        VStack(alignment: .leading, spacing: 28) {
+            OverviewReadout(snapshot: snapshot)
+            Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 224) {
                 BurnGovernorSection(governor: snapshot.governor, showsDisclaimer: false)
             }
             HStack(alignment: .top, spacing: Theme.gutter) {
-                Card(padding: 20, fixedHeight: 190) {
+                Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 196) {
                     TierSpendSection(stats: snapshot.tierStats, total: snapshot.tierTotal)
                 }
-                Card(padding: 20, fixedHeight: 190) {
+                Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 196) {
                     LiveNowSection(sessions: snapshot.liveSessions, limit: 3,
                                    onOpenBoard: onOpenLiveBoard,
                                    onSelect: onSelectSession)
                 }
             }
         }
+    }
+}
+
+/// The first-screen readout is deliberately not a three-up dashboard card. One
+/// number owns the frame; the supporting facts sit on a quieter second register,
+/// separated by hairlines like a piece of desktop instrumentation.
+private struct OverviewReadout: View {
+    let snapshot: OverviewHeroSnapshot
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Theme.gutter) {
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                Text("Recorded usage · public API rates")
+                    .font(Theme.Typography.metadataMedium)
+                    .foregroundStyle(Theme.muted)
+                Text(snapshot.usageValue)
+                    .font(Theme.Typography.heroNumber)
+                    .tracking(-1.35)
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.ink)
+                    .liveNumericTransition(value: snapshot.usageValue)
+                Text(snapshot.usageReading)
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider().frame(height: 76)
+
+            StatTile(label: "Active now", value: "\(snapshot.activeCount)",
+                     sub: snapshot.activeReading, live: snapshot.activeCount > 0,
+                     emphasis: .supporting)
+                .frame(maxWidth: 180)
+
+            Divider().frame(height: 76)
+
+            StatTile(label: "Cache savings", value: snapshot.savingsValue,
+                     sub: snapshot.savingsReading, emphasis: .supporting)
+                .frame(maxWidth: 240)
+        }
+        .padding(.vertical, Theme.paneInset)
+        .overlay(alignment: .top) { Divider() }
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 
@@ -105,7 +139,7 @@ struct OverviewScreen: View {
         ) {
             QuietTapButton(action: {
                 refreshRequested = true
-                services.refreshAll()
+                services.refreshAll(refreshSelectedOpenAction: true)
             }) {
                 HStack(spacing: Theme.rhythm) {
                     RefreshActivityGlyph(working: isRefreshing)
@@ -136,21 +170,7 @@ struct OverviewScreen: View {
             }
             if store.scanPresentation.showsColdScanningPlaceholder {
                 statRow.opacity(0.52)
-                HStack(spacing: Theme.intraCell) {
-                    ProgressView().controlSize(.small)
-                    Text("Still counting. Populated views appear as soon as partial data is available; totals remain provisional until this first scan settles.")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.muted)
-                }
             } else {
-                if store.scanPresentation.isProvisional {
-                    HStack(spacing: Theme.intraCell) {
-                        ProgressView().controlSize(.small)
-                        Text("\(scanProgressSentence) Totals below are still counting.")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.muted)
-                    }
-                }
                 populatedContent(governor: governor)
                     .opacity(store.scanPresentation.isProvisional ? 0.62 : 1)
             }
@@ -236,29 +256,26 @@ struct OverviewScreen: View {
     private func verdictLine(governor: BurnGovernor) -> some View {
         let board = services.alertingAttentionBoard(now: services.now)
         let sentence: String
-        if store.scanPresentation.isProvisional {
-            sentence = scanProgressSentence
-        } else {
-            sentence = VerdictSentenceBuilder.sentence(
-                board: board,
-                todayCost: governor.today.cost,
-                sevenCompleteDayMean: governor.dailyRunRate)
-        }
+        sentence = VerdictSentenceBuilder.sentence(
+            board: board,
+            todayCost: governor.today.cost,
+            sevenCompleteDayMean: governor.dailyRunRate)
         let parts = sentence.components(separatedBy: " · ")
         let first = parts.first ?? sentence
         let rest = parts.dropFirst().joined(separator: " · ")
         return VStack(alignment: .leading, spacing: Theme.intraCell) {
-            HStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
                 Text(first)
+                    .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(Theme.ink)
                     .liveNumericTransition(value: first)
                 if !rest.isEmpty {
                     Text(" · \(rest)")
+                        .font(Theme.Typography.body)
                         .foregroundStyle(Theme.muted)
                         .liveNumericTransition(value: rest)
                 }
             }
-            .font(.title3)
             .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: Theme.intraCell) {
                 ArtifactPill(icon: "square.grid.3x3", name: "Fleet Board") {
@@ -295,7 +312,7 @@ struct OverviewScreen: View {
 /// DQ-24: the refresh control remains in place while work runs. Motion-capable
 /// users get a deterministic rotation driven by time (no stateful repeat loop);
 /// Reduce Motion gets a static hourglass swap.
-private struct RefreshActivityGlyph: View {
+struct RefreshActivityGlyph: View {
     let working: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 

@@ -19,7 +19,7 @@ struct RootView: View {
         AppMotionScope {
             HStack(spacing: 0) {
                 Sidebar()
-                    .frame(width: 248)
+                    .frame(width: Theme.Layout.sidebarWidth)
                     .background {
                         Theme.surfaceSidebar.ignoresSafeArea()
                     }
@@ -34,7 +34,8 @@ struct RootView: View {
                     }
             }
             .background(WindowConfigurator())
-            .frame(minWidth: 1120, minHeight: 720)
+            .frame(minWidth: Theme.Layout.minimumWindowWidth,
+                   minHeight: Theme.Layout.minimumWindowHeight)
             .overlay { CommandPaletteHost() }
             .background(RootLifecycle())
         }
@@ -73,9 +74,13 @@ private struct CommandPaletteHost: View {
 /// stops a data publish from re-rendering the scene root.
 private struct RootLifecycle: View {
     @EnvironmentObject var services: AppServices
+    @Environment(\.openWindow) private var openWindow
     var body: some View {
         Color.clear
             .task {
+                MainWindowPresenter.install {
+                    openWindow(id: "main")
+                }
                 AppBrand.applyDockIcon()
                 services.start()
             }
@@ -96,8 +101,9 @@ private struct ContentColumn: View {
     var body: some View {
         ZStack {
             sectionView
+                .onAppear { services.navigationDidAppear(services.section) }
                 .id(services.section)
-                .sectionTransition()
+                .sectionTransition(enabled: services.navigationOrigin == .pointer)
                 .sectionFirstAppearance(services.firstAppearanceSection == services.section)
         }
     }
@@ -131,6 +137,7 @@ struct SidebarSnapshot {
     let refreshText: String?
     let account: String
     let machine: String
+    var animatesSelection = true
 
     func badge(for section: AppSection) -> Int? {
         switch section {
@@ -146,13 +153,13 @@ struct SidebarSnapshot {
 struct SidebarRail: View {
     let snapshot: SidebarSnapshot
     var onSelect: (AppSection) -> Void = { _ in }
+    var onKeyboardSelect: ((AppSection) -> Void)? = nil
     @Namespace private var selectionNamespace
-    @State private var moreExpanded = false
 
     private let primarySections: [AppSection] = [
         .overview, .fleet, .sessions, .spend, .audit, .stack,
     ]
-    private let moreSections: [AppSection] = [
+    private let utilitySections: [AppSection] = [
         .live, .deadlines, .ledger, .launch,
     ]
 
@@ -160,7 +167,6 @@ struct SidebarRail: View {
         VStack(alignment: .leading, spacing: 0) {
             Wordmark(worst: snapshot.worstState)
                 .padding(.horizontal, Theme.gutter)
-                .padding(.top, Theme.codePadding)
                 .frame(height: ScreenScaffoldMetrics.headerHeight, alignment: .top)
                 .padding(.top, ScreenScaffoldMetrics.topInset)
 
@@ -172,47 +178,26 @@ struct SidebarRail: View {
                                 isSelected: snapshot.selected == section,
                                 badge: snapshot.badge(for: section),
                                 selectionNamespace: selectionNamespace,
-                                action: { onSelect(section) })
+                                animatesSelection: snapshot.animatesSelection,
+                                action: { onSelect(section) },
+                                keyboardAction: { (onKeyboardSelect ?? onSelect)(section) })
                 }
 
-                TapButton(action: { moreExpanded.toggle() }) {
-                    HStack(spacing: Theme.rhythm) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(Theme.faint)
-                            .disclosureChevron(isExpanded: moreExpanded)
-                            .frame(width: 20)
-                        Text("More")
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(Theme.muted)
-                        Spacer()
-                    }
-                    .padding(.horizontal, Theme.intraCell)
-                    .frame(height: 28)
-                    .contentShape(Rectangle())
-                }
-                .accessibilityLabel("More sections")
-                .accessibilityValue(moreExpanded ? "Expanded" : "Collapsed")
-                .accessibilityHint(moreExpanded
-                    ? "Collapse Live Now, Deadlines, Ledger, and Launch"
-                    : "Reveal Live Now, Deadlines, Ledger, and Launch")
+                Divider().padding(.vertical, Theme.micro)
 
-                if moreExpanded {
-                    ForEach(moreSections) { section in
-                        SidebarItem(section: section,
-                                    isSelected: snapshot.selected == section,
-                                    badge: snapshot.badge(for: section),
-                                    selectionNamespace: selectionNamespace,
-                                    quiet: true,
-                                    action: { onSelect(section) })
-                    }
+                ForEach(utilitySections) { section in
+                    SidebarItem(section: section,
+                                isSelected: snapshot.selected == section,
+                                badge: snapshot.badge(for: section),
+                                selectionNamespace: selectionNamespace,
+                                animatesSelection: snapshot.animatesSelection,
+                                quiet: true,
+                                action: { onSelect(section) },
+                                keyboardAction: { (onKeyboardSelect ?? onSelect)(section) })
                 }
             }
             .padding(.horizontal, Theme.intraCell)
-            .padding(.top, Theme.blockGap)
-            .onChange(of: snapshot.selected, initial: true) { _, selected in
-                if moreSections.contains(selected) { moreExpanded = true }
-            }
+            .padding(.top, Theme.paneInset)
 
             Spacer()
 
@@ -248,6 +233,9 @@ private struct Sidebar: View {
             machine: Host.current().localizedName ?? "this Mac"),
             onSelect: { section in
                 services.select(section, origin: .pointer)
+            },
+            onKeyboardSelect: { section in
+                services.select(section, origin: .keyboard)
             })
     }
 }
@@ -257,15 +245,10 @@ private struct Wordmark: View {
 
     var body: some View {
         HStack(spacing: Theme.intraCell) {
-            SeatMark(state: worst.map(DoorLightState.init) ?? .idle,
-                     fill: Theme.ink,
-                     ring: Theme.ink.opacity(0.35),
-                     size: 23,
-                     coreUsesState: true,
-                     stateEffectsUseColor: false)
+            BrandMark(state: worst.map(DoorLightState.init) ?? .idle, size: 24)
             VStack(alignment: .leading, spacing: Theme.micro / 2) {
                 Text("Trifola")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(Theme.ink)
                 Text("local · read-only")
                     .font(.footnote)
@@ -280,21 +263,22 @@ private struct SidebarItem: View {
     let isSelected: Bool
     let badge: Int?
     let selectionNamespace: Namespace.ID
+    var animatesSelection = true
     var quiet = false
     let action: () -> Void
-    @State private var hovering = false
+    let keyboardAction: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TapButton(action: action) {
+        TapButton(keyboardAction: keyboardAction, action: action) {
             HStack(spacing: Theme.codePadding) {
                 Image(systemName: section.icon)
-                    .font(.system(size: quiet ? 14 : 16, weight: .medium))
+                    .font(.system(size: quiet ? 15 : 16, weight: .medium))
                     .foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
                     .frame(width: 20)
                 Text(section.title)
-                    .font((quiet ? Font.footnote : Font.body)
-                        .weight(isSelected ? .semibold : .medium))
-                    .foregroundStyle(isSelected ? Theme.selectionText : Theme.ink)
+                    .font(Font.body.weight(isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? Theme.selectionText : (quiet ? Theme.muted : Theme.ink))
                 Spacer()
                 if let badge {
                     Text("\(badge)")
@@ -304,7 +288,7 @@ private struct SidebarItem: View {
                 }
             }
             .padding(.horizontal, Theme.intraCell)
-            .padding(.leading, quiet ? Theme.intraCell : 0)
+            .padding(.leading, quiet ? Theme.micro : 0)
             .frame(height: quiet ? 30 : 32)
             .contentShape(Rectangle())
         }
@@ -315,14 +299,10 @@ private struct SidebarItem: View {
                 RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
                     .fill(Theme.selectionBG)
                     .sidebarSelectionTravel(in: selectionNamespace)
-            } else if hovering {
-                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                    .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.6))
             }
         }
-        .motion(Theme.Motion.quick, value: hovering)
-        .motion(Theme.Motion.quick, value: isSelected)
-        .onHover { hovering = $0 }
+        .animation(animatesSelection && !reduceMotion ? Theme.Motion.nav : nil,
+                   value: isSelected)
     }
 }
 
@@ -385,13 +365,6 @@ private struct AccountChip: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, Theme.codePadding)
-        .padding(.vertical, Theme.intraCell)
-        .background {
-            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                .fill(Theme.cardFill)
-            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
-                .strokeBorder(Theme.cardStroke, lineWidth: 1)
-        }
+        .padding(.vertical, Theme.micro)
     }
 }

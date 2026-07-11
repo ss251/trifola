@@ -431,7 +431,7 @@ enum PaletteEntries {
         return [
             action("refresh", "Refresh data", "re-scan sessions, skills, audit",
                    "arrow.clockwise", ["reload", "rescan", "sync data"]) { [weak services] in
-                services?.refreshAll()
+                services?.refreshAll(refreshSelectedOpenAction: true)
             },
             action("dream", "Distill findings", "mint lessons from the latest findings",
                    "moon.stars", ["ledger", "lessons", "dreaming"]) { [weak services] in

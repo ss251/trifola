@@ -3,6 +3,7 @@ import AppKit
 import TrifolaKit
 
 enum SessionOpenActionPresentation: Equatable {
+    case resolving
     case iTerm2
     case terminal
     case transcript
@@ -24,6 +25,7 @@ enum SessionOpenActionPresentation: Equatable {
 
     var label: String {
         switch self {
+        case .resolving: return "Checking terminal…"
         case .iTerm2: return "Open in iTerm2"
         case .terminal: return "Open Terminal"
         case .transcript: return "Show transcript"
@@ -32,11 +34,17 @@ enum SessionOpenActionPresentation: Equatable {
     }
 
     var icon: String {
-        self == .transcript ? "doc.text" : "terminal"
+        switch self {
+        case .resolving: "ellipsis.circle"
+        case .transcript: "doc.text"
+        case .iTerm2, .terminal, .session: "terminal"
+        }
     }
 
     var help: String {
         switch self {
+        case .resolving:
+            return "Checking the live session registry and terminal process"
         case .iTerm2:
             return "Bring this exact live iTerm2 session forward; show its transcript if unavailable"
         case .terminal:

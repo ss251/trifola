@@ -318,14 +318,10 @@ final class DeadlineStore: ObservableObject {
 struct DeadlineScreen: View {
     @EnvironmentObject var services: AppServices
 
-    private var cards: [DeadlineCard] {
-        services.deadlineCards(now: services.now)
-    }
-
     /// projectKey → the tier of the project's most recent interactive session —
     /// the door light's tier ring (UI_GRIND §2.1). A UI-side JOIN; the deadline
     /// data layer stays tier-free.
-    private var tiers: [String: ModelTier] {
+    private func makeTiers() -> [String: ModelTier] {
         var best: [String: (Date, ModelTier)] = [:]
         for s in services.sessions.sessions where !s.isSubagent {
             guard let d = s.lastActivity else { continue }
@@ -335,10 +331,14 @@ struct DeadlineScreen: View {
     }
 
     var body: some View {
+        let cards = Perf.span("main:nav.deadlineCards") {
+            services.deadlineCards(now: services.now)
+        }
+        let tiers = Perf.span("main:nav.deadlineTiers") { makeTiers() }
         ScreenScaffold(title: "Deadlines",
-                       subtitle: subtitle,
+                       subtitle: subtitle(cards: cards),
                        epithet: "time × inactivity",
-                       trailing: { syncButton }) {
+                       trailing: { syncButton(cards: cards) }) {
             if cards.isEmpty {
                 EmptyState(icon: "calendar",
                            title: "No deadlines yet",
@@ -371,14 +371,14 @@ struct DeadlineScreen: View {
         .reorderMotion(value: cards.isEmpty)
     }
 
-    private var subtitle: String {
+    private func subtitle(cards: [DeadlineCard]) -> String {
         let active = cards.filter { $0.state != .shipped }.count
         let stalled = cards.filter { $0.state == .stalled }.count
         let alarm = stalled > 0 ? " · \(stalled) STALLED" : ""
         return "\(active) live deadline\(active == 1 ? "" : "s") · sorted by time pressure (idle time ÷ time left)\(alarm) · dollar values are API-rate estimates, not your bill"
     }
 
-    @ViewBuilder private var syncButton: some View {
+    @ViewBuilder private func syncButton(cards: [DeadlineCard]) -> some View {
         if case .connected = services.deadlines.connection {
             ProminentTapButton(size: .small, action: {
                 Task { await services.deadlines.sync(cards: cards) }

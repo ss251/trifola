@@ -33,3 +33,5 @@ screenshots-new/
 
 # Node / npm (cli/) — dist/ above already covers cli/dist/ (unanchored match).
 node_modules/
+/renders/
+/memory/

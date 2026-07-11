@@ -45,6 +45,7 @@ public enum TrifolaCommandLine {
         "--render-launch",
         "--render-layout",
         "--render-ledger",
+        "--render-logo",
         "--render-palette",
         "--render-provenance",
         "--render-quota",
@@ -67,7 +68,8 @@ public enum TrifolaCommandLine {
       --selfcheck, --self-check     Run the full headless diagnostic
       --mcp                         Run the read-only stdio MCP server
       --spend-by-model [day ...]    Print per-model spend for local yyyy-MM-dd days
-      --render-icon <iconset-dir>   Export the macOS iconset and docs/assets/banner.png
+      --render-icon <iconset-dir>   Export the iconset plus banner/social artwork
+      --render-logo <output-dir>    Export the three launch identity studies
       --render-<surface> <base>     Export a visual QA surface
                                     layout, attention, fleet, audit, ledger, launch,
                                     skills, crossmachine, palette, identity, burn,
@@ -107,6 +109,8 @@ public enum BrandAssetManifest {
 
     public static let bannerWidth = 1_280
     public static let bannerHeight = 360
+    public static let socialWidth = 1_280
+    public static let socialHeight = 640
 }
 
 // MARK: - Providers + model tiers

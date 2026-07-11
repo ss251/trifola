@@ -1,6 +1,38 @@
 import SwiftUI
 import TrifolaKit
 
+/// One presentation gate for the app's single main window. Every caller first
+/// reuses the identified window; `openWindow` is reached only when no main
+/// window exists. The installed creation action lets notification/deep-link
+/// paths obey the same rule even though they do not own a SwiftUI environment.
+@MainActor
+enum MainWindowPresenter {
+    static let windowIdentifier = NSUserInterfaceItemIdentifier("trifola.main")
+    private static var installedCreationAction: (@MainActor () -> Void)?
+
+    static func install(creationAction: @escaping @MainActor () -> Void) {
+        installedCreationAction = creationAction
+    }
+
+    static var existingWindow: NSWindow? {
+        NSApp.windows.first { window in
+            window.identifier == windowIdentifier
+                || (window.title == "Trifola"
+                    && window.canBecomeKey
+                    && !window.className.contains("StatusBar"))
+        }
+    }
+
+    static func present(createIfNeeded: (@MainActor () -> Void)? = nil) {
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = existingWindow {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        (createIfNeeded ?? installedCreationAction)?()
+    }
+}
+
 /// One registry owns every navigation/open key equivalent and the glyph shown
 /// for it. Scene commands, the rail and the command palette all consume this
 /// map, so a painted shortcut can never exist without a registered command.
@@ -125,7 +157,9 @@ private struct TrifolaSceneCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .toolbar) {
-            Button(AppCommandMap.refresh.title) { services.refreshAll() }
+            Button(AppCommandMap.refresh.title) {
+                services.refreshAll(refreshSelectedOpenAction: true)
+            }
                 .keyboardShortcut(AppCommandMap.refresh.key,
                                   modifiers: AppCommandMap.refresh.modifiers)
             Button(AppCommandMap.palette.title) { services.showPalette.toggle() }
@@ -153,8 +187,9 @@ private struct TrifolaSceneCommands: Commands {
     }
 
     private func presentMainWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: "main")
+        MainWindowPresenter.present {
+            openWindow(id: "main")
+        }
     }
 }
 
@@ -171,7 +206,7 @@ struct TrifolaApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Trifola", id: "main") {
+        Window("Trifola", id: "main") {
             RootView()
                 .environmentObject(services)
         }
@@ -207,10 +242,10 @@ struct TrifolaApp: App {
 
 /// The always-visible menu-bar glyph. RESEARCH finding #5: the market has
 /// credit-bars (OpenUsage/CodexBar) but no *attention* bar. This owns that corner
-/// — and it's the door light at its fourth distance (POLISH II.A): a TEMPLATE
-/// rendering of the mark, not a rented SF gauge. Three honest states — hollow ring
-/// (quiet), dot-in-ring (running), filled dot + ring (needs you) — plus the BLOCKED
-/// count so you see it without opening anything.
+/// — and it's the identity shell around the Door Light core at its fourth
+/// distance: a TEMPLATE rendering, not a rented SF gauge. Three honest states —
+/// hollow aperture (quiet), small core (running), full core (needs you) — plus
+/// the BLOCKED count so you see it without opening anything.
 struct MenuBarLabel: View {
     @EnvironmentObject var services: AppServices
 
@@ -224,7 +259,7 @@ struct MenuBarLabel: View {
         let hog = OrchestratorHog.alert(sessions: services.sessions.sessions, day: dayKey)
         let today = services.sessions.sessions.reduce(0) { $0 + $1.cost(onDay: dayKey) }
         HStack(spacing: 3) {
-            Image(nsImage: AppBrand.markImage(size: 15,
+            Image(nsImage: AppBrand.markImage(size: 18,
                                               state: markState(MenuBarReducer.glyph(board: board)),
                                               template: true))
             if let title = MenuBarReducer.titleText(board: board, hogFiring: hog != nil,
@@ -274,75 +309,167 @@ struct MenuBarContent: View {
         let suppressedBlocked = rawMB.blocked.filter { suppressedIDs.contains($0.id) }
         let suppressedWaiting = rawMB.waiting.filter { suppressedIDs.contains($0.id) }
 
-        return VStack(alignment: .leading, spacing: Theme.intraCell) {
-            // One template mark + one sans status line: identity and judgment,
-            // without turning the dropdown into another dashboard.
-            HStack(spacing: Theme.intraCell) {
-                Text(mb.fleetLine + suppression.legendSuffix + " · API-rate estimate")
-                    .font(.caption)
-                    .foregroundStyle(Theme.muted)
-                    .lineLimit(1)
-            }
+        let sessionsByID = Dictionary(
+            sessions.map { ($0.id, $0) },
+            uniquingKeysWith: { existing, candidate in
+                // Cross-provider imports and remote mirrors can legitimately
+                // repeat an id. Prefer this Mac, then the fresher transcript;
+                // the popover must never trap while building its lookup.
+                if existing.machineID == Machine.localID,
+                   candidate.machineID != Machine.localID { return existing }
+                if candidate.machineID == Machine.localID,
+                   existing.machineID != Machine.localID { return candidate }
+                return (candidate.lastActivity ?? .distantPast)
+                    > (existing.lastActivity ?? .distantPast) ? candidate : existing
+            })
 
-            // WHO NEEDS ME — the strip's reason to exist.
-            if mb.blocked.isEmpty && mb.waiting.isEmpty {
-                HStack(spacing: 7) {
-                    Text("Nothing needs you")
-                        .font(.subheadline)
+        return MenuBarPanel(
+            model: mb,
+            legendSuffix: suppression.legendSuffix,
+            suppressedBlocked: suppressedBlocked,
+            suppressedWaiting: suppressedWaiting,
+            sessionsByID: sessionsByID,
+            onInspect: { id in
+                guard let session = sessionsByID[id] else { return }
+                inspect(session)
+            },
+            onOpenMain: presentMainWindow)
+            .onAppear { services.start() }
+    }
+
+    private func presentMainWindow() {
+        MainWindowPresenter.present {
+            openWindow(id: "main")
+        }
+    }
+
+    private func inspect(_ session: SessionSummary) {
+        services.inspect(session)
+        presentMainWindow()
+    }
+
+}
+
+/// Store-free projection of the production menu-bar popover. The live wrapper
+/// computes this model from AppServices; the render harness supplies a seeded
+/// model, so both paths exercise the same hierarchy, rows, and interaction shell.
+struct MenuBarPanel: View {
+    @EnvironmentObject private var services: AppServices
+
+    let model: MenuBarModel
+    var legendSuffix = ""
+    var suppressedBlocked: [MenuBarModel.AttentionRow] = []
+    var suppressedWaiting: [MenuBarModel.AttentionRow] = []
+    var sessionsByID: [String: SessionSummary] = [:]
+    var onInspect: (String) -> Void = { _ in }
+    var onOpenMain: () -> Void = {}
+
+    var body: some View {
+        let hasAttentionRows = !model.blocked.isEmpty || !model.waiting.isEmpty
+            || !suppressedBlocked.isEmpty || !suppressedWaiting.isEmpty
+        let hasSignals = model.hogLine != nil || model.jeopardy != nil || model.quotaLine != nil
+
+        VStack(alignment: .leading, spacing: 0) {
+            // The dropdown opens dozens of times a day, so its Door Light is a
+            // complete AppKit raster: stateful, but with no first-appearance draw.
+            HStack(spacing: Theme.codePadding) {
+                Image(nsImage: AppBrand.markImage(
+                    size: Theme.blockGap,
+                    state: markState(model.glyph),
+                    template: true))
+                    .foregroundStyle(Theme.ink)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: Theme.micro) {
+                    Text(statusHeadline)
+                        .font(.headline)
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                    Text(model.fleetLine + legendSuffix + " · API-rate estimate")
+                        .font(.caption)
                         .foregroundStyle(Theme.muted)
-                    Spacer()
+                        .lineLimit(2)
                 }
-            } else {
-                ForEach(mb.blocked) { row in
-                    attentionRow(row, state: .blocked)
-                }
-                ForEach(mb.waiting) { row in
-                    attentionRow(row, state: .waiting)
-                }
+                Spacer(minLength: 0)
             }
-            ForEach(suppressedBlocked) { row in
-                attentionRow(row, state: .blocked, suppressed: true)
-            }
-            ForEach(suppressedWaiting) { row in
-                attentionRow(row, state: .waiting, suppressed: true)
+            .padding(.horizontal, Theme.cardPadding)
+            .padding(.vertical, Theme.sectionGap)
+
+            if hasAttentionRows {
+                Divider()
+                VStack(alignment: .leading, spacing: Theme.micro) {
+                    ForEach(model.blocked) { row in
+                        attentionRow(row, state: .blocked)
+                    }
+                    ForEach(model.waiting) { row in
+                        attentionRow(row, state: .waiting)
+                    }
+                    ForEach(suppressedBlocked) { row in
+                        attentionRow(row, state: .blocked, suppressed: true)
+                    }
+                    ForEach(suppressedWaiting) { row in
+                        attentionRow(row, state: .waiting, suppressed: true)
+                    }
+                }
+                .padding(.horizontal, Theme.rhythm)
+                .padding(.vertical, Theme.intraCell)
             }
 
-            // AM I BLEEDING MONEY / TIME — evidence-gated; absent when calm.
-            if mb.hogLine != nil || mb.jeopardy != nil || mb.quotaLine != nil {
+            // Money/time warnings remain evidence-gated and visually secondary
+            // to the sessions that need an immediate human decision.
+            if hasSignals {
                 Divider()
+                VStack(alignment: .leading, spacing: Theme.micro) {
+                    if let hogLine = model.hogLine {
+                        signalRow(icon: "flame.fill", tint: Theme.red, text: hogLine)
+                    }
+                    if let jeopardy = model.jeopardy {
+                        signalRow(icon: "clock.badge.exclamationmark", tint: Theme.amber,
+                                  text: "\(jeopardy.projectKey) — \(jeopardy.stateLabel) · \(jeopardy.countdown)")
+                    }
+                    if let quotaLine = model.quotaLine {
+                        signalRow(icon: "gauge.high", tint: Theme.amber, text: quotaLine)
+                    }
+                }
+                .padding(.horizontal, Theme.cardPadding)
+                .padding(.vertical, Theme.intraCell)
             }
-            if let hogLine = mb.hogLine {
-                signalRow(icon: "flame.fill", tint: Theme.red, text: hogLine)
-            }
-            if let j = mb.jeopardy {
-                signalRow(icon: "clock.badge.exclamationmark", tint: Theme.amber,
-                          text: "\(j.projectKey) — \(j.stateLabel) · \(j.countdown)")
-            }
-            if let quotaLine = mb.quotaLine {
-                signalRow(icon: "gauge.high", tint: Theme.amber, text: quotaLine)
-            }
+
             Divider()
-            HoverRow(action: {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "main")
-            }) {
-                HStack {
-                    Text("open trifola").font(.footnote).foregroundStyle(Theme.muted)
+            HoverRow(action: onOpenMain) {
+                HStack(spacing: Theme.intraCell) {
+                    Text("Open Trifola")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Theme.ink)
                     Spacer()
                     Text(AppCommandMap.openMain.glyph)
                         .font(.caption2)
-                        .foregroundStyle(Theme.muted)
+                        .foregroundStyle(Theme.faint)
                 }
+                .padding(.horizontal, Theme.intraCell)
                 .frame(minHeight: Theme.compactRowHeight)
             }
+            .padding(.horizontal, Theme.rhythm)
+            .padding(.vertical, Theme.micro)
+            .help("Open the Trifola dashboard")
         }
-        .padding(Theme.cardPadding)
-        .frame(width: 320)
+        .frame(width: Theme.Layout.menuWidth)
         .background(.regularMaterial)
-        .reorderMotion(value: mb.blocked.map(\.id) + mb.waiting.map(\.id)
+        .reorderMotion(value: model.blocked.map(\.id) + model.waiting.map(\.id)
             + suppressedBlocked.map { "suppressed:\($0.id)" }
             + suppressedWaiting.map { "suppressed:\($0.id)" })
-        .onAppear { services.start() }
+    }
+
+    private var statusHeadline: String {
+        let needsYou = model.blocked.count + model.waiting.count
+        if needsYou == 1 { return "1 session needs you" }
+        if needsYou > 1 { return "\(needsYou) sessions need you" }
+
+        let signals = [model.hogLine != nil, model.jeopardy != nil, model.quotaLine != nil]
+            .filter { $0 }.count
+        if signals == 1 { return "1 signal to review" }
+        if signals > 1 { return "\(signals) signals to review" }
+        return "All clear"
     }
 
     private func markState(_ glyph: MenuBarGlyphState) -> AppBrand.MarkState {
@@ -353,18 +480,14 @@ struct MenuBarContent: View {
         }
     }
 
-    /// One attention row: door-light dot in the state's color, the session's
-    /// name, then "state · stuck-time · model". Clicking hands off to the main
-    /// window's live detail — the strip is a doorway, not a destination.
+    /// One attention row: Door Light, human identity, state/age/model, and an
+    /// explicit inspector chevron. The primary click stays inside Trifola;
+    /// terminal handoff is an explicit context-menu action only.
     private func attentionRow(_ row: MenuBarModel.AttentionRow,
                               state: AttentionState,
                               suppressed: Bool = false) -> some View {
-        HoverRow(action: {
-            if let s = services.sessions.sessions.first(where: { $0.id == row.id }) {
-                services.openTerminal(s)
-            }
-        }) {
-            HStack(spacing: 8) {
+        HoverRow(action: { onInspect(row.id) }) {
+            HStack(spacing: Theme.intraCell) {
                 SeatMark(state: DoorLightState(state), size: 8,
                          firstAppearanceDraw: false)
                 if suppressed { SuppressionMark() }
@@ -373,28 +496,39 @@ struct MenuBarContent: View {
                         .font(.subheadline.weight(state == .blocked ? .semibold : .regular))
                         .foregroundStyle(Theme.ink)
                         .lineLimit(1)
-                    Text("\(state.label.lowercased()) \(fmtAgeShort(row.age)) · \(row.tierLabel)")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.muted)
+                    HStack(spacing: Theme.micro) {
+                        Text(state.label.lowercased())
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(state.color)
+                        Text("· \(fmtAgeShort(row.age)) · \(row.tierLabel)")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.muted)
+                    }
                 }
                 Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.faint)
             }
+            .padding(.horizontal, Theme.intraCell)
+            .padding(.vertical, Theme.micro)
             .frame(minHeight: Theme.compactRowHeight)
         }
         .opacity(suppressed ? 0.45 : 1)
         .motionRowTransition()
         .contextMenu {
-            if let session = services.sessions.sessions.first(where: { $0.id == row.id }) {
-                SessionAgencyMenu(session: session)
+            if let session = sessionsByID[row.id] {
+                SessionAgencyMenu(session: session,
+                                  includesOpenTerminal: !session.isRemote)
             }
         }
-        .help("Opens your terminal — macOS asks permission the first time")
+        .help("Open this session in Trifola")
     }
 
     /// A money/time signal line (hog · jeopardy · hot quota) — icon + one
     /// sentence of evidence, never a bare nag.
     private func signalRow(icon: String, tint: Color, text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.intraCell) {
             Image(systemName: icon)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(tint)
@@ -404,6 +538,8 @@ struct MenuBarContent: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
+        .padding(.horizontal, Theme.intraCell)
+        .padding(.vertical, Theme.micro)
         .frame(minHeight: Theme.compactRowHeight)
     }
 }

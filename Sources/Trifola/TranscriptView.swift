@@ -11,6 +11,9 @@ import TrifolaKit
 struct TranscriptView: View {
     let filePath: String
     var tailBytes: UInt64 = 2_000_000
+    /// Deterministic events for headless visual verification. Production leaves
+    /// this nil and keeps the exact tailing behavior below.
+    var previewEvents: [TranscriptEvent]? = nil
 
     @StateObject private var store = TranscriptStore()
     @State private var pinnedToLive = true
@@ -28,6 +31,8 @@ struct TranscriptView: View {
         .system(size: size, weight: weight, design: .monospaced)
     }
 
+    private var events: [TranscriptEvent] { previewEvents ?? store.events }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -44,21 +49,28 @@ struct TranscriptView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
         .task(id: filePath) {
+            guard previewEvents == nil else { return }
             pinnedToLive = true
             store.open(path: filePath, tailBytes: tailBytes)
         }
-        .onDisappear { store.close() }
+        .onDisappear {
+            if previewEvents == nil { store.close() }
+        }
     }
 
     private var header: some View {
         HStack(spacing: 6) {
-            switch store.state {
-            case .live:
+            if previewEvents != nil {
                 Text("Tailing").font(.caption).foregroundStyle(Theme.green)
-            case .idle:
-                Text("Opening").font(.caption).foregroundStyle(Theme.muted)
-            case .error(let why):
-                Text(why).font(.caption).foregroundStyle(Theme.red).lineLimit(1)
+            } else {
+                switch store.state {
+                case .live:
+                    Text("Tailing").font(.caption).foregroundStyle(Theme.green)
+                case .idle:
+                    Text("Opening").font(.caption).foregroundStyle(Theme.muted)
+                case .error(let why):
+                    Text(why).font(.caption).foregroundStyle(Theme.red).lineLimit(1)
+                }
             }
             if store.startedMidFile || store.droppedHead {
                 Text("· tail of file")
@@ -70,19 +82,39 @@ struct TranscriptView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: filePath)])
                 }
             }
-            Text("\(store.events.count) events")
+            Text("\(events.count) events")
                 .font(.caption2).foregroundStyle(Theme.muted)
         }
         .padding(.horizontal, Theme.codePadding)
         .padding(.vertical, Theme.rhythm)
     }
 
+    @ViewBuilder
     private var feed: some View {
+        if previewEvents != nil {
+            // ImageRenderer does not realize scroll/lazy children. The bounded
+            // preview keeps the production TranscriptRow hierarchy but lays it
+            // out eagerly, while the live file-tail path below remains unchanged.
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(events) { event in
+                    TranscriptRow(event: event)
+                        .transcriptLineTransition()
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(Theme.codePadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            liveFeed
+        }
+    }
+
+    private var liveFeed: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(store.events) { ev in
-                        TranscriptRow(event: ev)
+                    ForEach(events) { event in
+                        TranscriptRow(event: event)
                             .transcriptLineTransition()
                     }
                     Color.clear.frame(height: 1).id("live-bottom")
@@ -104,7 +136,7 @@ struct TranscriptView: View {
                 // (.animating) and content growth can never detach.
                 if newPhase == .idle { pinnedToLive = atBottom }
             }
-            .onChange(of: store.events.count) {
+            .onChange(of: events.count) {
                 guard pinnedToLive, scrollPhase == .idle || scrollPhase == .animating else { return }
                 proxy.scrollTo("live-bottom", anchor: .bottom)
             }

@@ -12,6 +12,8 @@ enum AppRestorationKeys {
     static let sessionsMachine = "trifola.restoration.sessions.machine"
     static let sessionsActiveOnly = "trifola.restoration.sessions.activeOnly"
     static let sessionsHeavyOnly = "trifola.restoration.sessions.heavyOnly"
+    static let sessionsTopLevelOnly = "trifola.restoration.sessions.topLevelOnly"
+    static let sessionsLiveInTerminalOnly = "trifola.restoration.sessions.liveInTerminalOnly"
     static let sessionsSort = "trifola.restoration.sessions.sort"
 }
 
@@ -153,8 +155,10 @@ final class AppServices: ObservableObject {
     @AppStorage(AppRestorationKeys.section) private var persistedSectionRaw = ""
     @AppStorage(AppRestorationKeys.inspectorSessionID) private var persistedInspectorID = ""
     @Published var section: AppSection = .overview
-    @Published private(set) var firstAppearanceSection: AppSection? = .overview
+    private(set) var firstAppearanceSection: AppSection? = .overview
+    private(set) var navigationOrigin: NavOrigin = .programmatic
     private(set) var seenSections: Set<AppSection> = [.overview]
+    private var navigationStart: (section: AppSection, nanoseconds: UInt64)?
     @Published var selectedSessionID: String? = nil {
         didSet {
             guard selectedSessionID != oldValue else { return }
@@ -164,20 +168,27 @@ final class AppServices: ObservableObject {
             } else if pendingRestoredSessionID == nil {
                 persistedInspectorID = ""
             }
+            if let selectedSessionID,
+               let session = sessions.sessions.first(where: { $0.id == selectedSessionID }) {
+                prepareSessionOpenAction(for: session, force: true)
+            }
         }
     }
     @Published private(set) var terminalTranscriptReveal: TerminalTranscriptReveal? = nil
     @Published private(set) var sessionOpenActions: [String: SessionOpenActionPresentation] = [:]
+    @Published private(set) var liveTerminalSessionIDs: Set<String> = []
+    @Published private(set) var liveTerminalSnapshotFailure: String? = nil
     /// Heartbeat so relative timestamps ("3m ago", `isActive`) re-render.
     @Published var now = Date()
 
     private var watcher: FSEventsWatcher?
     private var ticker: Task<Void, Never>?
     private var sessionsDebounce: Task<Void, Never>?
+    private var terminalLaunchTask: Task<Void, Never>?
     private var terminalRevealGeneration = 0
     private var pendingRestoredSessionID: String?
-    private var sessionOpenActionResolvedAt: [String: Date] = [:]
     private var pendingSessionOpenActionIDs: Set<String> = []
+    private var didRunLaunchDream = false
     private var forwarders: Set<AnyCancellable> = []
 
     init(claudePaths: ClaudePaths = .process) {
@@ -234,6 +245,7 @@ final class AppServices: ObservableObject {
         // detail (the honest bridge falls back to activating the app).
         notifier.onActivateSession = { [weak self] id in
             guard let self, let s = self.sessions.sessions.first(where: { $0.id == id }) else { return }
+            MainWindowPresenter.present()
             self.inspect(s)
         }
         notifier.onSnoozeSession = { [weak self] id in
@@ -256,17 +268,31 @@ final class AppServices: ObservableObject {
     /// no screen or sidebar item needs to know how navigation was initiated.
     func select(_ newSection: AppSection, origin: NavOrigin) {
         guard section != newSection else { return }
+        navigationOrigin = origin
+        if Perf.enabled {
+            navigationStart = (newSection, DispatchTime.now().uptimeNanoseconds)
+        }
         let isFirstAppearance = seenSections.insert(newSection).inserted
-        var transaction = Transaction(
-            animation: origin == .pointer
-                ? Theme.motion(Theme.Motion.nav, reduceMotion: false)
-                : nil)
+        var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = origin != .pointer
         withTransaction(transaction) {
             firstAppearanceSection = isFirstAppearance ? newSection : nil
             section = newSection
         }
         persistedSectionRaw = newSection.rawValue
+    }
+
+    /// Destination-mount end of the opt-in navigation span. Projection spans on
+    /// each heavy destination identify which slice owns this total.
+    func navigationDidAppear(_ appearedSection: AppSection) {
+        guard Perf.enabled,
+              let start = navigationStart,
+              start.section == appearedSection else { return }
+        navigationStart = nil
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start.nanoseconds)
+            / 1_000_000
+        FileHandle.standardError.write(Data(
+            "[perf] main:nav.switch.\(appearedSection.rawValue) \(String(format: "%.1f", ms))ms\n".utf8))
     }
 
     /// The Skill hierarchy's Launch button: jump to the builder, seeded with a
@@ -470,10 +496,15 @@ final class AppServices: ObservableObject {
                          now: now ?? self.now, arrival: fleet.arrival).board
     }
 
-    func refreshAll() {
+    func refreshAll(refreshSelectedOpenAction: Bool = false) {
         Task {
             await Perf.span("await:sessions.refreshNow") { await sessions.refreshNow() }
+            await refreshLiveTerminalSnapshot()
             reconcileRestoredSelection()
+            if refreshSelectedOpenAction,
+               let selectedSession {
+                prepareSessionOpenAction(for: selectedSession, force: true)
+            }
             let corpusAvailable = Self.detectLocalClaudeCorpus(paths: claudePaths)
             if hasLocalClaudeCorpus != corpusAvailable {
                 hasLocalClaudeCorpus = corpusAvailable
@@ -492,13 +523,27 @@ final class AppServices: ObservableObject {
             await Perf.span("await:auditReport.refresh") {
                 await auditReport.refresh(sessions: sessions.sessions, skills: skills.skills)
             }
-            // DREAMING LEDGER: re-mint lessons from the fresh findings + settings so
-            // the queue + sidebar count stay truthful. Silent (no dream-log line) —
-            // an actual recorded pass runs on the Ledger screen's on-launch task and
-            // on "Dream now". Deterministic: same findings → same lessons.
+            // DREAMING LEDGER: record exactly one on-launch pass after the first
+            // fresh audit is available. Later refreshes only re-mint silently, so
+            // navigating back to Ledger never writes another dream-log line.
             settings = ClaudeSettings.load(paths: claudePaths)
-            Perf.span("main:ledger.remint") {
-                ledger.remint(report: auditReport.report, catalog: skills.skills, settings: settings)
+            if !didRunLaunchDream {
+                didRunLaunchDream = true
+                Perf.span("main:ledger.dreamOnLaunch") {
+                    ledger.dream(
+                        report: auditReport.report,
+                        catalog: skills.skills,
+                        settings: settings,
+                        sessionsScanned: sessions.sessions.count,
+                        trigger: .onLaunch)
+                }
+            } else {
+                Perf.span("main:ledger.remint") {
+                    ledger.remint(
+                        report: auditReport.report,
+                        catalog: skills.skills,
+                        settings: settings)
+                }
             }
             // LAUNCH pillar: load saved recipes from the app's own dir.
             launch.reload()
@@ -547,6 +592,7 @@ final class AppServices: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 self.sessionsDebounce = nil
                 await Perf.span("await:sessions.refreshNow") { await self.sessions.refreshNow() }
+                await self.refreshLiveTerminalSnapshot()
                 self.reconcileRestoredSelection()
                 Perf.span("main:audit.refresh") { self.audit.refresh(sessions: self.sessions.sessions) }
                 await Perf.span("await:attention.refresh") {
@@ -586,6 +632,19 @@ final class AppServices: ObservableObject {
     /// so single-machine users see zero cross-machine chrome.
     var isCrossMachine: Bool { sessions.machineCount > 1 || !machines.config.remotes.isEmpty }
 
+    /// Refresh the filter's live set with one process + registry snapshot. The
+    /// exact-identity set is intentionally separate from the selected row's CWD
+    /// fallback, which cannot distinguish historical sessions in the same repo.
+    private func refreshLiveTerminalSnapshot() async {
+        let resolver = TerminalLinkResolver(
+            registry: FileTerminalSessionRegistryProvider(directory: claudePaths.sessions))
+        let snapshot = await Task.detached(priority: .utility) {
+            resolver.liveRegisteredSessionSnapshot()
+        }.value
+        liveTerminalSessionIDs = snapshot.sessionIDs
+        liveTerminalSnapshotFailure = snapshot.failureReason
+    }
+
     /// Deep-link: jump to a session's live detail from anywhere.
     func inspect(_ session: SessionSummary) {
         selectedSessionID = session.id
@@ -594,17 +653,15 @@ final class AppServices: ObservableObject {
 
     /// Resolve the label shown on the selected session's open action from the
     /// same typed process/registry result the launch flow consumes. Resolution
-    /// runs off-main and is cached briefly so rendering never shells out.
-    func prepareSessionOpenAction(for session: SessionSummary) {
+    /// runs off-main and stays stable until selection changes or refresh is explicit.
+    func prepareSessionOpenAction(for session: SessionSummary, force: Bool = false) {
         if session.isRemote {
             sessionOpenActions[session.id] = .transcript
             return
         }
-        if let resolvedAt = sessionOpenActionResolvedAt[session.id],
-           Date().timeIntervalSince(resolvedAt) < 20 {
-            return
-        }
+        if !force, sessionOpenActions[session.id] != nil { return }
         guard pendingSessionOpenActionIDs.insert(session.id).inserted else { return }
+        sessionOpenActions[session.id] = .resolving
 
         let id = session.id
         let cwd = session.cwd
@@ -617,26 +674,20 @@ final class AppServices: ObservableObject {
             }.value
             guard let self else { return }
             self.pendingSessionOpenActionIDs.remove(id)
-            self.sessionOpenActionResolvedAt[id] = Date()
             self.sessionOpenActions[id] = SessionOpenActionPresentation(resolution: resolution)
         }
     }
 
     func sessionOpenAction(for session: SessionSummary) -> SessionOpenActionPresentation {
         if session.isRemote { return .transcript }
-        return sessionOpenActions[session.id] ?? .session
+        return sessionOpenActions[session.id] ?? .resolving
     }
 
     /// Opens the exact local session when possible. Every unsuccessful typed
     /// outcome executes a deterministic main-window transcript reveal instead of
     /// selecting an arbitrary keyable window or silently preserving current state.
     func openTerminal(_ session: SessionSummary) {
-        openTerminal(session) {
-            NSApp.activate(ignoringOtherApps: true)
-            NSApp.windows.first(where: {
-                $0.title == "Trifola" && $0.canBecomeKey
-            })?.makeKeyAndOrderFront(nil)
-        }
+        openTerminal(session) { MainWindowPresenter.present() }
     }
 
     func openTerminal(_ session: SessionSummary,
@@ -646,7 +697,8 @@ final class AppServices: ObservableObject {
                            openMainWindow: openMainWindow)
             return
         }
-        TerminalLauncher.open(
+        terminalLaunchTask?.cancel()
+        terminalLaunchTask = TerminalLauncher.open(
             session: session,
             resolver: TerminalLinkResolver(
                 registry: FileTerminalSessionRegistryProvider(
@@ -676,6 +728,8 @@ final class AppServices: ObservableObject {
     /// contains no resolver call and remains visibly repeatable from the inspector.
     func showTranscript(_ session: SessionSummary, message: String? = nil,
                         openMainWindow: @escaping @MainActor () -> Void) {
+        terminalLaunchTask?.cancel()
+        terminalLaunchTask = nil
         NSApp.activate(ignoringOtherApps: true)
         openMainWindow()
         inspect(session)

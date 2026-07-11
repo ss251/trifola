@@ -759,12 +759,12 @@ struct HierarchySkillRow: View {
                     }
                 }
             }
-            // Launch appears on hover/selection only (UI_GRIND SKL-2): at rest the
-            // tree is pure evidence, not fourteen paperplanes of verb wallpaper.
+            // Launch is deliberately quiet at rest, but never invisible: keyboard
+            // focus must reveal a real target even before the pointer enters the row.
             TapButton(action: onLaunch) { Image(systemName: "paperplane") }
                 .font(.caption.weight(.medium))
                 .foregroundStyle(isSelected ? Theme.selectionText : Theme.muted)
-                .opacity(hovering || isSelected ? 1 : 0)
+                .opacity(hovering || isSelected ? 1 : 0.35)
                 .accessibilityLabel("Launch \(skill.name)")
                 .accessibilityHint("Seed the Session Builder with /\(skill.qualifiedID)")
                 .help("Seed the Session Builder with /\(skill.qualifiedID)")
