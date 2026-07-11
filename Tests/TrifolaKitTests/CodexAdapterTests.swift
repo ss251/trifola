@@ -368,7 +368,14 @@ struct CodexAdapterTests {
         #expect(summary.model == "gpt-5.6-sol")
     }
 
-    @Test func decompressorSubprocessIsBoundedByTimeoutAndOutputCap() throws {
+    // Spawns real /bin/sleep and /usr/bin/printf children. On the locked-down
+    // CI runner the child never delivers output at all (the success leg failed
+    // there even with a 10s deadline while the nil-expecting legs passed
+    // vacuously) — the same OS-integration class as ProbePrimitives, and gated
+    // the same way: this validates the real subprocess bounds on a developer
+    // machine; CI covers the pure parsing/clamp/reset seams.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CI"] == nil))
+    func decompressorSubprocessIsBoundedByTimeoutAndOutputCap() throws {
         let sleep = URL(fileURLWithPath: "/bin/sleep")
         let printf = URL(fileURLWithPath: "/usr/bin/printf")
         #expect(FileManager.default.isExecutableFile(atPath: sleep.path))
