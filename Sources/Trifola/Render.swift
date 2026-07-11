@@ -17,6 +17,13 @@ enum UXEvidenceRender {
                 let url = root.appendingPathComponent("focus-\(mode)-\(theme).png")
                 renderFocus(keyboardFocus: keyboardFocus, dark: dark, to: url)
             }
+            let theme = dark ? "dark" : "light"
+            renderStateLadder(
+                dark: dark,
+                to: root.appendingPathComponent("state-ladder-\(theme).png"))
+            renderAccessibilitySpotcheck(
+                dark: dark,
+                to: root.appendingPathComponent("accessibility-\(theme).png"))
         }
     }
 
@@ -36,6 +43,147 @@ enum UXEvidenceRender {
               let bitmap = NSBitmapImageRep(data: data),
               let png = bitmap.representation(using: .png, properties: [:]) else { return }
         try? png.write(to: url, options: .atomic)
+    }
+
+    private static func renderStateLadder(dark: Bool, to url: URL) {
+        let content = StateLadderAcceptanceCard()
+            .frame(width: 1_080, height: 320)
+            .background(Theme.surfaceWindow)
+            .environment(\.colorScheme, dark ? .dark : .light)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = 2
+        var rendered: NSImage?
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+        appearance.performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
+        guard let image = rendered,
+              let data = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: data),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: url, options: .atomic)
+    }
+
+    private static func renderAccessibilitySpotcheck(dark: Bool, to url: URL) {
+        let content = AccessibilityAcceptanceCard()
+            .frame(width: 1_080, height: 360)
+            .background(Theme.surfaceWindow)
+            .environment(\.colorScheme, dark ? .dark : .light)
+            .environment(\.doorLightReduceMotionOverride, true)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = 2
+        var rendered: NSImage?
+        let appearance = NSAppearance(named: dark ? .accessibilityHighContrastDarkAqua
+                                                  : .accessibilityHighContrastAqua)!
+        appearance.performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
+        guard let image = rendered,
+              let data = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: data),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: url, options: .atomic)
+    }
+}
+
+private struct AccessibilityAcceptanceCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                Text("Accessibility appearance and motion audit")
+                    .font(Theme.Typography.screenTitle)
+                    .foregroundStyle(Theme.ink)
+                Text("High-contrast appearance · adaptive material boundaries · Reduce Motion-aware primitives")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
+            }
+            HStack(spacing: Theme.gutter) {
+                Card {
+                    VStack(alignment: .leading, spacing: Theme.intraCell) {
+                        SectionLabel("Semantic status")
+                        HStack(spacing: Theme.intraCell) {
+                            SeatMark(state: .blocked, size: 12)
+                            Text("Blocked")
+                                .font(Theme.Typography.bodyMedium)
+                                .foregroundStyle(Theme.red)
+                            Spacer()
+                            AttentionStatusPill(state: .blocked)
+                        }
+                    }
+                }
+                Card {
+                    VStack(alignment: .leading, spacing: Theme.intraCell) {
+                        SectionLabel("Controls remain distinct")
+                        HStack(spacing: Theme.intraCell) {
+                            FilterChip(label: "Selected", isOn: true, action: {})
+                            FilterChip(label: "Available", isOn: false, action: {})
+                            FilterChip(label: "Disabled", isOn: false, action: {})
+                                .disabled(true)
+                        }
+                    }
+                }
+            }
+            Text("High Contrast keeps semantic boundaries and disabled states distinct. Production material accents switch to opaque fills under Reduce Transparency. Motion modifiers read the system Reduce Motion environment; this still forces the Door Light's reduced path.")
+                .font(Theme.Typography.metadataMedium)
+                .foregroundStyle(Theme.muted)
+                .frame(maxWidth: ScreenScaffoldMetrics.proseMaxWidth, alignment: .leading)
+        }
+        .padding(48)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct StateLadderAcceptanceCard: View {
+    private enum Sample: String, CaseIterable {
+        case rest = "Rest"
+        case hover = "Hover"
+        case pressed = "Pressed"
+        case focus = "Keyboard focus"
+        case selected = "Selected"
+        case disabled = "Disabled"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                Text("Shared control state ladder")
+                    .font(Theme.Typography.screenTitle)
+                    .foregroundStyle(Theme.ink)
+                Text("One production FilterChip primitive · pointer, keyboard, selection, and availability states")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
+            }
+            HStack(alignment: .top, spacing: Theme.sectionGap) {
+                ForEach(Sample.allCases, id: \.self) { sample in
+                    VStack(alignment: .leading, spacing: Theme.intraCell) {
+                        Eyebrow(sample.rawValue)
+                        FilterChip(label: "Top-level",
+                                   isOn: sample == .selected,
+                                   action: {})
+                            .environment(
+                                \.tapFocusEvidenceOverride,
+                                sample == .focus ? Optional(true) : nil)
+                            .environment(
+                                \.tapInteractionEvidenceOverride,
+                                interactionOverride(for: sample))
+                            .disabled(sample == .disabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Divider()
+            Text("Keyboard focus and keyboard-triggered actions are instant; pointer hover and press use the shared frequent-control feedback.")
+                .font(Theme.Typography.metadataMedium)
+                .foregroundStyle(Theme.muted)
+        }
+        .padding(48)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func interactionOverride(
+        for sample: Sample
+    ) -> TapInteractionEvidenceOverride? {
+        switch sample {
+        case .hover: return .hover
+        case .pressed: return .pressed
+        default: return nil
+        }
     }
 }
 
@@ -1100,6 +1248,265 @@ private func writePNG<V: View>(_ content: V, to path: String, dark: Bool, width:
     print("RENDER: \(path)")
 }
 
+// MARK: - Provider-parity acceptance evidence (`--render-parity`)
+
+/// Deterministic evidence for every provider-parity surface required by the
+/// launch work order. Each still composes the exact production component; the
+/// only render-only chrome is `RenderCaption`, per the shared evidence policy.
+/// Fixtures never read live credentials, Keychain items, rollout files, or the
+/// network. Both appearances are rendered from identical source values.
+@MainActor
+enum ParityRender {
+    private static let now = Date(timeIntervalSince1970: 1_752_206_400)
+
+    static func run(directory: String) {
+        let root = URL(fileURLWithPath: directory, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: root, withIntermediateDirectories: true)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "trifola: could not create parity render directory: \(error)\n".utf8))
+            return
+        }
+
+        for dark in [false, true] {
+            let suffix = dark ? "dark" : "light"
+            renderModels(to: root.appendingPathComponent(
+                "models-card-\(suffix).png").path, dark: dark)
+            renderSpendTable(to: root.appendingPathComponent(
+                "spend-table-\(suffix).png").path, dark: dark)
+            renderProviderRows(to: root.appendingPathComponent(
+                "provider-badges-filter-\(suffix).png").path, dark: dark)
+            renderQuota(to: root.appendingPathComponent(
+                "quota-section-\(suffix).png").path, dark: dark)
+            renderTranscript(to: root.appendingPathComponent(
+                "codex-transcript-\(suffix).png").path, dark: dark)
+            renderOnboarding(to: root.appendingPathComponent(
+                "onboarding-states-\(suffix).png").path, dark: dark)
+        }
+    }
+
+    private static func renderModels(to path: String, dark: Bool) {
+        let stats = [
+            TierStat(tier: .codex, tokens: 82_480_000, cost: 195.42, sessions: 117),
+            TierStat(tier: .opus, tokens: 21_310_000, cost: 86.71, sessions: 42),
+            TierStat(tier: .sonnet, tokens: 34_780_000, cost: 48.19, sessions: 89),
+            TierStat(tier: .haiku, tokens: 7_620_000, cost: 4.63, sessions: 28),
+            TierStat(tier: .other, tokens: 940_000, cost: 1.14, sessions: 3),
+        ]
+        let total = stats.reduce(0) { $0 + $1.cost }
+        let content = VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            RenderCaption("Overview models card — the production tier section names Codex separately from Other")
+            Card(padding: Theme.cardPadding + Theme.micro) {
+                TierSpendSection(stats: stats, total: total)
+            }
+        }
+        writePNG(content, to: path, dark: dark, width: 940)
+    }
+
+    private static func renderSpendTable(to path: String, dark: Bool) {
+        let rows = [
+            ModelSpendStat(
+                provider: .codex, model: "gpt-5.6-sol",
+                usage: SessionUsage(inputTokens: 22_800_000,
+                                    outputTokens: 3_420_000,
+                                    cacheReadTokens: 56_260_000),
+                cost: 195.42, sessions: 117),
+            ModelSpendStat(
+                provider: .claude, model: "claude-opus-4-8",
+                usage: SessionUsage(inputTokens: 8_900_000,
+                                    outputTokens: 1_280_000,
+                                    cacheReadTokens: 11_130_000),
+                cost: 86.71, sessions: 42),
+            ModelSpendStat(
+                provider: .codex, model: "gpt-5.4",
+                usage: SessionUsage(inputTokens: 4_200_000,
+                                    outputTokens: 630_000,
+                                    cacheReadTokens: 9_480_000),
+                cost: 31.58, sessions: 26),
+            ModelSpendStat(
+                provider: .claude, model: "claude-sonnet-5",
+                usage: SessionUsage(inputTokens: 9_400_000,
+                                    outputTokens: 1_040_000,
+                                    cacheReadTokens: 24_340_000),
+                cost: 27.96, sessions: 89),
+        ]
+        let content = VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            RenderCaption("Spend & Routing — the production exact-model table keeps provider provenance and the real model id")
+            TopModelsByIDTable(rows: rows)
+        }
+        writePNG(content, to: path, dark: dark, width: 980)
+    }
+
+    private static func renderProviderRows(to path: String, dark: Bool) {
+        let services = AppServices()
+        services.now = now
+        let navigation = AppNavigation()
+        let snapshots = NavigationSnapshotStore()
+        let items = providerSessions()
+        let content = SessionsRenderContent(
+            items: items,
+            selectedID: "codex-parity-5601",
+            transcriptEvents: codexTranscriptEvents())
+            .frame(width: 1_180, height: 760, alignment: .topLeading)
+            .environmentObject(services)
+            .environmentObject(navigation)
+            .environmentObject(snapshots)
+        writePNG(content, to: path, dark: dark,
+                 width: 1_180 + Theme.renderInset * 2)
+    }
+
+    private static func renderQuota(to path: String, dark: Bool) {
+        let claude = QuotaSnapshot(
+            fiveHour: QuotaWindow(title: "Session (5h)", usedPercent: 71,
+                                  resetsAt: now.addingTimeInterval(74 * 60)),
+            weekly: QuotaWindow(title: "Weekly (all models)", usedPercent: 54,
+                                resetsAt: now.addingTimeInterval(3 * 86_400)),
+            scoped: [QuotaWindow(title: "Opus only", usedPercent: 38,
+                                 resetsAt: now.addingTimeInterval(3 * 86_400))],
+            fetchedAt: now)
+        let codex = QuotaSnapshot(
+            fiveHour: QuotaWindow(title: "Session (5h)", usedPercent: 83,
+                                  resetsAt: now.addingTimeInterval(42 * 60)),
+            weekly: QuotaWindow(title: "Weekly", usedPercent: 46,
+                                resetsAt: now.addingTimeInterval(4 * 86_400)),
+            scoped: [],
+            credits: QuotaCredits(hasCredits: true, unlimited: false,
+                                  balance: "$42.75"),
+            fetchedAt: now)
+        let content = VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            RenderCaption("Plan quota — the production multi-provider section; Claude reads only after consent, Codex is local-only")
+            Card {
+                QuotaSection(
+                    snapshots: [.claude: claude, .codex: codex],
+                    statuses: [.claude: "ok", .codex: "local rollout"],
+                    source: .keychain,
+                    consent: QuotaConsent(claude: true, codex: true),
+                    now: now)
+            }
+        }
+        writePNG(content, to: path, dark: dark, width: 920)
+    }
+
+    private static func renderTranscript(to path: String, dark: Bool) {
+        let content = VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            RenderCaption("Codex rollout — the production TranscriptView over events parsed by CodexRolloutTranscriptParser")
+            TranscriptView(
+                filePath: "/Users/dev/.codex/sessions/2026/07/11/rollout-parity.jsonl",
+                provider: .codex,
+                previewEvents: codexTranscriptEvents())
+                .frame(height: 460)
+                .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
+        }
+        writePNG(content, to: path, dark: dark, width: 920)
+    }
+
+    private static func renderOnboarding(to path: String, dark: Bool) {
+        let content = VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            RenderCaption("Provider-aware onboarding — every corpus-presence state through the production callout")
+            onboardingState("No corpus", providers: [])
+            onboardingState("Claude only", providers: [.claude])
+            onboardingState("Codex only", providers: [.codex])
+            onboardingState("Both providers", providers: [.claude, .codex])
+        }
+        writePNG(content, to: path, dark: dark, width: 920)
+    }
+
+    private static func onboardingState(
+        _ label: String, providers: Set<Provider>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: Theme.micro) {
+            RenderCaption(label)
+            ProviderOnboardingCallout(
+                presence: ProviderCorpusPresence(providers: providers))
+        }
+    }
+
+    private static func providerSessions() -> [SessionsRenderItem] {
+        [
+            providerSession(
+                id: "codex-parity-5601", provider: .codex,
+                project: "trifola", title: "Finish provider parity",
+                model: "gpt-5.6-sol", age: 46,
+                usage: SessionUsage(inputTokens: 1_820_000,
+                                    outputTokens: 164_000,
+                                    cacheReadTokens: 5_420_000),
+                context: 188_000, messages: 72, state: .running),
+            providerSession(
+                id: "claude-launch-42bc", provider: .claude,
+                project: "checkout-web", title: "Verify launch migration",
+                model: "claude-opus-4-8", age: 4 * 60,
+                usage: SessionUsage(inputTokens: 940_000,
+                                    outputTokens: 58_000,
+                                    cacheReadTokens: 2_480_000),
+                context: 212_000, messages: 48, state: .blocked),
+            providerSession(
+                id: "codex-docs-5a40", provider: .codex,
+                project: "docs-site", title: "Regenerate release evidence",
+                model: "gpt-5.4", age: 11 * 60,
+                usage: SessionUsage(inputTokens: 480_000,
+                                    outputTokens: 39_000,
+                                    cacheReadTokens: 1_220_000),
+                context: 96_000, messages: 31, state: .waiting),
+            providerSession(
+                id: "claude-api-180d", provider: .claude,
+                project: "api-gateway", title: "Harden webhook retries",
+                model: "claude-sonnet-5", age: 48 * 60,
+                usage: SessionUsage(inputTokens: 320_000,
+                                    outputTokens: 28_000,
+                                    cacheReadTokens: 840_000),
+                context: 68_000, messages: 24, state: .idle),
+        ]
+    }
+
+    private static func providerSession(
+        id: String, provider: Provider, project: String, title: String,
+        model: String, age: TimeInterval, usage: SessionUsage,
+        context: Int, messages: Int, state: AttentionState
+    ) -> SessionsRenderItem {
+        SessionsRenderItem(
+            session: SessionSummary(
+                id: id,
+                provider: provider,
+                project: project,
+                cwd: "/Users/dev/Developer/\(project)",
+                model: model,
+                lastActivity: now.addingTimeInterval(-age),
+                messageCount: messages,
+                usage: usage,
+                contextWeight: context,
+                filePath: provider == .codex
+                    ? "/Users/dev/.codex/sessions/2026/07/11/rollout-\(id).jsonl"
+                    : "/Users/dev/.claude/projects/\(project)/\(id).jsonl",
+                lastUserMessage: "Complete \(title.lowercased())",
+                name: title,
+                fileEdits: state == .running ? 9 : 2),
+            state: state)
+    }
+
+    /// Parse fixture JSONL through the same production Codex adapter used by a
+    /// live TranscriptStore. The still therefore proves session metadata,
+    /// per-turn model context, user/agent narration, command/output summaries,
+    /// and token-count projection without touching a user's rollout files.
+    private static func codexTranscriptEvents() -> [TranscriptEvent] {
+        let lines = [
+            #"{"timestamp":"2026-07-11T09:10:00Z","type":"session_meta","payload":{"id":"meta-1","model_provider":"openai","cli_version":"0.104.0","history_mode":"full","cwd":"/Users/dev/Developer/trifola"}}"#,
+            #"{"timestamp":"2026-07-11T09:10:01Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-5.6-sol","effort":"high"}}"#,
+            #"{"timestamp":"2026-07-11T09:10:02Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"user-1","type":"user_message","message":"Finish provider parity and run the release gates."}}}"#,
+            #"{"timestamp":"2026-07-11T09:10:05Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"agent-1","type":"agent_message","message":"I wired Codex into every production surface and am verifying the evidence."}}}"#,
+            #"{"timestamp":"2026-07-11T09:10:07Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"call-1","type":"function_call","name":"exec_command","arguments":{"cmd":"swift test"}}}}"#,
+            #"{"timestamp":"2026-07-11T09:10:18Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"result-1","type":"function_call_output","output":"All tests passed.","is_error":false}}}"#,
+            #"{"timestamp":"2026-07-11T09:10:19Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"tokens-1","type":"token_count","info":{"last_token_usage":{"input_tokens":18200,"cached_input_tokens":9400,"output_tokens":1640,"reasoning_output_tokens":520}}}}}"#,
+            #"{"timestamp":"2026-07-11T09:10:20Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"done-1","type":"task_complete","duration_ms":18000}}}"#,
+        ]
+        return lines.enumerated().flatMap { index, line in
+            CodexRolloutTranscriptParser.events(
+                fromLine: Data(line.utf8), fallbackID: "parity-\(index)")
+        }
+    }
+}
+
 // MARK: - Sessions browser headless render (`--render-sessions`)
 
 /// The redesigned production browser over deterministic rows. State is seeded
@@ -1187,8 +1594,18 @@ enum SessionsRender {
         ]
     }
 
-    private static func transcriptEvents() -> [TranscriptEvent] {
-        [
+    fileprivate static func transcriptEvents() -> [TranscriptEvent] {
+        let receipt = #"""
+        {
+          "migration": {
+            "environment": "production",
+            "command": "bun run db:migrate --production",
+            "approval": "required",
+            "checks": ["backup-ready", "plan-reviewed"]
+          }
+        }
+        """#
+        return [
             TranscriptEvent(id: "event-1", timestamp: now.addingTimeInterval(-92),
                             kind: .userPrompt("Run the production migration after approval")),
             TranscriptEvent(id: "event-2", timestamp: now.addingTimeInterval(-78),
@@ -1196,7 +1613,7 @@ enum SessionsRender {
             TranscriptEvent(id: "event-3", timestamp: now.addingTimeInterval(-61),
                             kind: .toolUse(name: "Bash", detail: "bun run db:migrate --production")),
             TranscriptEvent(id: "event-4", timestamp: now.addingTimeInterval(-58),
-                            kind: .toolResult(preview: "Permission required before executing the production migration.",
+                            kind: .toolResult(preview: receipt,
                                               isError: false)),
             TranscriptEvent(id: "event-5", timestamp: now.addingTimeInterval(-47),
                             kind: .assistantText("The migration is ready. Approve the command when you want me to continue.")),
@@ -1279,7 +1696,7 @@ enum LayoutRender {
                        lastUserMessage: title)
     }
 
-    private struct WindowSnapshot: View {
+    fileprivate struct WindowSnapshot: View {
         let viewportWidth: CGFloat
         let now: Date
 
@@ -1395,6 +1812,247 @@ enum LayoutRender {
         }
         try? png.write(to: URL(fileURLWithPath: path))
         print("RENDER: \(path)")
+    }
+}
+
+// MARK: - Fullscreen strengthening matrix (`--render-strengthen`)
+
+/// Six real product surfaces at the three launch-review widths, in both
+/// appearances. The matrix is a viewport test rather than a poster generator:
+/// every image includes the production rail, production screen chrome, and a
+/// deterministic synthetic fixture. At @2x backing scale the filenames retain
+/// logical window widths, matching the existing layout render convention.
+@MainActor
+enum StrengthenRender {
+    private static let now = Date(timeIntervalSince1970: 1_752_000_000)
+
+    private struct MatrixWindow<Content: View>: View {
+        let selected: AppSection
+        let width: CGFloat
+        @ViewBuilder let content: () -> Content
+
+        private var sidebar: SidebarSnapshot {
+            SidebarSnapshot(
+                selected: selected,
+                worstState: .blocked,
+                liveCount: 7,
+                pendingLessonCount: 4,
+                todayCost: 659.43,
+                monthProjection: 9_420,
+                updatedText: "updated now",
+                refreshText: nil,
+                account: "local account",
+                machine: "this Mac",
+                animatesSelection: false)
+        }
+
+        var body: some View {
+            HStack(spacing: 0) {
+                SidebarRail(snapshot: sidebar)
+                    .frame(width: Theme.Layout.sidebarWidth)
+                    .background(Theme.surfaceSidebar)
+                Divider()
+                content()
+                    .frame(width: width - Theme.Layout.sidebarWidth - 1,
+                           height: CGFloat(StrengthenRenderMatrix.viewportHeight),
+                           alignment: .top)
+                    .background(Theme.surfaceWindow)
+            }
+            .frame(width: width,
+                   height: CGFloat(StrengthenRenderMatrix.viewportHeight))
+            .background(Theme.surfaceWindow)
+        }
+    }
+
+    static func run(directory: String) {
+        do {
+            try FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: directory, isDirectory: true),
+                withIntermediateDirectories: true)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "trifola: could not create strengthen render directory: \(error)\n".utf8))
+            return
+        }
+
+        for entry in StrengthenRenderMatrix.entries(directory: directory) {
+            render(entry)
+        }
+        renderSpotchecks(directory: directory)
+    }
+
+    private static func render(
+        _ entry: StrengthenRenderEntry,
+        selectedSessionID: String = "sess-checkout-8f21"
+    ) {
+        let width = CGFloat(entry.width)
+        let dark = entry.theme == .dark
+        let view: AnyView
+
+        switch entry.surface {
+        case .layout:
+            view = AnyView(LayoutRender.WindowSnapshot(viewportWidth: width, now: now))
+
+        case .sessions:
+            let services = AppServices()
+            services.now = SessionsRender.now
+            let snapshots = NavigationSnapshotStore()
+            let content = SessionsRenderContent(
+                items: SessionsRender.seededItems(),
+                selectedID: selectedSessionID,
+                transcriptEvents: SessionsRender.transcriptEvents())
+                .environmentObject(services)
+                .environmentObject(services.navigation)
+                .environmentObject(snapshots)
+            view = AnyView(MatrixWindow(selected: .sessions, width: width) { content })
+
+        case .fleet:
+            let seeded = FleetRender.seeded(now: now)
+            // ImageRenderer cannot realize an unbounded ScrollView. The matrix
+            // is a fixed viewport, so compose the production floor eagerly and
+            // let MatrixWindow clip at the requested 900pt height.
+            let content = FleetFloor(board: seeded.board,
+                                     attention: seeded.attention,
+                                     signals: seeded.signals)
+                .screenScaffoldFrame()
+            view = AnyView(MatrixWindow(selected: .fleet, width: width) { content })
+
+        case .audit:
+            let content = ScreenScaffold(
+                title: "Audit",
+                subtitle: "Ranked cost causes from recorded usage · public API-rate estimates, never your bill",
+                epithet: "evidence, not nags",
+                scrolls: false) {
+                    AuditContent(report: AuditRender.seededReport(),
+                                 onInspect: { _ in }, onReveal: { _ in })
+                }
+            view = AnyView(MatrixWindow(selected: .audit, width: width) { content })
+
+        case .ledger:
+            let seeded = LedgerRender.seeded(now: now)
+            let content = ScreenScaffold(
+                title: "Dreaming Ledger",
+                subtitle: "Deterministic proposals from audit evidence · copy only, never writes your configuration",
+                epithet: "findings become fixes",
+                scrolls: false,
+                trailing: { DreamNowButton() }) {
+                    LedgerContent(
+                        dream: seeded.dream,
+                        pending: seeded.pending,
+                        history: seeded.history,
+                        showHistory: .constant(true),
+                        onCopy: { _ in }, onReveal: { _ in },
+                        onInspect: { _ in }, onKeep: { _ in },
+                        onDismiss: { _ in })
+                }
+            view = AnyView(MatrixWindow(selected: .ledger, width: width) { content })
+
+        case .spend:
+            let sessions = spendSessions()
+            let corpus = CorpusProjection(sessions: sessions, now: now)
+            let services = AppServices()
+            services.now = now
+            let snapshots = NavigationSnapshotStore(initialCorpus: corpus)
+            let content = SpendScreen(scrolls: false)
+                .environmentObject(services)
+                .environmentObject(snapshots)
+            view = AnyView(MatrixWindow(selected: .spend, width: width) { content })
+        }
+
+        writeViewport(view, to: entry.outputPath, dark: dark,
+                      width: width,
+                      height: CGFloat(StrengthenRenderMatrix.viewportHeight))
+    }
+
+    /// Supplemental acceptance evidence for the window-policy requirements that
+    /// sit outside the hard 36-cell comparison matrix: minimum/default sizing,
+    /// both compact Sessions panes, and a roughly 3360pt fullscreen canvas.
+    private static func renderSpotchecks(directory: String) {
+        let root = URL(fileURLWithPath: directory, isDirectory: true)
+            .appendingPathComponent("spotchecks", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root,
+                                                 withIntermediateDirectories: true)
+
+        for theme in StrengthenRenderTheme.allCases {
+            let suffix = theme.rawValue
+            let entries: [(StrengthenRenderSurface, Int, String, String?)] = [
+                (.sessions, 1_120, "sessions-min-list-1120-\(suffix).png", "missing-selection"),
+                (.sessions, 1_120, "sessions-min-detail-1120-\(suffix).png", "sess-checkout-8f21"),
+                (.layout, 1_440, "layout-default-1440-\(suffix).png", nil),
+                (.layout, 3_360, "layout-fullscreen-3360-\(suffix).png", nil),
+                (.sessions, 3_360, "sessions-fullscreen-3360-\(suffix).png", "sess-checkout-8f21"),
+            ]
+            for (surface, width, filename, selection) in entries {
+                let entry = StrengthenRenderEntry(
+                    surface: surface,
+                    width: width,
+                    theme: theme,
+                    outputPath: root.appendingPathComponent(filename).path)
+                render(entry, selectedSessionID: selection ?? "sess-checkout-8f21")
+            }
+        }
+    }
+
+    private static func spendSessions() -> [SessionSummary] {
+        let projects = ["checkout-web", "mobile-app", "api-gateway", "billing-worker",
+                        "docs-site", "search-service"]
+        let tiers: [ModelTier] = [.opus, .sonnet, .user, .opus, .haiku, .sonnet]
+        return (0..<24).map { index in
+            let project = projects[index % projects.count]
+            let tier = tiers[index % tiers.count]
+            let inputTokens = 120_000 + index * 17_000
+            let outputTokens = 18_000 + index * 1_900
+            let cacheReadTokens = 280_000 + index * 31_000
+            let cacheCreateTokens = 14_000 + index * 900
+            let usage = SessionUsage(
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                cacheCreateTokens: cacheCreateTokens,
+                cacheReadTokens: cacheReadTokens)
+            return SessionSummary(
+                id: "spend-\(index)", project: project,
+                cwd: "/tmp/trifola-render/\(project)", model: tier.rawValue,
+                lastActivity: now.addingTimeInterval(-Double(index) * 3_600),
+                messageCount: 18 + index, usage: usage,
+                contextWeight: 72_000 + index * 5_000,
+                filePath: "/tmp/trifola-render/spend-\(index).jsonl",
+                lastUserMessage: "Synthetic render fixture for \(project)")
+        }
+    }
+
+    private static func writeViewport<V: View>(
+        _ content: V,
+        to path: String,
+        dark: Bool,
+        width: CGFloat,
+        height: CGFloat
+    ) {
+        let framed = content
+            .frame(width: width, height: height)
+            .clipped()
+            .environment(\.colorScheme, dark ? .dark : .light)
+            .environment(\.displayScale, 2)
+            .environment(\.doorLightReduceMotionOverride, true)
+        let renderer = ImageRenderer(content: framed)
+        renderer.scale = 2
+        var rendered: NSImage?
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+        appearance.performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
+        guard let image = rendered,
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            FileHandle.standardError.write(Data(
+                "strengthen render failed: \(path)\n".utf8))
+            return
+        }
+        do {
+            try png.write(to: URL(fileURLWithPath: path), options: .atomic)
+            print("RENDER: \(path)")
+        } catch {
+            FileHandle.standardError.write(Data(
+                "strengthen render write failed: \(path): \(error)\n".utf8))
+        }
     }
 }
 

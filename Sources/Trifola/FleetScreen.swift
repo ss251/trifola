@@ -106,14 +106,34 @@ final class HeartbeatDriver: ObservableObject {
 
 struct FleetScreen: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
+    @EnvironmentObject var navigation: AppNavigation
     @StateObject private var heartbeat = HeartbeatDriver()
 
     var body: some View {
-        let board = Perf.span("main:nav.fleetBoard") {
-            services.fleetBoard(now: services.now)
-        }
-        let watches = makeWatches(board: board)
         Group {
+            if let snapshot = navigationSnapshots.fleet {
+                fleetContent(snapshot)
+            } else {
+                ScreenScaffold(
+                    title: "Fleet Board",
+                    subtitle: "Preparing the current floor without blocking navigation") {
+                    HStack(spacing: Theme.rhythm) {
+                        ProgressView().controlSize(.small)
+                        Text("Building fleet seats…")
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 460)
+                }
+            }
+        }
+    }
+
+    private func fleetContent(_ snapshot: FleetProjectionSnapshot) -> some View {
+        let board = snapshot.board
+        let watches = makeWatches(board: board)
+        return Group {
             if board.bays.isEmpty {
                 ScreenScaffold(
                     title: "Fleet Board",
@@ -130,10 +150,11 @@ struct FleetScreen: View {
                 ScrollView {
                     FleetFloor(
                         board: board,
-                        attention: services.attentionBoard(now: services.now),
+                        attention: snapshot.attention,
                         signals: services.attention.signals,
                         pulses: heartbeat.pulses,
-                        suppression: services.attentionSuppression(now: services.now),
+                        suppression: services.agency.result(
+                            for: snapshot.attention, now: services.now),
                         acknowledgement: services.agency.recoveryState.activeAcknowledgement(at: services.now),
                         suppressionState: services.agency.suppressionState,
                         defaultSnoozeMinutes: services.preferences.value.defaultSnoozeDurationMinutes,
@@ -149,7 +170,16 @@ struct FleetScreen: View {
         }
         .reorderMotion(value: board.bays.isEmpty)
         .onChange(of: watches) { _, w in heartbeat.sync(w) }
-        .onAppear { heartbeat.sync(watches) }
+        .onAppear {
+            if navigation.section == .fleet { heartbeat.sync(watches) }
+        }
+        .onChange(of: navigation.section) { _, section in
+            if section == .fleet {
+                heartbeat.sync(watches)
+            } else {
+                heartbeat.stopAll()
+            }
+        }
         .onDisappear { heartbeat.stopAll() }
     }
 
@@ -196,13 +226,12 @@ struct FleetFloor: View {
             }
             .padding(.vertical, Theme.sectionGap)
             .launchReveal(.content)
-            .sectionRevealBlock(index: 0)
             Divider()
 
             VStack(alignment: .leading, spacing: 0) {
                 FleetColumnHeader()
                 Rectangle().fill(Theme.hairline).frame(height: Theme.hairlineWidth)
-                VStack(alignment: .leading, spacing: Theme.sectionGap) {
+                LazyVStack(alignment: .leading, spacing: Theme.sectionGap) {
                     ForEach(Array(board.bays.enumerated()), id: \.element.id) { bayIndex, bay in
                         FleetBayView(bay: bay,
                                      revealIndex: bayIndex,
@@ -225,7 +254,6 @@ struct FleetFloor: View {
             .reorderMotion(
                 value: board.bays.flatMap { [$0.id] + $0.allTokens.map(\.id) })
             .launchReveal(.content)
-            .sectionRevealBlock(index: 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -241,7 +269,7 @@ struct FleetFloor: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .top, spacing: Theme.gutter) {
             VStack(alignment: .leading, spacing: Theme.micro) {
                 Text("Fleet Board")
                     .font(Theme.Typography.screenTitle)
@@ -250,11 +278,11 @@ struct FleetFloor: View {
                 Text(subtitle)
                     .font(Theme.Typography.body)
                     .foregroundStyle(Theme.muted)
+                    .frame(maxWidth: ScreenScaffoldMetrics.proseMaxWidth,
+                           alignment: .leading)
             }
             Spacer()
-            // No per-state legend here — the strip below already carries one; a
-            // second (subagent-inclusive) count adjacent to it reads as a
-            // contradiction rather than a census. The subtitle holds the totals.
+            FleetCostMeter(board: board)
         }
         .frame(minHeight: ScreenScaffoldMetrics.headerHeight, alignment: .top)
     }
@@ -276,6 +304,49 @@ struct FleetFloor: View {
     }
 }
 
+/// A literal, denominator-visible cost meter for the floor. It reports
+/// concentration within the API-rate estimate rather than implying a budget or
+/// invoice: the largest bay is divided by the visible floor total.
+private struct FleetCostMeter: View {
+    let board: FleetBoard
+
+    private var largestBay: FleetBay? {
+        board.bays.max { $0.costSubtotal < $1.costSubtotal }
+    }
+
+    private var fraction: Double {
+        guard board.totalCost > 0, let largestBay else { return 0 }
+        return largestBay.costSubtotal / board.totalCost
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.micro) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.intraCell) {
+                Eyebrow("Largest bay share")
+                Spacer(minLength: 0)
+                Text(fmtUSD(board.totalCost))
+                    .font(Theme.Typography.bodyMedium)
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.ink)
+            }
+            CapsuleBar(fraction: fraction,
+                       tint: board.blockedCount > 0 ? Theme.amber : Theme.graphite)
+            Text(largestBay.map {
+                "\($0.project) · \(fmtPct(fraction)) of visible API-rate estimate"
+            } ?? "No recorded cost on the floor")
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.faint)
+                .lineLimit(1)
+        }
+        .frame(width: 230)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Largest bay cost share")
+        .accessibilityValue(largestBay.map {
+            "\($0.project), \(fmtPct(fraction)) of \(fmtUSD(board.totalCost)) API-rate estimate"
+        } ?? "No recorded cost")
+    }
+}
+
 /// One table grammar for every bay. The project headers group stable seats; these
 /// columns make the changing facts scan vertically without moving the seats.
 private struct FleetColumnHeader: View {
@@ -283,7 +354,7 @@ private struct FleetColumnHeader: View {
         HStack(spacing: Theme.intraCell) {
             Color.clear.frame(width: Theme.subValueColWidth)
             Eyebrow("Model")
-                .frame(width: Theme.subValueColWidth, alignment: .leading)
+                .frame(width: Theme.valueColWidth, alignment: .leading)
             Eyebrow("Session")
                 .frame(width: Theme.rankBarWidth * 2,
                        alignment: .leading)
@@ -479,10 +550,14 @@ private struct FleetTokenView: View {
                 .padding(.leading, CGFloat(max(0, depth - 1)) * Theme.intraCell)
                 .frame(width: Theme.subValueColWidth, alignment: .leading)
 
-                Text(token.tier.label)
-                    .font(Theme.Typography.metadata)
-                    .foregroundStyle(Theme.muted)
-                    .frame(width: Theme.subValueColWidth, alignment: .leading)
+                HStack(spacing: Theme.micro) {
+                    ProviderBadge(provider: token.session.provider, compact: true)
+                    Text(token.tier.label)
+                        .font(Theme.Typography.metadata)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                }
+                .frame(width: Theme.valueColWidth, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: Theme.micro / 2) {
                     Text(token.session.displayTitle)

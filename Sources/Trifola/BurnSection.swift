@@ -113,6 +113,7 @@ struct BurnSparkline: View {
     let days: [DailyBurn]
     var height: CGFloat = Theme.Layout.chartHeight
     @State private var hoveredIndex: Int? = nil
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var peak: Double { max(days.map(\.cost).max() ?? 0, 0.0001) }
 
@@ -166,7 +167,6 @@ struct BurnSparkline: View {
             }
         }
         .frame(height: height)
-        .animation(Theme.Motion.quick, value: hoveredIndex)
     }
 
     private func chartGrid(axisWidth: CGFloat) -> some View {
@@ -210,8 +210,14 @@ struct BurnSparkline: View {
         .foregroundStyle(Theme.ink)
         .padding(.horizontal, Theme.intraCell)
         .padding(.vertical, Theme.micro)
-        .background(.regularMaterial,
-                    in: RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous))
+        .background {
+            let shape = RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+            if reduceTransparency {
+                shape.fill(Theme.cardFill)
+            } else {
+                shape.fill(.regularMaterial)
+            }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
                 .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
@@ -258,6 +264,20 @@ struct BurnSparkline: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .bottom)
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(day.day.formatted(
+                .dateTime.month(.wide).day().year()))
+            .accessibilityValue(accessibilityValue)
+        }
+
+        private var accessibilityValue: String {
+            let sessionLabel = day.sessions == 1 ? "session" : "sessions"
+            let tiers = day.tierSlices
+                .map { "\($0.tier.label) \(fmtUSD($0.cost))" }
+                .joined(separator: ", ")
+            return "\(fmtUSD(day.cost)) API-rate estimate, \(day.sessions) \(sessionLabel)"
+                + (tiers.isEmpty ? "" : ", \(tiers)")
+                + (isToday ? ", today" : "")
         }
     }
 }

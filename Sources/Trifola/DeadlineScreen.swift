@@ -317,25 +317,31 @@ final class DeadlineStore: ObservableObject {
 
 struct DeadlineScreen: View {
     @EnvironmentObject var services: AppServices
-
-    /// projectKey → the tier of the project's most recent interactive session —
-    /// the door light's tier ring (UI_GRIND §2.1). A UI-side JOIN; the deadline
-    /// data layer stays tier-free.
-    private func makeTiers() -> [String: ModelTier] {
-        var best: [String: (Date, ModelTier)] = [:]
-        for s in services.sessions.sessions where !s.isSubagent {
-            guard let d = s.lastActivity else { continue }
-            if best[s.project] == nil || d > best[s.project]!.0 { best[s.project] = (d, s.tier) }
-        }
-        return best.mapValues(\.1)
-    }
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
 
     var body: some View {
-        let cards = Perf.span("main:nav.deadlineCards") {
-            services.deadlineCards(now: services.now)
+        Group {
+            if let snapshot = navigationSnapshots.deadlines {
+                deadlineContent(snapshot)
+            } else {
+                ScreenScaffold(
+                    title: "Deadlines",
+                    subtitle: "Preparing deadline joins without blocking navigation") {
+                    HStack(spacing: Theme.rhythm) {
+                        ProgressView().controlSize(.small)
+                        Text("Building deadline board…")
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 420)
+                }
+            }
         }
-        let tiers = Perf.span("main:nav.deadlineTiers") { makeTiers() }
-        ScreenScaffold(title: "Deadlines",
+    }
+
+    private func deadlineContent(_ snapshot: DeadlineProjectionSnapshot) -> some View {
+        let cards = snapshot.cards
+        return ScreenScaffold(title: "Deadlines",
                        subtitle: subtitle(cards: cards),
                        epithet: "time × inactivity",
                        trailing: { syncButton(cards: cards) }) {
@@ -347,9 +353,12 @@ struct DeadlineScreen: View {
             } else {
                 Group {
                     DeadlineContent(cards: cards, config: DeadlineConfig(),
-                                    tiers: tiers,
+                                    tiers: snapshot.tiers,
                                     onSelect: { open($0) },
-                                    onConfirm: { services.deadlines.confirm($0.projectKey) },
+                                    onConfirm: {
+                                        services.deadlines.confirm($0.projectKey)
+                                        services.refreshNavigationSnapshots()
+                                    },
                                     onReveal: { reveal($0) })
                     DeadlineConnectPanel(
                         connection: services.deadlines.connection,

@@ -1304,6 +1304,30 @@ public final class LedgerStore: ObservableObject {
         return minted
     }
 
+    /// Refresh-path variant: deterministic mining and app-owned state I/O run
+    /// away from the main actor; only compare-and-publish returns here. This is
+    /// the path automatic scans use so navigation can never inherit a ledger
+    /// remint stretch.
+    @discardableResult
+    public func remintOffMain(
+        report: AuditReport,
+        catalog: [Skill],
+        settings: ClaudeSettings,
+        sessions: [SessionSummary] = [],
+        now: Date = Date()
+    ) async -> [Lesson] {
+        let repository = repo
+        let result = await Task.detached(priority: .utility) {
+            let minted = LessonMiner.mint(
+                report: report, catalog: catalog, settings: settings,
+                sessions: sessions, now: now)
+            return (minted, repository.loadStates())
+        }.value
+        if lessons != result.0 { lessons = result.0 }
+        if states != result.1 { states = result.1 }
+        return result.0
+    }
+
     /// Run the deterministic pass and RECORD it (dreams.jsonl + the header dream
     /// line). This is "Dream now" and the on-launch recompute — one path, so the
     /// button and the automatic pass produce identical artifacts. Honest trigger:
@@ -1321,6 +1345,37 @@ public final class LedgerStore: ObservableObject {
                                  durationMs: Int(Date().timeIntervalSince(t0) * 1000))
         repo.recordDream(result)
         lastDream = result
+    }
+
+    /// Recorded automatic pass with the same semantics as `dream`, but with
+    /// mining plus dreams/state persistence detached from UI work.
+    public func dreamOffMain(
+        report: AuditReport,
+        catalog: [Skill],
+        settings: ClaudeSettings,
+        sessions: [SessionSummary] = [],
+        sessionsScanned: Int,
+        trigger: DreamTrigger,
+        now: Date = Date()
+    ) async {
+        let repository = repo
+        let output = await Task.detached(priority: .utility) {
+            let started = Date()
+            let minted = LessonMiner.mint(
+                report: report, catalog: catalog, settings: settings,
+                sessions: sessions, now: now)
+            let result = DreamResult(
+                ranAt: now,
+                trigger: trigger,
+                sessionsScanned: sessionsScanned,
+                lessonsMinted: minted.count,
+                durationMs: Int(Date().timeIntervalSince(started) * 1_000))
+            repository.recordDream(result)
+            return (minted, repository.loadStates(), result)
+        }.value
+        if lessons != output.0 { lessons = output.0 }
+        if states != output.1 { states = output.1 }
+        lastDream = output.2
     }
 
     public func dismiss(_ lesson: Lesson) {

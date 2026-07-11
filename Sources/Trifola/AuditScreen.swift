@@ -67,7 +67,11 @@ struct AuditContent: View {
     var mismatchReceipt: ((MismatchCandidate) -> CostReceipt?)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.blockGap) {
+        // This content sits inside ScreenScaffold's ScrollView in production.
+        // Keep evidence below the viewport out of the navigation transaction;
+        // outside a scroll container (the render harness) LazyVStack still
+        // realizes the complete bounded composition.
+        LazyVStack(alignment: .leading, spacing: Theme.blockGap) {
             AuditHeadline(report: report)
             Divider()
             CacheMissSection(findings: report.cacheMiss,
@@ -130,6 +134,8 @@ private struct AuditSectionHeader: View {
                 .font(Theme.Typography.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: ScreenScaffoldMetrics.proseMaxWidth,
+                       alignment: .leading)
             MutedDisclosureRow(label: showsMethod ? "Hide calculation" : "How this is calculated",
                                isExpanded: showsMethod) {
                 showsMethod.toggle()
@@ -226,10 +232,19 @@ private struct SkillLedgerSection: View {
                     .appendingPathComponent(".claude/skills", isDirectory: true).path)
             }
 
-            HStack(alignment: .top, spacing: Theme.gutter) {
-                firedColumn.frame(maxWidth: .infinity, alignment: .leading)
-                Divider()
-                deadColumn.frame(maxWidth: .infinity, alignment: .leading)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: Theme.gutter) {
+                    firedColumn
+                        .frame(minWidth: 380, maxWidth: .infinity, alignment: .leading)
+                    Divider()
+                    deadColumn
+                        .frame(minWidth: 380, maxWidth: .infinity, alignment: .leading)
+                }
+                VStack(alignment: .leading, spacing: Theme.sectionGap) {
+                    firedColumn
+                    Divider()
+                    deadColumn
+                }
             }
         }
     }
@@ -315,16 +330,11 @@ private struct SkillLedgerSection: View {
 
     private func artifactPath(for entry: SkillLedgerEntry) -> String {
         if let path = artifactPaths[entry.name] { return path }
-        let base = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/skills", isDirectory: true)
-        let directorySkill = base.appendingPathComponent(entry.name, isDirectory: true)
-            .appendingPathComponent("SKILL.md")
-        if FileManager.default.fileExists(atPath: directorySkill.path) {
-            return directorySkill.path
-        }
-        let fileSkill = base.appendingPathComponent(entry.name).appendingPathExtension("md")
-        if FileManager.default.fileExists(atPath: fileSkill.path) { return fileSkill.path }
-        return base.path
+        // Catalog paths are supplied by the already-refreshed SkillsStore. Do
+        // not probe the filesystem while rows are mounting; an invocation no
+        // longer present in the catalog falls back to the catalog directory.
+        return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent(".claude/skills", isDirectory: true).path
     }
 }
 

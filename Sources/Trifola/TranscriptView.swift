@@ -10,7 +10,9 @@ import TrifolaKit
 /// monospaced type. Colors stay monochrome except error red.
 struct TranscriptView: View {
     let filePath: String
+    var provider: Provider = .claude
     var tailBytes: UInt64 = 2_000_000
+    var isPaused = false
     /// Deterministic events for headless visual verification. Production leaves
     /// this nil and keeps the exact tailing behavior below.
     var previewEvents: [TranscriptEvent]? = nil
@@ -48,10 +50,19 @@ struct TranscriptView: View {
                 .strokeBorder(Theme.cardStroke, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
-        .task(id: filePath) {
+        .task(id: provider.rawValue + "\u{1}" + filePath + "\u{1}" + String(isPaused)) {
             guard previewEvents == nil else { return }
+            guard !isPaused else {
+                store.close()
+                return
+            }
+            // Opening/tailing is progressive live content. Give the inspector's
+            // ready chrome one committed draw before a fast 2 MB tail publishes
+            // up to 2,500 rows and triggers a second scroll layout.
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
             pinnedToLive = true
-            store.open(path: filePath, tailBytes: tailBytes)
+            store.open(path: filePath, provider: provider, tailBytes: tailBytes)
         }
         .onDisappear {
             if previewEvents == nil { store.close() }
@@ -61,11 +72,13 @@ struct TranscriptView: View {
     private var header: some View {
         HStack(spacing: 6) {
             if previewEvents != nil {
-                Text("Tailing").font(.caption).foregroundStyle(Theme.green)
+                Text(provider == .codex ? "Codex rollout" : "Tailing")
+                    .font(.caption).foregroundStyle(Theme.green)
             } else {
                 switch store.state {
                 case .live:
-                    Text("Tailing").font(.caption).foregroundStyle(Theme.green)
+                    Text(provider == .codex ? "Codex rollout" : "Tailing")
+                        .font(.caption).foregroundStyle(Theme.green)
                 case .idle:
                     Text("Opening").font(.caption).foregroundStyle(Theme.muted)
                 case .error(let why):
@@ -97,7 +110,7 @@ struct TranscriptView: View {
             // out eagerly, while the live file-tail path below remains unchanged.
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(events) { event in
-                    TranscriptRow(event: event)
+                    TranscriptRow(event: event, provider: provider)
                         .transcriptLineTransition()
                 }
                 Spacer(minLength: 0)
@@ -114,7 +127,7 @@ struct TranscriptView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(events) { event in
-                        TranscriptRow(event: event)
+                        TranscriptRow(event: event, provider: provider)
                             .transcriptLineTransition()
                     }
                     Color.clear.frame(height: 1).id("live-bottom")
@@ -167,6 +180,7 @@ struct TranscriptView: View {
 
 private struct TranscriptRow: View {
     let event: TranscriptEvent
+    let provider: Provider
 
     private static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
@@ -198,7 +212,7 @@ private struct TranscriptRow: View {
     private var roleTag: String {
         switch event.kind {
         case .userPrompt: return "USER"
-        case .assistantText: return "CLAUDE"
+        case .assistantText: return provider == .codex ? "CODEX" : "CLAUDE"
         case .thinking: return "THINK"
         case .toolUse: return "TOOL"
         case .toolResult(_, let isError): return isError ? "ERR" : "RESULT"
@@ -229,11 +243,7 @@ private struct TranscriptRow: View {
                 .lineLimit(6)
                 .textSelection(.enabled)
         case .assistantText(let text):
-            Text(text)
-                .font(.footnote)
-                .foregroundStyle(Theme.ink)
-                .lineLimit(8)
-                .textSelection(.enabled)
+            transcriptText(text, plainFont: .footnote, color: Theme.ink, lineLimit: 8)
         case .thinking(let text):
             Text(text)
                 .font(.footnote)
@@ -247,10 +257,7 @@ private struct TranscriptRow: View {
                 .lineLimit(3)
                 .textSelection(.enabled)
         case .toolResult(let preview, let isError):
-            Text(preview)
-                .font(.caption)
-                .foregroundStyle(Theme.muted)
-                .lineLimit(4)
+            transcriptText(preview, plainFont: .caption, color: Theme.muted, lineLimit: 4)
                 .padding(.leading, Theme.intraCell)
                 .overlay(alignment: .leading) {
                     Rectangle()
@@ -258,16 +265,137 @@ private struct TranscriptRow: View {
                         .frame(width: 2)
                 }
         case .system(_, let text):
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(Theme.faint)
-                .lineLimit(2)
+            transcriptText(
+                text,
+                plainFont: .caption,
+                color: Theme.faint,
+                structuredColor: Theme.muted,
+                lineLimit: 2)
         case .summary(let text):
             Text(text)
                 .font(.footnote)
                 .italic()
                 .foregroundStyle(Theme.muted)
                 .lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private func transcriptText(
+        _ text: String,
+        plainFont: Font,
+        color: Color,
+        structuredColor: Color? = nil,
+        lineLimit: Int
+    ) -> some View {
+        switch event.textPresentation {
+        case .plain:
+            Text(text)
+                .font(plainFont)
+                .foregroundStyle(color)
+                .lineLimit(lineLimit)
+                .textSelection(.enabled)
+        case .structured(let presentation):
+            StructuredTranscriptBlock(
+                rawText: text,
+                presentation: presentation,
+                contentColor: structuredColor ?? color)
+        }
+    }
+}
+
+/// Renders precomputed whole lines. Markup-only lines recede, indentation guides
+/// preserve nested structure, and Raw remains one click away without reparsing.
+private struct StructuredTranscriptBlock: View {
+    let rawText: String
+    let presentation: StructuredTranscriptPresentation
+    let contentColor: Color
+
+    @State private var showsRaw = false
+
+    private static let guideStep: CGFloat = 11
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.micro) {
+            HStack(spacing: Theme.rhythm) {
+                Text(presentation.format.label)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.muted)
+                if presentation.didTruncate && !showsRaw {
+                    Text("bounded preview")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.faint)
+                }
+                Spacer(minLength: Theme.rhythm)
+                TapButton(focusVisual: .capsule, pressFeedback: false, action: {
+                    showsRaw.toggle()
+                }) {
+                    Text(showsRaw ? "Readable" : "Raw")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.muted)
+                        .padding(.horizontal, Theme.rhythm)
+                        .padding(.vertical, Theme.micro)
+                        .background {
+                            Capsule().fill(Theme.hoverFill)
+                        }
+                }
+                .accessibilityLabel(showsRaw ? "Show readable text" : "Show raw text")
+            }
+
+            if showsRaw {
+                Text(rawText)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(contentColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(presentation.lines) { line in
+                        readableLine(line)
+                    }
+                }
+            }
+        }
+        .padding(Theme.rhythm)
+        .frame(maxWidth: Theme.Layout.transcriptMeasure, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                .fill(Theme.codeFill)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
+        }
+    }
+
+    private func readableLine(_ line: StructuredTranscriptPresentation.Line) -> some View {
+        Text(line.text.isEmpty ? " " : line.text)
+            .font(.system(
+                size: 10.5,
+                weight: line.role == .addition ? .medium : .regular,
+                design: .monospaced))
+            .foregroundStyle(lineColor(line.role))
+            .lineLimit(4)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, CGFloat(line.depth) * Self.guideStep)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .leading) {
+                HStack(spacing: Self.guideStep - 1) {
+                    ForEach(0..<line.depth, id: \.self) { _ in
+                        Rectangle()
+                            .fill(Theme.hairline)
+                            .frame(width: 1)
+                    }
+                }
+            }
+            .textSelection(.enabled)
+    }
+
+    private func lineColor(_ role: StructuredTranscriptPresentation.Line.Role) -> Color {
+        switch role {
+        case .markup: return Theme.faint
+        case .content, .addition: return contentColor
+        case .removal: return Theme.muted
         }
     }
 }

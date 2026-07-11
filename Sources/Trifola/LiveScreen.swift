@@ -5,6 +5,8 @@ import TrifolaKit
 /// transcript tail. This is the screen you leave open on the second monitor.
 struct LiveScreen: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
+    @EnvironmentObject var navigation: AppNavigation
 
     /// Stable seats (W6 wave 4 — the reshuffle fix): a tile claims its place when
     /// it ENTERS the live pool and keeps it until it leaves. Re-sorting by
@@ -14,13 +16,6 @@ struct LiveScreen: View {
     @State private var seatOrder: [String] = []
 
     /// The live pool, freshest-first — the ranking for NEWCOMERS only.
-    private func makePool() -> [SessionSummary] {
-        services.sessions.activeSessions
-            .sorted {
-                ($0.lastActivity ?? .distantPast, $1.id) > ($1.lastActivity ?? .distantPast, $0.id)
-            }
-    }
-
     /// The pool in seat order — what the grid actually shows.
     private func makeLive(pool: [SessionSummary]) -> [SessionSummary] {
         let byID = Dictionary(pool.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -29,7 +24,7 @@ struct LiveScreen: View {
     }
 
     var body: some View {
-        let pool = Perf.span("main:nav.livePool") { makePool() }
+        let pool = navigationSnapshots.corpus?.activeSessions ?? []
         let live = makeLive(pool: pool)
         let poolIDs = pool.map(\.id)
         ScreenScaffold(
@@ -46,7 +41,8 @@ struct LiveScreen: View {
                 .frame(minHeight: 460)
                 .motionRowTransition()
             } else {
-                board(live: live)
+                board(live: live,
+                      attention: navigationSnapshots.fleet?.attention)
                     .motionRowTransition()
             }
         }
@@ -61,8 +57,12 @@ struct LiveScreen: View {
         }
     }
 
-    private func board(live: [SessionSummary]) -> some View {
-        VStack(alignment: .leading, spacing: Theme.blockGap) {
+    private func board(live: [SessionSummary],
+                       attention: AttentionBoard?) -> some View {
+        let states = Dictionary(
+            (attention?.items ?? []).map { ($0.id, $0.state) },
+            uniquingKeysWith: { current, _ in current })
+        return VStack(alignment: .leading, spacing: Theme.blockGap) {
             AttentionStrip()
 
             Divider()
@@ -70,7 +70,8 @@ struct LiveScreen: View {
             let columns = [GridItem(.adaptive(minimum: 460), spacing: Theme.blockGap)]
             LazyVGrid(columns: columns, spacing: Theme.blockGap) {
                 ForEach(live.prefix(8)) { session in
-                    LiveTile(session: session)
+                    LiveTile(session: session,
+                             attentionState: states[session.id] ?? .running)
                         .motionRowTransition()
                 }
             }
@@ -89,7 +90,9 @@ struct LiveScreen: View {
 
 private struct LiveTile: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigation: AppNavigation
     let session: SessionSummary
+    let attentionState: AttentionState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -129,7 +132,10 @@ private struct LiveTile: View {
 
             Divider()
 
-            TranscriptView(filePath: session.filePath, tailBytes: 300_000)
+            TranscriptView(filePath: session.filePath,
+                           provider: session.provider,
+                           tailBytes: 300_000,
+                           isPaused: navigation.section != .live)
                 .frame(height: 300)
         }
         .background {
@@ -144,8 +150,4 @@ private struct LiveTile: View {
         }
     }
 
-    private var attentionState: AttentionState {
-        services.attentionBoard(now: services.now).items
-            .first(where: { $0.id == session.id })?.state ?? .running
-    }
 }

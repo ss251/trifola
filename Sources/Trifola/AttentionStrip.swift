@@ -7,14 +7,16 @@ import TrifolaKit
 /// needs you (no-nag doctrine). Reuses the existing status-dot vocabulary.
 struct AttentionStrip: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
 
     var body: some View {
         let now = services.now
-        let board = services.attentionBoard(now: now)
+        let board = navigationSnapshots.fleet?.attention
+            ?? AttentionBoard(items: [], counts: [:])
         AttentionStripView(
             board: board,
             signals: services.attention.signals,
-            suppression: services.attentionSuppression(now: now),
+            suppression: services.agency.result(for: board, now: now),
             acknowledgement: services.agency.recoveryState.activeAcknowledgement(at: now),
             now: now,
             defaultSnoozeMinutes: services.preferences.value.defaultSnoozeDurationMinutes,

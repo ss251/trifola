@@ -46,6 +46,7 @@ struct ArtifactPill: View {
     var help: String? = nil
     let action: () -> Void
     @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         TapButton(focusVisual: .capsule, action: action) {
@@ -58,11 +59,14 @@ struct ArtifactPill: View {
             .padding(.vertical, Theme.micro)
             .frame(minHeight: Theme.Layout.compactHitHeight)
             .background {
-                Capsule().fill(hovering ? Theme.cardStroke : Theme.cardFill)
+                Capsule().fill(hovering && isEnabled ? Theme.cardStroke : Theme.cardFill)
                 Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
             }
         }
-        .onHover { hovering = $0 }
+        .onHover { hovering = isEnabled && $0 }
+        .onChange(of: isEnabled) { _, enabled in
+            if !enabled { hovering = false }
+        }
         .help(help ?? name)
     }
 }
@@ -840,6 +844,53 @@ struct TierBadge: View {
     }
 }
 
+// MARK: - Provider badge
+// Provider is provenance, not status. Keep it graphite and compact: the glyph
+// distinguishes runtimes in dense rows while the inspector/table spells out the
+// label. No provider gets a branded or semantic status color.
+
+struct ProviderBadge: View {
+    let provider: Provider
+    var compact = false
+
+    private var symbol: String {
+        switch provider {
+        case .claude: return "text.bubble"
+        case .codex: return "terminal"
+        }
+    }
+
+    var body: some View {
+        if compact {
+            Image(systemName: symbol)
+                .font(Theme.Typography.metadataMedium)
+                .foregroundStyle(Theme.muted)
+                .frame(width: Theme.iconGutter, height: Theme.iconGutter)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(provider.label) provider")
+                .help("\(provider.label) session")
+        } else {
+            HStack(spacing: 3) {
+                Image(systemName: symbol)
+                    .font(Theme.Typography.metadataMedium)
+                    .foregroundStyle(Theme.muted)
+                Text(provider.label)
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, Theme.rowVerticalInset)
+            .padding(.vertical, Theme.micro / 2)
+            .background {
+                Capsule().fill(Theme.cardFill)
+                Capsule().strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(provider.label) provider")
+            .help("\(provider.label) session")
+        }
+    }
+}
+
 // MARK: - Machine chip (Cross-Machine Fleet)
 // A tiny label — not decoration — tagging which machine a session ran on: a laptop
 // glyph + "Mac" for this machine, a desktop glyph + the host name for a remote
@@ -1102,9 +1153,14 @@ struct BarStrip: View {
 /// button. An optional keyboard shortcut is carried by a hidden zero-size
 /// `.link`-styled Button (verified immune) so ⌘-shortcuts keep working.
 enum TapFocusVisual { case row, card, capsule, none }
+enum TapInteractionEvidenceOverride { case hover, pressed }
 
 private struct TapFocusEvidenceOverrideKey: EnvironmentKey {
     static let defaultValue: Bool? = nil
+}
+
+private struct TapInteractionEvidenceOverrideKey: EnvironmentKey {
+    static let defaultValue: TapInteractionEvidenceOverride? = nil
 }
 
 extension EnvironmentValues {
@@ -1113,6 +1169,15 @@ extension EnvironmentValues {
     var tapFocusEvidenceOverride: Bool? {
         get { self[TapFocusEvidenceOverrideKey.self] }
         set { self[TapFocusEvidenceOverrideKey.self] = newValue }
+    }
+
+
+    /// Headless evidence only; physical pointer gestures own this state in the
+    /// live app. Keeping the override at the primitive proves the real control
+    /// rather than a render-only reconstruction.
+    var tapInteractionEvidenceOverride: TapInteractionEvidenceOverride? {
+        get { self[TapInteractionEvidenceOverrideKey.self] }
+        set { self[TapInteractionEvidenceOverrideKey.self] = newValue }
     }
 }
 
@@ -1183,10 +1248,27 @@ struct TapButton<Label: View>: View {
     @State private var isHovering = false
     @ObservedObject private var inputModality = InputModalityMonitor.shared
     @Environment(\.tapFocusEvidenceOverride) private var focusEvidenceOverride
+    @Environment(\.tapInteractionEvidenceOverride) private var interactionEvidenceOverride
 
     private var showsKeyboardFocus: Bool {
         if let focusEvidenceOverride { return focusEvidenceOverride && isEnabled }
         return isFocused && isEnabled && inputModality.modality == .keyboard
+    }
+
+
+    private var showsHover: Bool {
+        interactionEvidenceOverride == .hover || isHovering
+    }
+
+    private var showsPress: Bool {
+        interactionEvidenceOverride == .pressed || isPressed
+    }
+
+    private func performKeyboardAction() {
+        inputModality.record(.keyboard)
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { (keyboardAction ?? action)() }
     }
 
     init(shortcut: KeyboardShortcut? = nil,
@@ -1208,7 +1290,7 @@ struct TapButton<Label: View>: View {
             .frame(minWidth: Theme.Layout.compactHitHeight,
                    minHeight: Theme.Layout.compactHitHeight)
             .contentShape(Rectangle())
-            .pressedMotion(isPressed: pressFeedback && isPressed, visual: focusVisual)
+            .pressedMotion(isPressed: pressFeedback && showsPress, visual: focusVisual)
             .onTapGesture {
                 inputModality.record(.pointer)
                 if isEnabled { action() }
@@ -1223,7 +1305,7 @@ struct TapButton<Label: View>: View {
             .focused($isFocused)
             .focusEffectDisabled()
             .background {
-                if (isFocused || isHovering) && isEnabled {
+                if (showsKeyboardFocus || showsHover) && isEnabled {
                     let wash = Theme.hoverFill
                     switch focusVisual {
                     case .row:
@@ -1242,24 +1324,21 @@ struct TapButton<Label: View>: View {
                     TapFocusOutline(visual: focusVisual)
                 }
             }
-            .motion(Theme.Motion.quick, value: showsKeyboardFocus)
-            .motion(Theme.Motion.quick, value: isHovering)
+            .motion(Theme.Motion.quick, value: showsHover)
             .onHover { isHovering = $0 }
             .onKeyPress(.return) {
                 guard isEnabled else { return .ignored }
-                inputModality.record(.keyboard)
-                (keyboardAction ?? action)()
+                performKeyboardAction()
                 return .handled
             }
             .onKeyPress(.space) {
                 guard isEnabled else { return .ignored }
-                inputModality.record(.keyboard)
-                (keyboardAction ?? action)()
+                performKeyboardAction()
                 return .handled
             }
             .background {
                 if let shortcut {
-                    Button("", action: keyboardAction ?? action)
+                    Button("", action: performKeyboardAction)
                         .buttonStyle(.link)          // verified immune
                         .keyboardShortcut(shortcut)
                         .opacity(0)
@@ -1271,8 +1350,9 @@ struct TapButton<Label: View>: View {
             .accessibilityRespondsToUserInteraction(true, isEnabled: isEnabled)
             .accessibilityAction {
                 guard isEnabled else { return }
-                (keyboardAction ?? action)()
+                performKeyboardAction()
             }
+            .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
@@ -1293,7 +1373,6 @@ struct QuietTapButton<Label: View>: View {
     var shortcut: KeyboardShortcut? = nil
     let action: () -> Void
     @ViewBuilder let label: () -> Label
-    @Environment(\.isEnabled) private var isEnabled
 
     init(size: Size = .small,
          shortcut: KeyboardShortcut? = nil,
@@ -1318,7 +1397,6 @@ struct QuietTapButton<Label: View>: View {
                     Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
                 }
         }
-        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
@@ -1345,10 +1423,27 @@ struct ProminentTapButton<Label: View>: View {
     @FocusState private var isFocused: Bool
     @ObservedObject private var inputModality = InputModalityMonitor.shared
     @Environment(\.tapFocusEvidenceOverride) private var focusEvidenceOverride
+    @Environment(\.tapInteractionEvidenceOverride) private var interactionEvidenceOverride
 
     private var showsKeyboardFocus: Bool {
         if let focusEvidenceOverride { return focusEvidenceOverride && isEnabled }
         return isFocused && isEnabled && inputModality.modality == .keyboard
+    }
+
+
+    private var showsHover: Bool {
+        interactionEvidenceOverride == .hover || hovering
+    }
+
+    private var showsPress: Bool {
+        interactionEvidenceOverride == .pressed || isPressed
+    }
+
+    private func performKeyboardAction() {
+        inputModality.record(.keyboard)
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { action() }
     }
 
     init(size: Size = .regular, tint: Color = Theme.accent,
@@ -1398,12 +1493,11 @@ struct ProminentTapButton<Label: View>: View {
                     TapFocusOutline(visual: .capsule)
                 }
             }
-            .brightness((hovering || isFocused) && isEnabled ? 0.06 : 0)
-            .motion(Theme.Motion.quick, value: hovering)
-            .motion(Theme.Motion.quick, value: showsKeyboardFocus)
+            .brightness((showsHover || showsKeyboardFocus) && isEnabled ? 0.06 : 0)
+            .motion(Theme.Motion.quick, value: showsHover)
             .opacity(isEnabled ? 1 : 0.45)
             .contentShape(Capsule())
-            .pressedMotion(isPressed: isPressed && isEnabled, visual: .capsule)
+            .pressedMotion(isPressed: showsPress && isEnabled, visual: .capsule)
             .onTapGesture {
                 inputModality.record(.pointer)
                 if isEnabled { action() }
@@ -1420,19 +1514,17 @@ struct ProminentTapButton<Label: View>: View {
             .focusEffectDisabled()
             .onKeyPress(.return) {
                 guard isEnabled else { return .ignored }
-                inputModality.record(.keyboard)
-                action()
+                performKeyboardAction()
                 return .handled
             }
             .onKeyPress(.space) {
                 guard isEnabled else { return .ignored }
-                inputModality.record(.keyboard)
-                action()
+                performKeyboardAction()
                 return .handled
             }
             .background {
                 if let shortcut {
-                    Button("", action: action)
+                    Button("", action: performKeyboardAction)
                         .buttonStyle(.link)          // verified immune
                         .keyboardShortcut(shortcut)
                         .opacity(0)
@@ -1444,7 +1536,7 @@ struct ProminentTapButton<Label: View>: View {
             .accessibilityRespondsToUserInteraction(true, isEnabled: isEnabled)
             .accessibilityAction {
                 guard isEnabled else { return }
-                action()
+                performKeyboardAction()
             }
     }
 }
@@ -1463,7 +1555,6 @@ struct TapToggle<L: View>: View {
     @Binding var isOn: Bool
     var mini = false
     @ViewBuilder let label: () -> L
-    @Environment(\.isEnabled) private var isEnabled
 
     init(isOn: Binding<Bool>, mini: Bool = false,
          @ViewBuilder label: @escaping () -> L) {
@@ -1494,7 +1585,6 @@ struct TapToggle<L: View>: View {
             .frame(minHeight: Theme.Layout.compactHitHeight)
             .contentShape(Rectangle())
         }
-        .opacity(isEnabled ? 1 : 0.5)
         .motion(Theme.Motion.quick, value: isOn)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isToggle)
@@ -1540,6 +1630,8 @@ struct FilterChip: View {
                     }
                 }
         }
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+        .accessibilityValue(isOn ? "Selected" : "Not selected")
     }
 }
 
@@ -1886,6 +1978,9 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     /// An earned one-word epithet worn beside the title (POLISH C4) — coined in a
     /// doc first, worn in the app second. Same treatment Fleet's "the floor" uses.
     var epithet: String? = nil
+    /// The canvas policy is supplied by the screen; prose is bounded again at
+    /// the text site. Most dashboards use the shared data-theatre width.
+    var maxWidth = ScreenScaffoldMetrics.maxWidth
     /// Production screens scroll; bounded headless compositions opt out so
     /// ImageRenderer realizes the exact shared chrome and content eagerly.
     var scrolls = true
@@ -1895,7 +1990,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     @ViewBuilder
     var body: some View {
         if scrolls {
-            ScrollView { scaffoldBody }
+            ScrollView { lazyScaffoldBody }
                 .scrollIndicators(.never)
         } else {
             scaffoldBody
@@ -1904,36 +1999,55 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
 
     private var scaffoldBody: some View {
         VStack(alignment: .leading, spacing: Theme.blockGap) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Text(title)
-                                .font(Theme.Typography.screenTitle)
-                                .tracking(-0.55)
-                                .foregroundStyle(Theme.ink)
-                            if let epithet {
-                                Text(epithet)
-                                    .font(Theme.Typography.metadata)
-                                    .foregroundStyle(Theme.faint)
-                            }
-                        }
-                        Text(subtitle)
-                            .font(Theme.Typography.body)
-                            .foregroundStyle(Theme.muted)
-                    }
-                    Spacer()
-                    trailing()
-                }
-                .frame(height: ScreenScaffoldMetrics.headerHeight, alignment: .top)
-                Divider()
-            }
-            .launchReveal(.header)
-
+            scaffoldHeader
             Reveal.StaggeredContent { content() }
                 .launchReveal(.content)
         }
-        .screenScaffoldFrame()
+        .screenScaffoldFrame(maxWidth: maxWidth)
+    }
+
+    private var lazyScaffoldBody: some View {
+        LazyVStack(alignment: .leading, spacing: Theme.blockGap) {
+            scaffoldHeader
+            // ViewBuilder already makes each supplied section a direct lazy
+            // child. Enumerating them again through Group(subviews:) created a
+            // stateful reveal modifier per section even though navigation no
+            // longer supplies sectionFirstAppearance; it added mount/layout
+            // work without a visible animation.
+            content()
+                .launchReveal(.content)
+        }
+        .screenScaffoldFrame(maxWidth: maxWidth)
+    }
+
+    private var scaffoldHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(title)
+                            .font(Theme.Typography.screenTitle)
+                            .tracking(-0.55)
+                            .foregroundStyle(Theme.ink)
+                        if let epithet {
+                            Text(epithet)
+                                .font(Theme.Typography.metadata)
+                                .foregroundStyle(Theme.muted)
+                        }
+                    }
+                    Text(subtitle)
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(Theme.muted)
+                        .frame(maxWidth: ScreenScaffoldMetrics.proseMaxWidth,
+                               alignment: .leading)
+                }
+                Spacer()
+                trailing()
+            }
+            .frame(height: ScreenScaffoldMetrics.headerHeight, alignment: .top)
+            Divider()
+        }
+        .launchReveal(.header)
     }
 }
 
@@ -1943,18 +2057,20 @@ extension View {
             .frame(maxWidth: .infinity, alignment: .center)
     }
 
-    func screenScaffoldFrame() -> some View {
+    func screenScaffoldFrame(maxWidth: CGFloat = ScreenScaffoldMetrics.maxWidth) -> some View {
         padding(.horizontal, Theme.gutter)
             .padding(.bottom, ScreenScaffoldMetrics.bottomInset)
             .padding(.top, ScreenScaffoldMetrics.topInset)
-            .centeredContentColumn()
+            .centeredContentColumn(maxWidth: maxWidth)
     }
 }
 
 extension ScreenScaffold where Trailing == EmptyView {
-    init(title: String, subtitle: String, epithet: String? = nil, scrolls: Bool = true,
+    init(title: String, subtitle: String, epithet: String? = nil,
+         maxWidth: CGFloat = ScreenScaffoldMetrics.maxWidth, scrolls: Bool = true,
          @ViewBuilder content: @escaping () -> Content) {
-        self.init(title: title, subtitle: subtitle, epithet: epithet, scrolls: scrolls,
+        self.init(title: title, subtitle: subtitle, epithet: epithet,
+                  maxWidth: maxWidth, scrolls: scrolls,
                   trailing: { EmptyView() }, content: content)
     }
 }

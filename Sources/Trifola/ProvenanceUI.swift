@@ -26,15 +26,19 @@ struct ReceiptDisclosure: View {
         self.storageKey = storageKey
         self.initiallyExpanded = initiallyExpanded
         self.build = build
-        let persisted = storageKey.map { UserDefaults.standard.bool(forKey: $0) } ?? false
-        _expanded = State(initialValue: initiallyExpanded || persisted)
+        _expanded = State(initialValue: initiallyExpanded)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             TapButton(action: {
                 expanded.toggle()
-                if let storageKey { UserDefaults.standard.set(expanded, forKey: storageKey) }
+                if let storageKey {
+                    let value = expanded
+                    Task.detached(priority: .utility) {
+                        UserDefaults.standard.set(value, forKey: storageKey)
+                    }
+                }
             }) {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.right")
@@ -52,6 +56,13 @@ struct ReceiptDisclosure: View {
             }
         }
         .reorderMotion(value: expanded)
+        .task(id: storageKey) {
+            guard let storageKey, !initiallyExpanded else { return }
+            let persisted = await Task.detached(priority: .utility) {
+                UserDefaults.standard.bool(forKey: storageKey)
+            }.value
+            if persisted { expanded = true }
+        }
     }
 }
 

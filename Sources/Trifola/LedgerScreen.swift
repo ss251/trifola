@@ -118,7 +118,10 @@ struct LedgerContent: View {
     var onDistill: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.blockGap) {
+        // Ledger proposals can be numerous. Virtualize cards in the live
+        // ScreenScaffold scroll path so mounting this destination does not lay
+        // out every proposal; the bounded render harness still realizes all.
+        LazyVStack(alignment: .leading, spacing: Theme.blockGap) {
             DreamLine(dream: dream, proposals: pending.count)
             Divider()
             if pending.isEmpty {
@@ -147,7 +150,19 @@ private struct DreamLine: View {
     let proposals: Int
 
     var body: some View {
-        HStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            dreamLine(axis: .horizontal)
+                .fixedSize(horizontal: true, vertical: false)
+            dreamLine(axis: .vertical)
+        }
+    }
+
+    @ViewBuilder
+    private func dreamLine(axis: Axis) -> some View {
+        let layout = axis == .horizontal
+            ? AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: Theme.micro))
+        layout {
             Image(systemName: "moon.stars")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(Theme.muted)
@@ -224,6 +239,8 @@ struct LessonCard: View {
             Text(lesson.why)
                 .font(Theme.Typography.body).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: ScreenScaffoldMetrics.proseMaxWidth,
+                       alignment: .leading)
             if let v = adj.verification { verificationBanner(v) }
             EvidenceTable(evidence: lesson.evidence, onReveal: onReveal, onInspect: onInspect)
             CandidateFixBlock(fix: lesson.candidate, onReveal: onReveal)

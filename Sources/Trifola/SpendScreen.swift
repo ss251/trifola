@@ -1,10 +1,85 @@
 import SwiftUI
 import TrifolaKit
 
+/// Exact-model spend rows shared by the live Spend screen and provider-parity
+/// evidence. Provider stays an explicit column because a model id is not
+/// globally unique provenance; the caller supplies already date-era-priced,
+/// deterministically ordered rows from the corpus projection.
+struct TopModelsByIDTable: View {
+    let rows: [ModelSpendStat]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            SectionLabel("Top models by exact ID")
+            if rows.isEmpty {
+                Text("No model usage recorded.")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
+            } else {
+                HStack(spacing: Theme.intraCell) {
+                    Eyebrow("Provider")
+                        .frame(width: 92, alignment: .leading)
+                    Eyebrow("Model ID")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Eyebrow("Sessions")
+                        .frame(width: Theme.valueColWidth, alignment: .trailing)
+                    Eyebrow("Tokens")
+                        .frame(width: 104, alignment: .trailing)
+                    Eyebrow("API estimate")
+                        .frame(width: 96, alignment: .trailing)
+                }
+                .padding(Theme.rowInsets)
+
+                VStack(spacing: 0) {
+                    ForEach(rows) { row in
+                        HStack(spacing: Theme.intraCell) {
+                            ProviderBadge(provider: row.provider)
+                                .frame(width: 92, alignment: .leading)
+                            Text(row.model)
+                                .font(Theme.Typography.mono)
+                                .foregroundStyle(Theme.ink)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("\(row.sessions)")
+                                .font(Theme.Typography.metadata)
+                                .foregroundStyle(Theme.muted)
+                                .monospacedDigit()
+                                .frame(width: Theme.valueColWidth, alignment: .trailing)
+                            Text(fmtTokens(row.tokens))
+                                .font(Theme.Typography.metadata)
+                                .foregroundStyle(Theme.muted)
+                                .monospacedDigit()
+                                .frame(width: 104, alignment: .trailing)
+                            Text(fmtUSD(row.cost))
+                                .font(Theme.Typography.metadataMedium)
+                                .foregroundStyle(Theme.ink)
+                                .monospacedDigit()
+                                .frame(width: 96, alignment: .trailing)
+                        }
+                        .padding(Theme.rowInsets)
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(Theme.hairline)
+                                .frame(height: Theme.hairlineWidth)
+                        }
+                    }
+                }
+            }
+            Text("Exact local model IDs · public API rates by usage date · comparison only")
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.faint)
+        }
+    }
+}
+
 /// Where the money goes: tier split, project leaderboard, the cache story and
 /// the full routing audit.
 struct SpendScreen: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
+    /// Headless fixed-viewport evidence opts out because ImageRenderer cannot
+    /// realize an unbounded ScrollView. The live destination keeps scrolling.
+    var scrolls = true
 
     /// Pricing-catalog provenance + the OPTIONAL models.dev refresh state.
     /// Bundled seed (Anthropic docs) is authoritative; the refresh only ADDS
@@ -16,60 +91,96 @@ struct SpendScreen: View {
     private var store: SessionStore { services.sessions }
 
     var body: some View {
+        Group {
+            if let corpus = navigationSnapshots.corpus {
+                spendContent(corpus)
+            } else {
+                ScreenScaffold(
+                    title: "Spend & Routing",
+                    subtitle: "Preparing corpus totals without blocking navigation",
+                    scrolls: scrolls) {
+                    HStack(spacing: Theme.rhythm) {
+                        ProgressView().controlSize(.small)
+                        Text("Building spend snapshot…")
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 420)
+                }
+            }
+        }
+    }
+
+    private func spendContent(_ corpus: CorpusProjection) -> some View {
         ScreenScaffold(
             title: "Spend & Routing",
-            subtitle: "Estimated from recorded tokens at public API rates · comparison only, not your bill or subscription charge"
+            subtitle: "Estimated from recorded tokens at public API rates · comparison only, not your bill or subscription charge",
+            scrolls: scrolls
         ) {
-            headline
+            headline(corpus)
             // "Show the math" (W3): the whole-corpus receipt behind the
             // headline spend — same slices, same rates, same Σ.
             ReceiptDisclosure(storageKey: "provenance.spend-total") {
                 CostProvenance.corpusReceipt(sessions: store.sessions)
             }
             Divider()
-            HStack(alignment: .top, spacing: Theme.gutter) {
-                tierTable.frame(maxWidth: .infinity)
-                Divider()
-                VStack(alignment: .leading, spacing: 16) {
-                    cacheSection
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: Theme.gutter) {
+                    tierTable(corpus)
+                        .frame(minWidth: 560, maxWidth: .infinity)
                     Divider()
-                    auditSection
+                    spendSecondary(corpus)
+                        .frame(minWidth: 400, maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: Theme.sectionGap) {
+                    tierTable(corpus)
+                    Divider()
+                    spendSecondary(corpus)
+                }
             }
             Divider()
             // RECONCILE (W3): our per-day totals vs CodexBar's independently
             // computed cache — the second opinion, read strictly read-only.
             ReconcilePanel(sessions: store.sessions)
             Divider()
-            projectBoard
+            TopModelsByIDTable(rows: Array(corpus.topModelsByID.prefix(12)))
+            Divider()
+            projectBoard(corpus)
+        }
+    }
+
+    private func spendSecondary(_ corpus: CorpusProjection) -> some View {
+        VStack(alignment: .leading, spacing: Theme.paneInset) {
+            cacheSection(corpus)
+            Divider()
+            auditSection
         }
     }
 
     // MARK: headline strip
 
-    private var headline: some View {
+    private func headline(_ corpus: CorpusProjection) -> some View {
         StatRow {
-            StatTile(label: "API-rate estimate", value: fmtUSD(store.totalCost),
-                     sub: "\(fmtTokens(store.totalUsage.total)) recorded tokens · not your bill")
+            StatTile(label: "API-rate estimate", value: fmtUSD(corpus.totalCost),
+                     sub: "\(fmtTokens(corpus.totalUsage.total)) recorded tokens · not your bill")
             Divider()
-            StatTile(label: "Cache savings — net of write premiums", value: fmtUSD(store.totalCacheSavings),
+            StatTile(label: "Cache savings — net of write premiums", value: fmtUSD(corpus.totalCacheSavings),
                      sub: "cache reads billed at 10% of input")
             Divider()
-            StatTile(label: "Cache hit rate", value: fmtPct(store.totalUsage.cacheHitRate),
+            StatTile(label: "Cache hit rate", value: fmtPct(corpus.totalUsage.cacheHitRate),
                      sub: "of input tokens served from cache")
         }
     }
 
     // MARK: tier table
 
-    private var tierTable: some View {
+    private func tierTable(_ corpus: CorpusProjection) -> some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             SectionLabel("API-rate estimate by model tier")
-            TierSplitBar(stats: store.tierStats)
+            TierSplitBar(stats: corpus.tierStats)
             VStack(spacing: 0) {
                 header
-                ForEach(store.tierStats) { st in
+                ForEach(corpus.tierStats) { st in
                     tierRow(st)
                 }
             }
@@ -93,7 +204,7 @@ struct SpendScreen: View {
                     .foregroundStyle(Theme.muted)
             }
             Spacer()
-            TapButton(pricingRefreshing ? "Refreshing…" : "Refresh from models.dev") {
+            QuietTapButton(pricingRefreshing ? "Refreshing…" : "Refresh from models.dev") {
                 pricingRefreshing = true
                 pricingError = nil
                 Task {
@@ -117,7 +228,7 @@ struct SpendScreen: View {
         HStack {
             Text("Tier").frame(width: 110, alignment: .leading)
             Text("Sessions (dominant tier)").frame(width: 122, alignment: .trailing)
-            Text("tokens excluding cache reads").frame(width: 130, alignment: .trailing)
+            Text("Tokens excl. reads").frame(width: 130, alignment: .trailing)
             Spacer()
             Text("API price").frame(width: 84, alignment: .trailing)
         }
@@ -166,14 +277,14 @@ struct SpendScreen: View {
 
     // MARK: cache story
 
-    private var cacheSection: some View {
+    private func cacheSection(_ corpus: CorpusProjection) -> some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             SectionLabel("The cache story")
-            let u = store.totalUsage
+            let u = corpus.totalUsage
             gauge("Cache reads", u.cacheReadTokens, u.totalInput)
             gauge("Cache writes", u.cacheCreateTokens, u.totalInput)
             gauge("Fresh input", u.inputTokens, u.totalInput)
-            Text("Reads are billed at one-tenth the fresh-input rate — that discount is worth \(fmtUSD(store.totalCacheSavings)) so far.")
+            Text("Reads are billed at one-tenth the fresh-input rate — that discount is worth \(fmtUSD(corpus.totalCacheSavings)) so far.")
                 .font(.footnote)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -221,10 +332,10 @@ struct SpendScreen: View {
 
     // MARK: project leaderboard
 
-    private var projectBoard: some View {
+    private func projectBoard(_ corpus: CorpusProjection) -> some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
             SectionLabel("API-rate estimate by project")
-            let rows = Array(store.projectSpend.prefix(12))
+            let rows = Array(corpus.projectSpend.prefix(12))
             let top = max(rows.first?.cost ?? 1, 0.0001)
             VStack(spacing: Theme.rhythm) {
                 ForEach(rows, id: \.project) { row in

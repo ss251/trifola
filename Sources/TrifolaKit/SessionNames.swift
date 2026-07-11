@@ -187,3 +187,94 @@ public final class SessionNameResolver: @unchecked Sendable {
         return out
     }
 }
+
+// MARK: - Codex thread names
+
+/// Parses Codex's bounded MRU thread index (`~/.codex/session_index.jsonl`).
+/// The log is oldest-to-newest today, so a later valid record for the same id
+/// is authoritative. An explicit empty `thread_name` clears an older value and
+/// lets the rollout's first genuine user prompt become the display fallback.
+public enum CodexSessionNames {
+    public static func parseSessionIndex(_ data: Data) -> [String: String] {
+        var result: [String: String] = [:]
+        var start = data.startIndex
+        while start < data.endIndex,
+              let newline = data[start...].firstIndex(of: 0x0A) {
+            consume(data.subdata(in: start..<newline), into: &result)
+            start = data.index(after: newline)
+        }
+        if start < data.endIndex {
+            consume(data.subdata(in: start..<data.endIndex), into: &result)
+        }
+        return result
+    }
+
+    private static func consume(_ line: Data, into result: inout [String: String]) {
+        guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+              let id = clean(object["id"] as? String) else { return }
+
+        // A missing key is a malformed/older record and cannot erase a known
+        // name. A present-but-empty key is an intentional newest state.
+        guard object.keys.contains("thread_name") else { return }
+        if let name = SessionHandles.record(object["thread_name"] as? String) {
+            result[id] = name
+        } else {
+            result.removeValue(forKey: id)
+        }
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+}
+
+/// Mtime/size-cached reader for the approved Codex thread index. The resolver
+/// deliberately returns an id-only map; callers must apply it only to `.codex`
+/// summaries so provider-id collisions remain harmless.
+public final class CodexSessionNameResolver: @unchecked Sendable {
+    private struct Signature: Equatable {
+        let mtime: Date?
+        let size: UInt64
+    }
+
+    private let indexURL: URL
+    private let lock = NSLock()
+    private var signature: Signature?
+    private var cache: [String: String] = [:]
+
+    public init(indexURL: URL = CodexPaths.process.sessionIndexJSONL) {
+        self.indexURL = indexURL.standardizedFileURL
+    }
+
+    public func names() -> [String: String] {
+        // `URL` caches resource values on the value itself. Codex replaces the
+        // MRU index atomically, so reusing the stored URL can otherwise retain
+        // the old size/mtime and even miss that the path became a symlink.
+        var refreshedURL = indexURL
+        refreshedURL.removeAllCachedResourceValues()
+        let values = try? refreshedURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey,
+                      .contentModificationDateKey, .fileSizeKey])
+        guard values?.isRegularFile == true,
+              values?.isSymbolicLink != true else {
+            return lock.withLock {
+                signature = nil
+                cache = [:]
+                return cache
+            }
+        }
+        let current = Signature(
+            mtime: values?.contentModificationDate,
+            size: UInt64(max(0, values?.fileSize ?? 0)))
+        return lock.withLock {
+            if signature != current {
+                signature = current
+                cache = (try? Data(contentsOf: refreshedURL))
+                    .map(CodexSessionNames.parseSessionIndex) ?? [:]
+            }
+            return cache
+        }
+    }
+}

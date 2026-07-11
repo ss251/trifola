@@ -1,110 +1,121 @@
 import SwiftUI
 import TrifolaKit
 
-private struct SessionRecencyKey {
-    let index: Int
-    let date: Date
-    let id: String
-}
-
 /// The fleet browser: search + tier/state filters + sortable session list on
 /// the left, live inspector on the right.
 struct SessionsScreen: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
 
     enum SortKey: String, CaseIterable, Identifiable {
         case recent = "Recent", cost = "Cost", context = "Context", tokens = "Tokens"
         var id: String { rawValue }
     }
 
-    @AppStorage(AppRestorationKeys.sessionsQuery) private var query = ""
-    @AppStorage(AppRestorationKeys.sessionsTier) private var tierFilterRaw = ""
-    @AppStorage(AppRestorationKeys.sessionsMachine) private var machineFilterRaw = ""
-    @AppStorage(AppRestorationKeys.sessionsActiveOnly) private var activeOnly = false
-    @AppStorage(AppRestorationKeys.sessionsHeavyOnly) private var heavyOnly = false
-    @AppStorage(AppRestorationKeys.sessionsTopLevelOnly)
-    private var topLevelOnly = SessionBrowserFilter.defaultTopLevelOnly
-    @AppStorage(AppRestorationKeys.sessionsLiveInTerminalOnly)
-    private var liveInTerminalOnly = SessionBrowserFilter.defaultLiveInTerminalOnly
-    @AppStorage(AppRestorationKeys.sessionsSort) private var sortRaw = SortKey.recent.rawValue
+    private var projectionFilter: SessionProjectionFilter {
+        navigationSnapshots.sessionFilter
+    }
+    private var query: String { projectionFilter.query }
+    private var providerFilter: Provider? { projectionFilter.provider }
+    private var tierFilter: ModelTier? { projectionFilter.tier }
+    private var machineFilter: String? { projectionFilter.machineID }
+    private var activeOnly: Bool { projectionFilter.activeOnly }
+    private var heavyOnly: Bool { projectionFilter.heavyOnly }
+    private var topLevelOnly: Bool { projectionFilter.topLevelOnly }
+    private var liveInTerminalOnly: Bool { projectionFilter.liveInTerminalOnly }
+    private var sort: SortKey {
+        SortKey(rawValue: projectionFilter.sort.rawValue) ?? .recent
+    }
 
-    private var tierFilter: ModelTier? { ModelTier(rawValue: tierFilterRaw) }
-    private var machineFilter: String? { machineFilterRaw.isEmpty ? nil : machineFilterRaw }
-    private var sort: SortKey { SortKey(rawValue: sortRaw) ?? .recent }
+    private func updateFilter<Value>(
+        _ keyPath: WritableKeyPath<SessionProjectionFilter, Value>,
+        to value: Value
+    ) {
+        var copy = projectionFilter
+        copy[keyPath: keyPath] = value
+        navigationSnapshots.updateSessionFilter(copy)
+    }
 
-    private func makeFilteredSessions() -> [SessionSummary] {
-        var out = SessionBrowserFilter(
-            topLevelOnly: topLevelOnly,
-            liveInTerminalOnly: liveInTerminalOnly
-        ).apply(
-            to: services.sessions.sessions,
-            liveTerminalSessionIDs: services.liveTerminalSessionIDs
-        )
-        if let tierFilter { out = out.filter { $0.tier == tierFilter } }
-        if let machineFilter { out = out.filter { $0.machineID == machineFilter } }
-        if activeOnly { out = out.filter(\.isActive) }
-        if heavyOnly { out = out.filter(\.isContextHeavy) }
-        if !query.isEmpty {
-            let q = query.lowercased()
-            out = out.filter {
-                $0.project.lowercased().contains(q)
-                    || $0.displayTitle.lowercased().contains(q)
-                    || $0.cwd.lowercased().contains(q)
-                    || $0.id.lowercased().hasPrefix(q)
-            }
-        }
-        // Deterministic ties (W6 wave 4): Swift's sort is not stable — without a
-        // tiebreaker, equal-valued rows can swap places on every recompute (each
-        // heartbeat tick), which reads as rows flapping for no reason.
-        switch sort {
-        case .recent:
-            let keys: [SessionRecencyKey] = out.enumerated()
-                .map { pair in
-                    SessionRecencyKey(index: pair.offset,
-                                      date: pair.element.lastActivity ?? .distantPast,
-                                      id: pair.element.id)
-                }
-                .sorted {
-                    $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date
-                }
-            out = keys.map { out[$0.index] }
-        case .cost:
-            // Decorate-sort-undecorate over INDICES: the comparator must not
-            // recompute `cost` O(n log n) times (measured ~290ms of main-thread
-            // stall per body pass over 5.3k sessions), and it must not move the
-            // heavy SessionSummary structs through every swap either — sort the
-            // (cost, id, index) keys, then reorder once.
-            let keys = out.enumerated()
-                .map { (i: $0.offset, c: $0.element.cost, id: $0.element.id) }
-                .sorted { ($0.c, $1.id) > ($1.c, $0.id) }
-            out = keys.map { out[$0.i] }
-        case .context: out.sort { ($0.contextWeight, $1.id) > ($1.contextWeight, $0.id) }
-        case .tokens: out.sort { ($0.usage.total, $1.id) > ($1.usage.total, $0.id) }
-        }
-        return out
+    private var queryBinding: Binding<String> {
+        Binding(get: { query }, set: {
+            updateFilter(\.query, to: $0)
+        })
     }
 
     var body: some View {
-        let filtered = Perf.span("main:nav.sessionsProjection") {
-            makeFilteredSessions()
+        Group {
+            if let snapshot = navigationSnapshots.sessions,
+               snapshot.filter == projectionFilter {
+                sessionColumns(filtered: snapshot.rows)
+            } else {
+                sessionShell
+            }
         }
-        HStack(spacing: 0) {
-            listColumn(filtered: filtered)
-                .frame(width: 440)
-                .sectionRevealBlock(index: 0)
-            Divider()
-            inspector
-                .frame(maxWidth: .infinity)
-                .launchReveal(.content)
-                .sectionRevealBlock(index: 1)
-        }
-        .centeredContentColumn()
         .reorderMotion(value: services.selectedSessionID)
+    }
+
+    private func sessionColumns(filtered: [SessionSummary]) -> some View {
+        // Snapshot every corpus-derived/shared input once for the whole list.
+        // `SessionStore.fleetMachines` walks the complete session corpus; calling
+        // `services.isCrossMachine` from each visible row multiplied that work by
+        // the viewport size during the first Sessions draw. The ready fleet
+        // projection is already off-main, with one bounded fallback for startup.
+        let fleetMachines = navigationSnapshots.fleet?.machineRollups.map(\.machine)
+            ?? services.sessions.fleetMachines
+        let isCrossMachine = fleetMachines.count > 1
+            || !services.machines.config.remotes.isEmpty
+        let now = services.now
+        let suppressionState = services.agency.suppressionState
+
+        return SessionsAdaptiveSplit(
+            compactShowsDetail: services.selectedSession != nil,
+            onBack: { services.selectedSessionID = nil }
+        ) {
+            listColumn(
+                filtered: filtered,
+                fleetMachines: fleetMachines,
+                isCrossMachine: isCrossMachine,
+                now: now,
+                suppressionState: suppressionState)
+        } detail: {
+            inspector
+                .launchReveal(.content)
+        }
+    }
+
+    private var sessionShell: some View {
+        SessionsAdaptiveSplit(compactShowsDetail: false, onBack: {}) {
+            VStack(alignment: .leading, spacing: Theme.sectionGap) {
+                Text("Sessions")
+                    .font(Theme.Typography.screenTitle)
+                    .foregroundStyle(Theme.ink)
+                HStack(spacing: Theme.rhythm) {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing session index…")
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(Theme.muted)
+                }
+                Spacer()
+            }
+            .padding(Theme.gutter)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } detail: {
+            EmptyState(icon: "text.magnifyingglass",
+                       title: "Session detail",
+                       detail: "The indexed list will appear here without blocking navigation.")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     // MARK: List column
 
-    private func listColumn(filtered: [SessionSummary]) -> some View {
+    private func listColumn(
+        filtered: [SessionSummary],
+        fleetMachines: [Machine],
+        isCrossMachine: Bool,
+        now: Date,
+        suppressionState: AttentionSuppressionState
+    ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: Theme.blockGap) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -130,7 +141,8 @@ struct SessionsScreen: View {
                         Image(systemName: "magnifyingglass")
                             .font(Theme.Typography.metadataMedium)
                             .foregroundStyle(Theme.muted)
-                        TextField("Search project, task, path or id…", text: $query)
+                        TextField("Search project, task, path or id…",
+                                  text: queryBinding)
                             .textFieldStyle(.plain)
                             .font(Theme.Typography.body)
                             .foregroundStyle(Theme.ink)
@@ -144,37 +156,47 @@ struct SessionsScreen: View {
                             .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
                     }
 
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 6) {
-                            FilterChip(label: "Top-level", isOn: topLevelOnly) {
-                                topLevelOnly.toggle()
+                    FlowLayout(spacing: Theme.rhythm, lineSpacing: Theme.rhythm) {
+                        FilterChip(label: "Top-level", isOn: topLevelOnly) {
+                            updateFilter(\.topLevelOnly, to: !topLevelOnly)
+                        }
+                        FilterChip(label: "Live in terminal", isOn: liveInTerminalOnly) {
+                            updateFilter(\.liveInTerminalOnly,
+                                         to: !liveInTerminalOnly)
+                        }
+                        FilterChip(label: "Active", isOn: activeOnly) {
+                            updateFilter(\.activeOnly, to: !activeOnly)
+                        }
+                        FilterChip(label: "Heavy context", isOn: heavyOnly) {
+                            updateFilter(\.heavyOnly, to: !heavyOnly)
+                        }
+                        ForEach(Provider.allCases, id: \.self) { provider in
+                            FilterChip(label: provider.label,
+                                       isOn: providerFilter == provider) {
+                                updateFilter(
+                                    \.provider,
+                                    to: providerFilter == provider ? nil : provider)
                             }
-                            FilterChip(label: "Live in terminal", isOn: liveInTerminalOnly) {
-                                liveInTerminalOnly.toggle()
-                            }
-                            FilterChip(label: "Active", isOn: activeOnly) {
-                                activeOnly.toggle()
-                            }
-                            FilterChip(label: "Heavy context", isOn: heavyOnly) {
-                                heavyOnly.toggle()
-                            }
-                            // Machine filter — only when the fleet spans more than one
-                            // machine, so single-machine users see zero cross-machine chrome.
-                            if services.isCrossMachine {
-                                ForEach(services.sessions.fleetMachines) { m in
-                                    FilterChip(label: m.chipLabel, isOn: machineFilter == m.id) {
-                                        machineFilterRaw = machineFilter == m.id ? "" : m.id
-                                    }
-                                }
-                            }
-                            ForEach(ModelTier.allCases.filter { $0 != .other }, id: \.self) { tier in
-                                FilterChip(label: tier.label, isOn: tierFilter == tier) {
-                                    tierFilterRaw = tierFilter == tier ? "" : tier.rawValue
+                        }
+                        // Machine filter — only when the fleet spans more than one
+                        // machine, so single-machine users see zero cross-machine chrome.
+                        if isCrossMachine {
+                            ForEach(fleetMachines) { m in
+                                FilterChip(label: m.chipLabel, isOn: machineFilter == m.id) {
+                                    updateFilter(
+                                        \.machineID,
+                                        to: machineFilter == m.id ? nil : m.id)
                                 }
                             }
                         }
+                        ForEach(ModelTier.allCases.filter { $0 != .other }, id: \.self) { tier in
+                            FilterChip(label: tier.label, isOn: tierFilter == tier) {
+                                updateFilter(
+                                    \.tier,
+                                    to: tierFilter == tier ? nil : tier)
+                            }
+                        }
                     }
-                    .scrollIndicators(.never)
 
                     HStack {
                         Text("\(filtered.count) session\(filtered.count == 1 ? "" : "s")")
@@ -183,7 +205,12 @@ struct SessionsScreen: View {
                         Spacer()
                         Picker("Sort sessions", selection: Binding(
                             get: { sort },
-                            set: { sortRaw = $0.rawValue }
+                            set: {
+                                updateFilter(
+                                    \.sort,
+                                    to: SessionProjectionFilter.Sort(
+                                        rawValue: $0.rawValue) ?? .recent)
+                            }
                         )) {
                             ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
                         }
@@ -209,13 +236,27 @@ struct SessionsScreen: View {
             Divider()
 
             ScrollViewReader { proxy in
-                let shown = Array(filtered.prefix(400))
+                let shown = filtered.prefix(400)
+                let attentionStates = Dictionary(
+                    (navigationSnapshots.fleet?.attention.items ?? [])
+                        .map { ($0.id, $0.state) },
+                    uniquingKeysWith: { current, _ in current })
                 ScrollView {
                     LazyVStack(spacing: Theme.micro / 2) {
                         ForEach(shown) { s in
-                            SessionRow(session: s, isSelected: services.selectedSessionID == s.id)
-                                .id(s.id)
-                                .motionRowTransition()
+                            SessionRow(
+                                session: s,
+                                isSelected: services.selectedSessionID == s.id,
+                                stateOverride: attentionStates[s.id]
+                                    ?? (s.isActive(at: now) ? .running : .idle),
+                                suppressedOverride:
+                                    suppressionState.isSnoozed(
+                                        sessionID: s.id, at: now)
+                                    || suppressionState.isMuted(
+                                        projectKey: s.project),
+                                now: now,
+                                isCrossMachine: isCrossMachine,
+                                onSelect: { services.selectedSessionID = s.id })
                         }
                         if filtered.count > 400 {
                             Text("Showing first 400 — refine the search to narrow down.")
@@ -233,8 +274,14 @@ struct SessionsScreen: View {
                     .reorderMotion(value: shown.map(\.id))
                 }
                 .scrollIndicators(.never)
-                .onAppear {
+                .task {
+                    // Restored selection is useful, but forcing a deep scroll
+                    // while the first frame lays out can defeat LazyVStack
+                    // virtualization. Let the ready browser paint first, then
+                    // restore its list position without blocking navigation.
                     if let id = services.selectedSessionID {
+                        try? await Task.sleep(for: .milliseconds(250))
+                        guard !Task.isCancelled else { return }
                         proxy.scrollTo(id, anchor: .center)
                     }
                 }
@@ -248,18 +295,20 @@ struct SessionsScreen: View {
         .onChange(of: services.sessions.scanProgress.isInProgress, initial: true) { _, _ in
             clearStaleRestorationIfIndexReady()
         }
+        .onChange(of: navigationSnapshots.fleet?.generation) {
+            clearStaleRestorationIfIndexReady()
+        }
     }
 
     private func clearStaleRestorationIfIndexReady() {
         guard services.sessions.scanPresentation == .liveRefreshing,
               !services.sessions.scanProgress.isInProgress else { return }
-        if !tierFilterRaw.isEmpty, ModelTier(rawValue: tierFilterRaw) == nil {
-            tierFilterRaw = ""
+        guard let machineRollups = navigationSnapshots.fleet?.machineRollups else {
+            return
         }
-        if SortKey(rawValue: sortRaw) == nil { sortRaw = SortKey.recent.rawValue }
-        if !machineFilterRaw.isEmpty,
-           !services.sessions.fleetMachines.contains(where: { $0.id == machineFilterRaw }) {
-            machineFilterRaw = ""
+        if let machineFilter,
+           !machineRollups.contains(where: { $0.machine.id == machineFilter }) {
+            updateFilter(\.machineID, to: nil)
         }
     }
 
@@ -313,29 +362,25 @@ private struct SessionListColumns: View {
 // same feedback grammar and remain immune to the macOS render storm.
 
 private struct SessionRow: View {
-    @EnvironmentObject var services: AppServices
     let session: SessionSummary
     let isSelected: Bool
     var stateOverride: AttentionState? = nil
     var suppressedOverride: Bool? = nil
-
+    let now: Date
+    let isCrossMachine: Bool
+    let onSelect: () -> Void
     private var primary: Color { isSelected ? Theme.selectionText : Theme.ink }
     private var secondary: Color { isSelected ? Theme.selectionText.opacity(0.8) : Theme.muted }
 
     var body: some View {
-        let suppressed = suppressedOverride
-            ?? (services.agency.reason(for: session, now: services.now) != nil)
+        let suppressed = suppressedOverride ?? false
         let state = stateOverride
-            ?? services.attentionBoard(now: services.now).items
-                .first(where: { $0.id == session.id })?.state
-            ?? (session.isActive ? AttentionState.running : .idle)
+            ?? (session.isActive(at: now) ? AttentionState.running : .idle)
 
-        HoverRow {
-            services.selectedSessionID = session.id
-        } content: {
+        TapButton(action: onSelect) {
             HStack(spacing: Theme.intraCell) {
                 VStack(spacing: Theme.micro / 2) {
-                    SeatMark(state: DoorLightState(state), size: 8)
+                    SessionRowSeatMark(state: DoorLightState(state))
                     if suppressed { SuppressionMark() }
                 }
                 .frame(width: SessionListMetrics.markWidth)
@@ -347,7 +392,8 @@ private struct SessionRow: View {
                             .foregroundStyle(primary)
                             .lineLimit(1)
                             .layoutPriority(1)
-                        if services.isCrossMachine {
+                        ProviderBadge(provider: session.provider, compact: true)
+                        if isCrossMachine {
                             MachineChip(machineID: session.machineID)
                         }
                     }
@@ -357,7 +403,7 @@ private struct SessionRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text(session.lastActivity.map {
-                    fmtAgeShort(max(0, services.now.timeIntervalSince($0)))
+                    fmtAgeShort(max(0, now.timeIntervalSince($0)))
                 } ?? "—")
                     .font(Theme.Typography.metadata)
                     .monospacedDigit()
@@ -374,9 +420,10 @@ private struct SessionRow: View {
                     .frame(width: SessionListMetrics.stateWidth, alignment: .trailing)
             }
             .padding(.horizontal, Theme.intraCell)
-            .frame(minHeight: Theme.sessionRowHeight)
+            .frame(maxWidth: .infinity)
+            .frame(height: Theme.sessionRowHeight)
         }
-        .opacity(suppressed ? 0.45 : 1)
+        .opacity(suppressed ? 0.72 : 1)
         .help("Session \(session.id)")
         .contextMenu { SessionAgencyMenu(session: session) }
         .background {
@@ -385,18 +432,23 @@ private struct SessionRow: View {
                     .fill(Theme.selectionBG)
             }
         }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    private var identitySubtitle: Text {
-        (Text(session.displayTitle)
-            .font(Theme.Typography.body)
-            .foregroundStyle(secondary)
-        + Text("  ·  \(session.tier.label)  ·  ")
-            .font(Theme.Typography.metadata)
-            .foregroundStyle(secondary.opacity(0.8))
-        + Text(session.shortID)
-            .font(Theme.Typography.mono)
-            .foregroundStyle(secondary.opacity(0.7)))
+    private var identitySubtitle: some View {
+        HStack(spacing: Theme.micro) {
+            Text(session.displayTitle)
+                .font(Theme.Typography.body)
+                .foregroundStyle(secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+            Text("· \(session.tier.label)")
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(secondary.opacity(0.8))
+                .fixedSize()
+        }
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -411,10 +463,47 @@ private struct SessionRow: View {
     }
 }
 
+/// A list row needs the Door Light's steady-state identity, not its 30fps
+/// ceremony engine. Keeping the exact ring/core geometry while removing six
+/// state slots and a TimelineView per realized row preserves the visual grammar
+/// without multiplying animation machinery across a large virtualized list.
+private struct SessionRowSeatMark: View {
+    let state: DoorLightState
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var colorScheme
+
+    private let size: CGFloat = 8
+    private var ringWidth: CGFloat {
+        AppBrand.Geometry.ringWidth(displayScale: displayScale)
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .strokeBorder(Theme.ink.opacity(0.35), lineWidth: ringWidth)
+            if colorScheme == .light {
+                Circle()
+                    .inset(by: ringWidth + 0.25)
+                    .stroke(Theme.surfaceWindow, lineWidth: 0.5)
+            }
+            if state != .idle {
+                Circle()
+                    .fill(state.color)
+                    .frame(width: size * AppBrand.Geometry.coreRatio,
+                           height: size * AppBrand.Geometry.coreRatio)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Inspector detail
 
 private struct SessionInspector: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigation: AppNavigation
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
     @Environment(\.openWindow) private var openWindow
     let session: SessionSummary
     var stateOverride: AttentionState? = nil
@@ -456,6 +545,10 @@ private struct SessionInspector: View {
         }
         .padding(.horizontal, Theme.gutter)
         .padding(.bottom, Theme.paneInset)
+        .frame(maxWidth: Theme.Layout.sessionsInspectorMaxWidth,
+               maxHeight: .infinity,
+               alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .top) {
             if let request = services.terminalTranscriptReveal,
                request.sessionID == session.id {
@@ -482,6 +575,7 @@ private struct SessionInspector: View {
                 Text(state.label.capitalized)
                     .font(Theme.Typography.metadataMedium)
                     .foregroundStyle(state.color)
+                ProviderBadge(provider: session.provider)
                 TierBadge(tier: session.tier)
                 if session.isRemote {
                     MachineChip(machineID: session.machineID)
@@ -668,7 +762,7 @@ private struct SessionInspector: View {
     }
 
     private var attentionStateForInspector: AttentionState {
-        stateOverride ?? services.attentionBoard(now: services.now).items
+        stateOverride ?? navigationSnapshots.fleet?.attention.items
             .first(where: { $0.id == session.id })?.state
             ?? (session.isActive ? .running : .idle)
     }
@@ -678,7 +772,9 @@ private struct SessionInspector: View {
         if let transcriptPreview {
             transcriptPreview
         } else {
-            TranscriptView(filePath: session.filePath)
+            TranscriptView(filePath: session.filePath,
+                           provider: session.provider,
+                           isPaused: navigation.section != .sessions)
         }
     }
 }
@@ -739,6 +835,7 @@ struct SessionsRenderItem: Identifiable {
 /// asynchronous transcript tail is the only injected seam; it still renders
 /// through TranscriptView and its production TranscriptRow hierarchy.
 struct SessionsRenderContent: View {
+    @EnvironmentObject var services: AppServices
     let items: [SessionsRenderItem]
     let selectedID: String
     let transcriptEvents: [TranscriptEvent]
@@ -747,6 +844,7 @@ struct SessionsRenderContent: View {
     @State private var heavyOnly = false
     @State private var topLevelOnly = true
     @State private var liveInTerminalOnly = false
+    @State private var providerFilter: Provider?
 
     private let liveIDs: Set<String> = ["sess-api-c190", "sess-billing-920a"]
 
@@ -756,6 +854,7 @@ struct SessionsRenderContent: View {
                 && (!liveInTerminalOnly || liveIDs.contains(item.id))
                 && (!activeOnly || item.session.isActive)
                 && (!heavyOnly || item.session.isContextHeavy)
+                && (providerFilter == nil || item.session.provider == providerFilter)
         }
     }
 
@@ -764,25 +863,26 @@ struct SessionsRenderContent: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        SessionsAdaptiveSplit(compactShowsDetail: selected != nil, onBack: {}) {
             listColumn
-                .frame(width: 440)
-            Divider()
+        } detail: {
             if let selected {
                 SessionInspector(
                     session: selected.session,
                     stateOverride: selected.state,
                     transcriptPreview: AnyView(TranscriptView(
                         filePath: selected.session.filePath,
+                        provider: selected.session.provider,
                         previewEvents: transcriptEvents)))
-                    .frame(maxWidth: .infinity)
             }
         }
         .background(Theme.surfaceWindow)
     }
 
     private var listColumn: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let renderIsCrossMachine = Set(items.map(\.session.machineID)).count > 1
+
+        return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: Theme.blockGap) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Sessions")
@@ -819,26 +919,29 @@ struct SessionsRenderContent: View {
                             .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
                     }
 
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 6) {
-                            FilterChip(label: "Top-level", isOn: topLevelOnly) {
-                                topLevelOnly.toggle()
-                            }
-                            FilterChip(label: "Live in terminal", isOn: liveInTerminalOnly) {
-                                liveInTerminalOnly.toggle()
-                            }
-                            FilterChip(label: "Active", isOn: activeOnly) {
-                                activeOnly.toggle()
-                            }
-                            FilterChip(label: "Heavy context", isOn: heavyOnly) {
-                                heavyOnly.toggle()
-                            }
-                            ForEach([ModelTier.opus, .sonnet], id: \.self) { tier in
-                                FilterChip(label: tier.label, isOn: false) {}
+                    FlowLayout(spacing: Theme.rhythm, lineSpacing: Theme.rhythm) {
+                        FilterChip(label: "Top-level", isOn: topLevelOnly) {
+                            topLevelOnly.toggle()
+                        }
+                        FilterChip(label: "Live in terminal", isOn: liveInTerminalOnly) {
+                            liveInTerminalOnly.toggle()
+                        }
+                        FilterChip(label: "Active", isOn: activeOnly) {
+                            activeOnly.toggle()
+                        }
+                        FilterChip(label: "Heavy context", isOn: heavyOnly) {
+                            heavyOnly.toggle()
+                        }
+                        ForEach(Provider.allCases, id: \.self) { provider in
+                            FilterChip(label: provider.label,
+                                       isOn: providerFilter == provider) {
+                                providerFilter = providerFilter == provider ? nil : provider
                             }
                         }
+                        ForEach([ModelTier.opus, .sonnet], id: \.self) { tier in
+                            FilterChip(label: tier.label, isOn: false) {}
+                        }
                     }
-                    .scrollIndicators(.never)
 
                     HStack {
                         Text("\(visibleItems.count) sessions")
@@ -870,12 +973,68 @@ struct SessionsRenderContent: View {
                         session: item.session,
                         isSelected: item.id == selectedID,
                         stateOverride: item.state,
-                        suppressedOverride: item.suppressed)
+                        suppressedOverride: item.suppressed,
+                        now: services.now,
+                        isCrossMachine: renderIsCrossMachine,
+                        onSelect: {})
                 }
             }
             .padding(.horizontal, Theme.codePadding)
             .padding(.top, Theme.intraCell)
             Spacer(minLength: 0)
         }
+    }
+}
+
+/// One responsive master-detail policy for both the live browser and its
+/// deterministic evidence renderer. The list grows only until it is comfortably
+/// scannable; the inspector then caps its reading measure and surplus window
+/// width becomes calm outer margin. At the minimum window the same composition
+/// becomes one pane with an explicit route back to the list.
+private struct SessionsAdaptiveSplit<Master: View, Detail: View>: View {
+    let compactShowsDetail: Bool
+    let onBack: () -> Void
+    @ViewBuilder let master: () -> Master
+    @ViewBuilder let detail: () -> Detail
+
+    var body: some View {
+        GeometryReader { proxy in
+            let available = proxy.size.width
+            if available < Theme.Layout.sessionsCollapseWidth {
+                if compactShowsDetail {
+                    VStack(alignment: .leading, spacing: 0) {
+                        TapButton(action: onBack) {
+                            Label("All sessions", systemImage: "chevron.left")
+                                .font(Theme.Typography.bodyMedium)
+                                .foregroundStyle(Theme.ink)
+                                .padding(.horizontal, Theme.gutter)
+                                .frame(height: Theme.compactRowHeight)
+                        }
+                        .accessibilityHint("Return to the session list")
+                        Divider()
+                        detail()
+                    }
+                } else {
+                    master()
+                }
+            } else {
+                HStack(spacing: 0) {
+                    master()
+                        .frame(width: listWidth(for: available))
+                    Divider()
+                    detail()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .centeredContentColumn(maxWidth: Theme.Layout.sessionsSplitMaxWidth)
+    }
+
+    private func listWidth(for available: CGFloat) -> CGFloat {
+        min(
+            Theme.Layout.sessionsListMaxWidth,
+            max(
+                Theme.Layout.sessionsListMinWidth,
+                available * Theme.Layout.sessionsListFraction))
     }
 }

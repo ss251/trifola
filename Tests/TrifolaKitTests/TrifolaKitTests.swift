@@ -40,7 +40,14 @@ struct TierTests {
         #expect(ModelTier(raw: "claude-opus-4-8") == .opus)
         #expect(ModelTier(raw: "claude-sonnet-5") == .sonnet)
         #expect(ModelTier(raw: "claude-haiku-4-5-20251001") == .haiku)
-        #expect(ModelTier(raw: "gpt-oss") == .other)
+        #expect(ModelTier(raw: "gpt-5.6-sol") == .codex)
+        #expect(ModelTier(raw: "gpt-oss") == .codex) // forward-compatible gpt-*
+        #expect(ModelTier(raw: "gpt-opus-experimental") == .codex)
+        #expect(ModelTier(raw: "openai/GPT-5.3-CODEX") == .codex)
+        #expect(PricingCatalog.bundledCodexModelIDs.allSatisfy {
+            ModelTier(raw: $0) == .codex
+        })
+        #expect(ModelTier(raw: "acme-model-1") == .other)
         #expect(ModelTier(raw: nil) == .other)
         #expect(ModelTier(raw: "CLAUDE-OPUS-4-8") == .opus)   // case-insensitive
     }
@@ -49,20 +56,19 @@ struct TierTests {
         #expect(ModelTier.opus.rates == (5, 25))
         #expect(ModelTier.sonnet.rates == (3, 15))
         #expect(ModelTier.haiku.rates == (1, 5))
+        #expect(ModelTier.codex.rates == (5, 30))
+        #expect(ModelTier.codex.label == "Codex")
     }
 
     @Test func userTierIsOptionalAndConfigurable() {
-        // Unset, `.user` is never matched by init(raw:).
-        ModelTier.configureUserTier(nil)
-        #expect(ModelTier(raw: "acme-model-1") == .other)
-        // Configured, matching ids route into the user tier with its rate/label.
-        ModelTier.configureUserTier(.init(match: "acme", label: "Acme", rate: (2, 8)))
-        #expect(ModelTier(raw: "acme-model-1") == .user)
-        #expect(ModelTier.user.rates == (2, 8))
-        #expect(ModelTier.user.label == "Acme")
+        let custom = ModelTier.UserTier(
+            match: "acme", label: "Acme", rate: (2, 8))
+        #expect(ModelTier(raw: "acme-model-1", userTier: nil) == .other)
+        #expect(ModelTier(raw: "acme-model-1", userTier: custom) == .user)
+        #expect(ModelTier.user.rates(userTier: custom) == (2, 8))
+        #expect(ModelTier.user.label(userTier: custom) == "Acme")
         // Built-in tiers still win over a user match.
-        #expect(ModelTier(raw: "claude-opus-4-8") == .opus)
-        ModelTier.configureUserTier(nil)   // reset shared state for other tests
+        #expect(ModelTier(raw: "claude-opus-4-8", userTier: custom) == .opus)
     }
 }
 
@@ -234,6 +240,37 @@ struct TierAttributionTests {
         #expect(abs(totalFromStats - totalFromSessions) < 0.0001)
     }
 
+    @Test func aggregateTiersSplitsCodexFromUnknownModels() {
+        let day = "2026-07-10"
+        let codexUsage = SessionUsage(outputTokens: 1_000_000)
+        let otherUsage = SessionUsage(outputTokens: 1_000_000)
+        let codex = SessionSummary(
+            id: "codex", provider: .codex,
+            project: "p", cwd: "/tmp/p", model: "gpt-5.6-sol",
+            lastActivity: nil, messageCount: 1, usage: codexUsage,
+            contextWeight: 0,
+            usageByTier: [.codex: codexUsage],
+            usageByDay: [day: [.codex: codexUsage]],
+            usageByModel: ["gpt-5.6-sol": codexUsage],
+            usageByModelDay: [day: ["gpt-5.6-sol": codexUsage]])
+            .computingCostBundle()
+        let other = SessionSummary(
+            id: "other", project: "p", cwd: "/tmp/p", model: "acme-model-1",
+            lastActivity: nil, messageCount: 1, usage: otherUsage,
+            contextWeight: 0,
+            usageByTier: [.other: otherUsage],
+            usageByDay: [day: [.other: otherUsage]],
+            usageByModel: ["acme-model-1": otherUsage],
+            usageByModelDay: [day: ["acme-model-1": otherUsage]])
+            .computingCostBundle()
+
+        let stats = SessionStore.aggregateTiers([other, codex])
+        #expect(stats.first { $0.tier == .codex }?.sessions == 1)
+        #expect(stats.first { $0.tier == .other }?.sessions == 1)
+        #expect(abs((stats.first { $0.tier == .codex }?.cost ?? 0) - 30) < 0.0001)
+        #expect(abs((stats.first { $0.tier == .other }?.cost ?? 0) - 25) < 0.0001)
+    }
+
     @Test func routingAuditOpusPercentExcludesOtherTiersSliceOfMixedSessions() {
         // Opus tokens are 2M so Opus is a MAJORITY of spend and the >50% flag fires.
         let a = pureSession(id: "a", tier: .opus, inputTokens: 2_000_000)      // cost 10
@@ -245,6 +282,121 @@ struct TierAttributionTests {
         let flags = RoutingAudit.computeFlags(defaultModel: "claude-sonnet-5", sessions: [a, b, c])
         #expect(flags.contains { $0.title == "Opus is 85% of the all-time API-rate estimate" })
         #expect(!flags.contains { $0.title.contains("87%") })
+    }
+}
+
+// MARK: - Exact model-id spend attribution
+
+@Suite("Top models by id")
+struct ModelSpendAggregationTests {
+    private func session(
+        id: String,
+        provider: Provider,
+        slices: [String: [String: SessionUsage]]
+    ) -> SessionSummary {
+        var usage = SessionUsage()
+        var byTier: [ModelTier: SessionUsage] = [:]
+        var byDay: [String: [ModelTier: SessionUsage]] = [:]
+        var byModel: [String: SessionUsage] = [:]
+        var messagesByDay: [String: [String: Int]] = [:]
+        for day in slices.keys.sorted() {
+            for model in (slices[day] ?? [:]).keys.sorted() {
+                guard let value = slices[day]?[model] else { continue }
+                let tier = ModelTier(raw: model)
+                usage = usage + value
+                byTier[tier, default: SessionUsage()] =
+                    byTier[tier, default: SessionUsage()] + value
+                let priorDayTier = byDay[day]?[tier] ?? SessionUsage()
+                byDay[day, default: [:]][tier] = priorDayTier + value
+                byModel[model, default: SessionUsage()] =
+                    byModel[model, default: SessionUsage()] + value
+                messagesByDay[day, default: [:]][model, default: 0] += 1
+            }
+        }
+        let lastModel = slices.keys.sorted().last
+            .flatMap { slices[$0]?.keys.sorted().last }
+        return SessionSummary(
+            id: id, provider: provider,
+            project: "p", cwd: "/tmp/p", model: lastModel,
+            lastActivity: nil, messageCount: slices.count, usage: usage,
+            contextWeight: 0,
+            usageByTier: byTier, usageByDay: byDay,
+            usageByModel: byModel, usageByModelDay: slices,
+            messagesByModelDay: messagesByDay)
+            .computingCostBundle()
+    }
+
+    @Test func aggregatesProviderModelRowsWithDateAwareRealDollarsAndTotals() {
+        let claudeSonnet = session(
+            id: "sonnet", provider: .claude,
+            slices: [
+                "2026-08-31": ["claude-sonnet-5": SessionUsage(inputTokens: 1_000_000)],
+                "2026-09-01": ["claude-sonnet-5": SessionUsage(inputTokens: 1_000_000)],
+            ]) // $2 before the era boundary + $3 after it
+        let codexOutput = session(
+            id: "codex-output", provider: .codex,
+            slices: [
+                "2026-07-10": ["gpt-5.6-sol": SessionUsage(outputTokens: 1_000_000)],
+            ]) // $30
+        let codexInput = session(
+            id: "codex-input", provider: .codex,
+            slices: [
+                "2026-07-11": ["gpt-5.6-sol": SessionUsage(inputTokens: 1_000_000)],
+            ]) // $5
+        // A deliberately cross-tagged fixture proves provider is part of row
+        // identity rather than inferred from the model string.
+        let claudeGPT = session(
+            id: "claude-gpt", provider: .claude,
+            slices: [
+                "2026-07-11": ["gpt-5.6-sol": SessionUsage(outputTokens: 100_000)],
+            ]) // $3
+        let sessions = [claudeSonnet, codexOutput, codexInput, claudeGPT]
+
+        let stats = SessionStore.aggregateModelsByID(sessions)
+        #expect(stats == SessionStore.aggregateModelsByID(Array(sessions.reversed())))
+        #expect(stats.count == 3)
+
+        let codex = stats.first {
+            $0.provider == .codex && $0.model == "gpt-5.6-sol"
+        }
+        #expect(codex?.sessions == 2)
+        #expect(codex?.usage.inputTokens == 1_000_000)
+        #expect(codex?.usage.outputTokens == 1_000_000)
+        #expect(abs((codex?.cost ?? 0) - 35) < 0.000_001)
+
+        let sonnet = stats.first {
+            $0.provider == .claude && $0.model == "claude-sonnet-5"
+        }
+        #expect(sonnet?.sessions == 1)
+        #expect(abs((sonnet?.cost ?? 0) - 5) < 0.000_001)
+
+        let claudeModelCollision = stats.first {
+            $0.provider == .claude && $0.model == "gpt-5.6-sol"
+        }
+        #expect(abs((claudeModelCollision?.cost ?? 0) - 3) < 0.000_001)
+
+        let rowTotal = stats.reduce(0.0) { $0 + $1.cost }
+        let sessionTotal = sessions.reduce(0.0) { $0 + $1.cost }
+        #expect(abs(rowTotal - 43) < 0.000_001)
+        #expect(abs(rowTotal - sessionTotal) < 0.000_001)
+    }
+
+    @Test func equalDollarRowsHaveDeterministicProviderThenModelOrder() {
+        let claude = session(
+            id: "claude", provider: .claude,
+            slices: [
+                "2026-07-11": ["claude-opus-4-8": SessionUsage(inputTokens: 1_000_000)],
+            ])
+        let codex = session(
+            id: "codex", provider: .codex,
+            slices: [
+                "2026-07-11": ["gpt-5.6-sol": SessionUsage(inputTokens: 1_000_000)],
+            ])
+
+        let rows = SessionStore.aggregateModelsByID([codex, claude])
+        #expect(rows.map(\.cost) == [5, 5])
+        #expect(rows.map(\.provider) == [.claude, .codex])
+        #expect(rows.map(\.model) == ["claude-opus-4-8", "gpt-5.6-sol"])
     }
 }
 

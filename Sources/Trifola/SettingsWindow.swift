@@ -85,6 +85,7 @@ struct TrifolaSettingsView: View {
     @ObservedObject var menuPresence: MenuBarPresence
     @ObservedObject var notifier: BlockedNotifierService
     @ObservedObject var preferences: AppPreferencesModel
+    @ObservedObject var workspaceAccess: WorkspaceAccessCoordinator
     @ObservedObject var machines: MachineStore
     @ObservedObject var agency: AgencyController
 
@@ -132,10 +133,14 @@ struct TrifolaSettingsView: View {
                     reveal: { NSWorkspace.shared.open(issue.location) })
             }
             TabView {
-                GeneralSettings(menuPresence: menuPresence)
+                GeneralSettings(
+                    menuPresence: menuPresence,
+                    workspaceAccess: workspaceAccess)
                     .tabItem { Label("General", systemImage: "gear") }
                 AttentionSettings(notifier: notifier, preferences: preferences)
                     .tabItem { Label("Attention", systemImage: "bell") }
+                QuotaAccessSettings(preferences: preferences)
+                    .tabItem { Label("Quota", systemImage: "gauge.with.dots.needle.67percent") }
                 MachineSettings(machines: machines)
                     .tabItem { Label("Machines", systemImage: "desktopcomputer") }
                 AboutSettings()
@@ -146,8 +151,53 @@ struct TrifolaSettingsView: View {
     }
 }
 
+private struct QuotaAccessSettings: View {
+    @ObservedObject var preferences: AppPreferencesModel
+
+    var body: some View {
+        Form {
+            Section("Plan quota access") {
+                Text("Quota is optional and off by default. Each provider has an independent read boundary.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                TapToggle("Claude quota", isOn: preferenceBinding(
+                    get: { $0.claudeQuotaAccessEnabled },
+                    set: { $0.claudeQuotaAccessEnabled = $1 }))
+                Text("Reads ~/.claude/.credentials.json, may ask macOS Keychain for the Claude Code OAuth token, then makes one HTTPS request to Anthropic's usage endpoint.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                TapToggle("Codex quota", isOn: preferenceBinding(
+                    get: { $0.codexQuotaAccessEnabled },
+                    set: { $0.codexQuotaAccessEnabled = $1 }))
+                Text("Reads rate-limit events from local ~/.codex/sessions rollout files only. No network request and no Codex process.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Turning a provider off clears its in-memory quota snapshot. Session, cost, and attention data are unaffected.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+    }
+
+    private func preferenceBinding(
+        get: @escaping (AppPreferences) -> Bool,
+        set: @escaping (inout AppPreferences, Bool) -> Void
+    ) -> Binding<Bool> {
+        Binding(get: { get(preferences.value) }, set: { newValue in
+            var copy = preferences.value
+            set(&copy, newValue)
+            preferences.value = copy
+        })
+    }
+}
+
 private struct GeneralSettings: View {
     @ObservedObject var menuPresence: MenuBarPresence
+    @ObservedObject var workspaceAccess: WorkspaceAccessCoordinator
     private let location = ClaudeConfigLocation.resolve()
 
     var body: some View {
@@ -163,8 +213,31 @@ private struct GeneralSettings: View {
             Text("\(location.explainer). Trifola reads this location and never writes Claude configuration.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+
+            Section("Terminal workspace jumps") {
+                LabeledContent("Accessibility") {
+                    Text(workspaceAccess.status.label)
+                        .foregroundStyle(workspaceAccess.status == .granted
+                            ? Color.green : Color.secondary)
+                }
+                Text(WorkspaceAccessCopy.settingsExplanation)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if workspaceAccess.status != .granted {
+                    TapButton(WorkspaceAccessCopy.openSettingsButton) {
+                        _ = workspaceAccess.openAccessibilitySettings()
+                    }
+                    .help("Open System Settings → Privacy & Security → Accessibility")
+                }
+            }
         }
         .formStyle(.grouped)
+        .onAppear { workspaceAccess.refreshStatus() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+                workspaceAccess.refreshStatus()
+            }
     }
 }
 

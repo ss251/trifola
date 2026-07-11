@@ -17,12 +17,245 @@ public struct TranscriptEvent: Identifiable, Sendable, Equatable {
     public let timestamp: Date?
     public let kind: Kind
     public let isSidechain: Bool
+    /// A bounded, immutable projection prepared once when the event is parsed.
+    /// SwiftUI consumes whole lines from this value; it never tokenizes or
+    /// pretty-prints transcript payloads while scrolling.
+    public let textPresentation: TranscriptTextPresentation
 
     public init(id: String, timestamp: Date?, kind: Kind, isSidechain: Bool = false) {
         self.id = id
         self.timestamp = timestamp
         self.kind = kind
         self.isSidechain = isSidechain
+        self.textPresentation = Self.makeTextPresentation(for: kind)
+    }
+
+    private static func makeTextPresentation(for kind: Kind) -> TranscriptTextPresentation {
+        switch kind {
+        case .assistantText(let text), .toolResult(let text, _), .system(_, let text):
+            return StructuredTranscriptProjector.project(text)
+                .map(TranscriptTextPresentation.structured) ?? .plain
+        case .userPrompt, .thinking, .toolUse, .summary:
+            return .plain
+        }
+    }
+}
+
+// MARK: - Structured text projection
+
+public enum TranscriptTextPresentation: Sendable, Equatable {
+    case plain
+    case structured(StructuredTranscriptPresentation)
+}
+
+public struct StructuredTranscriptPresentation: Sendable, Equatable {
+    public enum Format: String, Sendable, Equatable {
+        case json
+        case xml
+        case diff
+
+        public var label: String {
+            switch self {
+            case .json: return "JSON"
+            case .xml: return "Markup"
+            case .diff: return "Diff"
+            }
+        }
+    }
+
+    public struct Line: Sendable, Equatable, Identifiable {
+        public enum Role: Sendable, Equatable {
+            /// Braces, tags, diff headers, and other structural-only lines.
+            case markup
+            case content
+            case addition
+            case removal
+        }
+
+        public let id: Int
+        public let text: String
+        public let depth: Int
+        public let role: Role
+
+        public init(id: Int, text: String, depth: Int, role: Role) {
+            self.id = id
+            self.text = text
+            self.depth = depth
+            self.role = role
+        }
+    }
+
+    /// Deliberately small enough for a single transcript row to remain cheap.
+    public static let maximumLines = 28
+    public static let maximumCharactersPerLine = 320
+    public static let maximumGuideDepth = 8
+
+    public let format: Format
+    public let lines: [Line]
+    public let didTruncate: Bool
+
+    public init(format: Format, lines: [Line], didTruncate: Bool) {
+        self.format = format
+        self.lines = lines
+        self.didTruncate = didTruncate
+    }
+}
+
+/// One-time, Foundation-only projection for JSON, XML-like markup, and unified
+/// diffs. The raw event text remains the source of truth and powers the Raw
+/// affordance; this type stores only the bounded readable projection.
+private enum StructuredTranscriptProjector {
+    private struct ProjectedLine {
+        let text: String
+        let depth: Int
+        let role: StructuredTranscriptPresentation.Line.Role
+    }
+
+    static func project(_ text: String) -> StructuredTranscriptPresentation? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let lines = jsonLines(trimmed) {
+            return bounded(.json, lines)
+        }
+        if let lines = xmlLines(trimmed) {
+            return bounded(.xml, lines)
+        }
+        if let lines = diffLines(text) {
+            return bounded(.diff, lines)
+        }
+        return nil
+    }
+
+    private static func jsonLines(_ text: String) -> [ProjectedLine]? {
+        guard let first = text.first, first == "{" || first == "[",
+              let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              object is [String: Any] || object is [Any],
+              let prettyData = try? JSONSerialization.data(
+                withJSONObject: object, options: [.prettyPrinted]),
+              let pretty = String(data: prettyData, encoding: .utf8)
+        else { return nil }
+
+        return pretty.components(separatedBy: .newlines).map { rawLine in
+            let leading = rawLine.prefix { $0 == " " || $0 == "\t" }
+            let spaces = leading.reduce(into: 0) { count, character in
+                count += character == "\t" ? 2 : 1
+            }
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            let structural = !line.isEmpty && line.allSatisfy { "{}[],:".contains($0) }
+            return ProjectedLine(
+                text: line,
+                depth: spaces / 2,
+                role: structural ? .markup : .content)
+        }
+    }
+
+    private static func xmlLines(_ text: String) -> [ProjectedLine]? {
+        guard text.first == "<", text.contains("</") || text.contains("/>") else {
+            return nil
+        }
+
+        var units: [String] = []
+        var cursor = text.startIndex
+        var tagCount = 0
+        while cursor < text.endIndex {
+            if text[cursor] == "<" {
+                guard let close = text[cursor...].firstIndex(of: ">") else { return nil }
+                let afterClose = text.index(after: close)
+                units.append(String(text[cursor..<afterClose]))
+                tagCount += 1
+                cursor = afterClose
+            } else {
+                let next = text[cursor...].firstIndex(of: "<") ?? text.endIndex
+                let content = text[cursor..<next]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !content.isEmpty { units.append(content) }
+                cursor = next
+            }
+        }
+        guard tagCount >= 2 else { return nil }
+
+        var depth = 0
+        return units.map { unit in
+            let isTag = unit.first == "<"
+            let isClosing = unit.hasPrefix("</")
+            if isClosing { depth = max(0, depth - 1) }
+            let projected = ProjectedLine(
+                text: unit,
+                depth: depth,
+                role: isTag ? .markup : .content)
+            let isDeclaration = unit.hasPrefix("<?") || unit.hasPrefix("<!")
+            let isSelfClosing = unit.hasSuffix("/>")
+            if isTag && !isClosing && !isDeclaration && !isSelfClosing {
+                depth += 1
+            }
+            return projected
+        }
+    }
+
+    private static func diffLines(_ text: String) -> [ProjectedLine]? {
+        let sourceLines = text.components(separatedBy: .newlines)
+        guard sourceLines.count >= 3 else { return nil }
+        let hasHeader = sourceLines.contains { $0.hasPrefix("diff --git ") }
+        let hasHunk = sourceLines.contains { $0.hasPrefix("@@") }
+        let hasOldFile = sourceLines.contains { $0.hasPrefix("--- ") }
+        let hasNewFile = sourceLines.contains { $0.hasPrefix("+++ ") }
+        let hasChange = sourceLines.contains {
+            ($0.hasPrefix("+") && !$0.hasPrefix("+++"))
+                || ($0.hasPrefix("-") && !$0.hasPrefix("---"))
+        }
+        guard hasHeader || (hasHunk && hasChange) || (hasOldFile && hasNewFile && hasChange) else {
+            return nil
+        }
+
+        return sourceLines.map { line in
+            let role: StructuredTranscriptPresentation.Line.Role
+            if line.hasPrefix("diff --git ") || line.hasPrefix("index ")
+                || line.hasPrefix("--- ") || line.hasPrefix("+++ ")
+                || line.hasPrefix("@@") || line.hasPrefix("\\ No newline") {
+                role = .markup
+            } else if line.hasPrefix("+") {
+                role = .addition
+            } else if line.hasPrefix("-") {
+                role = .removal
+            } else {
+                role = .content
+            }
+            return ProjectedLine(text: line, depth: 0, role: role)
+        }
+    }
+
+    private static func bounded(
+        _ format: StructuredTranscriptPresentation.Format,
+        _ source: [ProjectedLine]
+    ) -> StructuredTranscriptPresentation {
+        let maxLines = StructuredTranscriptPresentation.maximumLines
+        let maxCharacters = StructuredTranscriptPresentation.maximumCharactersPerLine
+        let maxDepth = StructuredTranscriptPresentation.maximumGuideDepth
+        var didTruncate = source.count > maxLines
+        let visibleCount = didTruncate ? maxLines - 1 : source.count
+        var lines = Array(source.prefix(visibleCount)).enumerated().map { index, sourceLine in
+            var text = sourceLine.text
+            if text.count > maxCharacters {
+                text = String(text.prefix(maxCharacters)) + " …"
+                didTruncate = true
+            }
+            return StructuredTranscriptPresentation.Line(
+                id: index,
+                text: text,
+                depth: min(max(0, sourceLine.depth), maxDepth),
+                role: sourceLine.role)
+        }
+        if source.count > maxLines {
+            lines.append(.init(
+                id: lines.count,
+                text: "… \(source.count - visibleCount) more lines",
+                depth: 0,
+                role: .markup))
+        }
+        return StructuredTranscriptPresentation(
+            format: format, lines: lines, didTruncate: didTruncate)
     }
 }
 
@@ -354,27 +587,57 @@ public final class TranscriptStore: ObservableObject {
     public static let maxEvents = 2500
 
     private var tailer: FileTailer?
+    private var openGeneration = 0
 
     public init() {}
 
-    public func open(path: String, tailBytes: UInt64 = 2_000_000) {
+    public func open(path: String, provider: Provider = .claude,
+                     tailBytes: UInt64 = 2_000_000) {
         close()
         guard !path.isEmpty else { state = .error("No transcript file for this session."); return }
-        guard FileManager.default.fileExists(atPath: path) else {
-            state = .error("Transcript not found:\n\(path)")
+        openGeneration += 1
+        let generation = openGeneration
+        let url = URL(fileURLWithPath: path)
+
+        // Archived Codex rollouts are immutable and compressed. Their bounded
+        // read/decompression/parser pipeline runs wholly off-main; live JSONL
+        // rollouts use the same FileTailer as Claude with a provider parser.
+        if provider == .codex, path.hasSuffix(".jsonl.zst") {
+            state = .live
+            let maximumEvents = Self.maxEvents
+            Task { [weak self] in
+                let parsed = await Task.detached(priority: .userInitiated) {
+                    CodexRolloutTranscriptParser.events(
+                        at: url, maximumEvents: maximumEvents)
+                }.value
+                guard let self, self.openGeneration == generation else { return }
+                guard let parsed else {
+                    self.state = .error("Codex rollout could not be read.")
+                    return
+                }
+                self.apply(parsed, reset: true, startedMidFile: false)
+            }
             return
         }
         state = .live
-        let tailer = FileTailer(url: URL(fileURLWithPath: path), tailBytes: tailBytes) { [weak self] chunk in
+        let tailer = FileTailer(url: url, tailBytes: tailBytes) { [weak self] chunk in
             // parse off-main, then hop to the actor with results
             var parsed: [TranscriptEvent] = []
             for (i, line) in chunk.lines.enumerated() {
-                parsed.append(contentsOf: TranscriptParser.events(fromLine: line, fallbackID: "L\(chunk.firstLineIndex + i)"))
+                let id = "L\(chunk.firstLineIndex + i)"
+                if provider == .codex {
+                    parsed.append(contentsOf: CodexRolloutTranscriptParser.events(
+                        fromLine: line, fallbackID: "codex-" + id))
+                } else {
+                    parsed.append(contentsOf: TranscriptParser.events(
+                        fromLine: line, fallbackID: id))
+                }
             }
             let reset = chunk.reset
             let mid = chunk.startedMidFile
             Task { @MainActor [weak self] in
-                self?.apply(parsed, reset: reset, startedMidFile: mid)
+                guard let self, self.openGeneration == generation else { return }
+                self.apply(parsed, reset: reset, startedMidFile: mid)
             }
         }
         self.tailer = tailer
@@ -382,6 +645,7 @@ public final class TranscriptStore: ObservableObject {
     }
 
     public func close() {
+        openGeneration += 1
         tailer?.stop()
         tailer = nil
         events = []

@@ -188,14 +188,32 @@ struct CodexRateLimitWindow: Sendable, Hashable, Codable {
 struct CodexRateLimits: Sendable, Hashable, Codable {
     let primary: CodexRateLimitWindow?
     let secondary: CodexRateLimitWindow?
+    let credits: QuotaCredits?
 
     init?(_ object: [String: Any]?) {
         guard let object else { return nil }
         let primary = CodexRateLimitWindow(object["primary"] as? [String: Any])
         let secondary = CodexRateLimitWindow(object["secondary"] as? [String: Any])
-        guard primary != nil || secondary != nil else { return nil }
+        let credits: QuotaCredits? = {
+            guard let value = object["credits"] as? [String: Any] else { return nil }
+            let hasCredits = (value["has_credits"] as? NSNumber)?.boolValue ?? false
+            let unlimited = (value["unlimited"] as? NSNumber)?.boolValue ?? false
+            let balance: String?
+            if let raw = value["balance"] as? String {
+                balance = raw
+            } else if let raw = value["balance"] as? NSNumber {
+                balance = raw.stringValue
+            } else {
+                balance = nil
+            }
+            return QuotaCredits(hasCredits: hasCredits,
+                                unlimited: unlimited,
+                                balance: balance)
+        }()
+        guard primary != nil || secondary != nil || credits != nil else { return nil }
         self.primary = primary
         self.secondary = secondary
+        self.credits = credits
     }
 
     func snapshot(now: Date) -> QuotaSnapshot {
@@ -208,7 +226,7 @@ struct CodexRateLimits: Sendable, Hashable, Codable {
                         usedPercent: $0.usedPercent, resetsAt: $0.resetsAt)
         }
         return QuotaSnapshot(fiveHour: fiveHour, weekly: weekly,
-                             scoped: [], fetchedAt: now)
+                             scoped: [], credits: credits, fetchedAt: now)
     }
 
     private static func title(for window: CodexRateLimitWindow,
@@ -251,6 +269,10 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
     var model: String?
     var last: Date?
     var count = 0
+    /// Genuine human prompts only. The first drives the title fallback; the
+    /// latest supplies the same calm context line Claude summaries expose.
+    var firstUserMessage: String?
+    var lastUserMessage: String?
     var usageByKey: [String: KeyedUsage] = [:]
     var unkeyedSequence = 0
     var rawUsageBlocks = 0
@@ -306,7 +328,10 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
             usage: snapshot.usage,
             contextWeight: snapshot.contextWeight,
             filePath: filePath,
-            handle: SessionHandles.untitled,
+            lastUserMessage: snapshot.lastUserMessage,
+            handle: SessionHandles.derive(
+                autoName: nil, summary: nil,
+                firstUserMessage: snapshot.firstUserMessage),
             usageByTier: snapshot.usageByTier,
             usageByDay: snapshot.usageByDay,
             usageByModel: snapshot.usageByModel,
@@ -466,13 +491,21 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
 
     private mutating func consumeLegacyEvent(_ payload: [String: Any],
                                              timestamp: Date?) {
-        guard payload["type"] as? String == "token_count" else { return }
-        consumeTokenCount(payload, timestamp: timestamp)
+        switch payload["type"] as? String {
+        case "user_message":
+            consumeUserMessage(payload["message"] as? String)
+        case "token_count":
+            consumeTokenCount(payload, timestamp: timestamp)
+        default:
+            break
+        }
     }
 
     private mutating func consumePaginatedEvent(_ payload: [String: Any],
                                                 timestamp: Date?) {
         switch payload["type"] as? String {
+        case "user_message":
+            consumeUserMessage(payload["message"] as? String)
         case "token_count":
             consumeTokenCount(payload, timestamp: timestamp)
         case "item_completed":
@@ -482,6 +515,15 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
         default:
             break
         }
+    }
+
+    private mutating func consumeUserMessage(_ raw: String?) {
+        guard let message = CodexRolloutText.clean(raw),
+              // Slash-only transport commands are not human task intent. Keep
+              // scanning until the first prompt that can produce a real handle.
+              SessionHandles.fromFirstUserMessage(message) != nil else { return }
+        if firstUserMessage == nil { firstUserMessage = message }
+        lastUserMessage = message
     }
 
     private mutating func consumePaginatedItem(_ item: [String: Any],
@@ -612,6 +654,306 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
 
     private static func clean(_ value: String?) -> String? {
         guard let value else { return nil }
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+}
+
+// MARK: - Rollout transcript projection
+
+/// Shared lenient text helpers for the summary accumulator and the visible
+/// rollout transcript. Upstream Codex payloads are versioned tagged unions, so
+/// every helper accepts multiple compatible shapes and declines malformed data.
+private enum CodexRolloutText {
+    static func clean(_ raw: String?, limit: Int = 4_000) -> String? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        return TranscriptParser.clip(value, limit)
+    }
+
+    static func content(_ value: Any?, limit: Int = 4_000) -> String? {
+        if let string = value as? String { return clean(string, limit: limit) }
+        if let object = value as? [String: Any] {
+            for key in ["text", "message", "output", "content"] {
+                if let text = content(object[key], limit: limit) { return text }
+            }
+            return json(object, limit: limit)
+        }
+        if let values = value as? [Any] {
+            let joined = values.compactMap { content($0, limit: limit) }
+                .joined(separator: "\n")
+            return clean(joined, limit: limit)
+        }
+        return nil
+    }
+
+    static func toolDetail(_ value: Any?) -> String {
+        let object: [String: Any]? = {
+            if let object = value as? [String: Any] { return object }
+            guard let string = value as? String,
+                  let data = string.data(using: .utf8) else { return nil }
+            return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        }()
+        if let object {
+            for key in ["cmd", "command", "query", "path", "file_path",
+                        "prompt", "url", "skill"] {
+                if let detail = content(object[key], limit: 400) { return detail }
+            }
+            return json(object, limit: 400) ?? ""
+        }
+        return content(value, limit: 400) ?? ""
+    }
+
+    static func output(_ value: Any?) -> String {
+        content(value, limit: TranscriptParser.maxResultLength) ?? ""
+    }
+
+    static func isError(_ object: [String: Any]) -> Bool {
+        if let success = (object["success"] as? NSNumber)?.boolValue, !success {
+            return true
+        }
+        let status = (object["status"] as? String)?.lowercased() ?? ""
+        return ["error", "failed", "failure", "aborted"].contains(status)
+            || object["error"] != nil
+    }
+
+    private static func json(_ object: Any, limit: Int) -> String? {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(
+                withJSONObject: object, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8) else { return nil }
+        return clean(string, limit: limit)
+    }
+}
+
+/// Provider-aware projection of Codex rollout JSONL into Trifola's existing
+/// transcript event model. It renders the useful record types honestly and
+/// ignores unknown/malformed records without aborting the rest of the file.
+public enum CodexRolloutTranscriptParser {
+    public static let defaultMaximumEvents = 2_500
+
+    public static func events(fromLine data: Data,
+                              fallbackID: String) -> [TranscriptEvent] {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let outerType = object["type"] as? String else { return [] }
+        let payload = object["payload"] as? [String: Any] ?? [:]
+        let timestamp = parseDate(object["timestamp"] as? String)
+        let identifier = stringID(payload["id"])
+            ?? stringID(payload["call_id"])
+            ?? stringID(payload["turn_id"])
+            ?? fallbackID
+
+        switch outerType {
+        case "session_meta":
+            return sessionMeta(payload, id: identifier, timestamp: timestamp)
+        case "turn_context":
+            return turnContext(payload, id: identifier, timestamp: timestamp)
+        case "event_msg", "response_item":
+            if let item = payload["item"] as? [String: Any],
+               payload["type"] as? String == "item_completed" {
+                return itemEvents(item, id: identifier, timestamp: timestamp)
+            }
+            return itemEvents(payload, id: identifier, timestamp: timestamp)
+        case "function_call", "custom_tool_call", "function_call_output",
+             "custom_tool_call_output":
+            return itemEvents(payload.isEmpty ? object : payload,
+                              id: identifier, timestamp: timestamp)
+        default:
+            return []
+        }
+    }
+
+    /// Parse an already-decoded rollout, retaining only the newest bounded event
+    /// window just like the live TranscriptStore. One bad line never poisons the
+    /// valid records on either side of it.
+    public static func events(from data: Data,
+                              maximumEvents: Int = defaultMaximumEvents) -> [TranscriptEvent] {
+        let limit = max(0, maximumEvents)
+        guard limit > 0 else { return [] }
+        var result: [TranscriptEvent] = []
+        var start = data.startIndex
+        var lineNumber = 0
+        func append(_ line: Data) {
+            result.append(contentsOf: events(
+                fromLine: line, fallbackID: "codex-L\(lineNumber)"))
+            lineNumber += 1
+            if result.count > limit {
+                result.removeFirst(result.count - limit)
+            }
+        }
+        while start < data.endIndex,
+              let newline = data[start...].firstIndex(of: 0x0A) {
+            if newline > start { append(data.subdata(in: start..<newline)) }
+            start = data.index(after: newline)
+        }
+        if start < data.endIndex { append(data.subdata(in: start..<data.endIndex)) }
+        return result
+    }
+
+    /// Reads plain `.jsonl` and archived `.jsonl.zst` through the adapter's one
+    /// bounded decompression seam; callers never need a second archive path.
+    public static func events(at url: URL,
+                              maximumEvents: Int = defaultMaximumEvents) -> [TranscriptEvent]? {
+        CodexRolloutFile.data(at: url).map {
+            events(from: $0, maximumEvents: maximumEvents)
+        }
+    }
+
+    private static func sessionMeta(_ payload: [String: Any], id: String,
+                                    timestamp: Date?) -> [TranscriptEvent] {
+        var facts: [String] = []
+        if let provider = CodexRolloutText.clean(payload["model_provider"] as? String,
+                                                 limit: 80) {
+            facts.append("provider \(provider)")
+        }
+        if let version = CodexRolloutText.clean(payload["cli_version"] as? String,
+                                                limit: 80) {
+            facts.append("CLI \(version)")
+        }
+        if let mode = CodexRolloutText.clean(payload["history_mode"] as? String,
+                                             limit: 80) {
+            facts.append("\(mode) history")
+        }
+        if let cwd = CodexRolloutText.clean(payload["cwd"] as? String, limit: 400) {
+            facts.append(cwd)
+        }
+        let text = facts.isEmpty ? "Session metadata" : facts.joined(separator: " · ")
+        return [TranscriptEvent(id: id + "-meta", timestamp: timestamp,
+                                kind: .system(subtype: "Codex rollout", text: text))]
+    }
+
+    private static func turnContext(_ payload: [String: Any], id: String,
+                                    timestamp: Date?) -> [TranscriptEvent] {
+        var facts: [String] = []
+        if let model = CodexRolloutText.clean(payload["model"] as? String, limit: 120) {
+            facts.append(model)
+        }
+        if let effort = CodexRolloutText.clean(payload["effort"] as? String, limit: 80) {
+            facts.append("effort \(effort)")
+        }
+        guard !facts.isEmpty else { return [] }
+        return [TranscriptEvent(id: id + "-context", timestamp: timestamp,
+                                kind: .system(subtype: "Codex turn",
+                                              text: facts.joined(separator: " · ")))]
+    }
+
+    private static func itemEvents(_ item: [String: Any], id: String,
+                                   timestamp: Date?) -> [TranscriptEvent] {
+        let type = (item["type"] as? String)?.lowercased() ?? ""
+        switch type {
+        case "user_message":
+            guard let text = CodexRolloutText.clean(item["message"] as? String) else { return [] }
+            return [TranscriptEvent(id: id + "-user", timestamp: timestamp,
+                                    kind: .userPrompt(text))]
+        case "agent_message":
+            guard let text = CodexRolloutText.clean(item["message"] as? String) else { return [] }
+            return [TranscriptEvent(id: id + "-agent", timestamp: timestamp,
+                                    kind: .assistantText(text))]
+        case "agent_reasoning":
+            guard let text = CodexRolloutText.clean(item["text"] as? String,
+                                                    limit: TranscriptParser.maxThinkingLength) else { return [] }
+            return [TranscriptEvent(id: id + "-reasoning", timestamp: timestamp,
+                                    kind: .thinking(text))]
+        case "message":
+            guard let text = CodexRolloutText.content(item["content"]) else { return [] }
+            switch (item["role"] as? String)?.lowercased() {
+            case "user":
+                return [TranscriptEvent(id: id + "-message", timestamp: timestamp,
+                                        kind: .userPrompt(text))]
+            case "assistant":
+                return [TranscriptEvent(id: id + "-message", timestamp: timestamp,
+                                        kind: .assistantText(text))]
+            default:
+                return []
+            }
+        case "reasoning":
+            guard let text = CodexRolloutText.content(
+                item["summary"], limit: TranscriptParser.maxThinkingLength) else { return [] }
+            return [TranscriptEvent(id: id + "-reasoning", timestamp: timestamp,
+                                    kind: .thinking(text))]
+        case "function_call", "custom_tool_call":
+            let name = CodexRolloutText.clean(item["name"] as? String, limit: 120) ?? "tool"
+            let input = item["arguments"] ?? item["input"]
+            return [TranscriptEvent(id: id + "-call", timestamp: timestamp,
+                                    kind: .toolUse(
+                                        name: name,
+                                        detail: CodexRolloutText.toolDetail(input)))]
+        case "function_call_output", "custom_tool_call_output":
+            return [TranscriptEvent(id: id + "-output", timestamp: timestamp,
+                                    kind: .toolResult(
+                                        preview: CodexRolloutText.output(item["output"]),
+                                        isError: CodexRolloutText.isError(item)))]
+        case "exec_command_begin":
+            return [TranscriptEvent(id: id + "-exec", timestamp: timestamp,
+                                    kind: .toolUse(
+                                        name: "Command",
+                                        detail: CodexRolloutText.toolDetail(
+                                            item["command"] ?? item["cmd"])))]
+        case "exec_command_end", "patch_apply_end", "mcp_tool_call_end":
+            let output = item["output"] ?? item["result"]
+                ?? item["stdout"] ?? item["stderr"] ?? item["changes"]
+            return [TranscriptEvent(id: id + "-result", timestamp: timestamp,
+                                    kind: .toolResult(
+                                        preview: CodexRolloutText.output(output),
+                                        isError: CodexRolloutText.isError(item)))]
+        case "patch_apply_begin":
+            return [TranscriptEvent(id: id + "-patch", timestamp: timestamp,
+                                    kind: .toolUse(name: "Apply patch", detail: ""))]
+        case "mcp_tool_call_begin":
+            let name = CodexRolloutText.clean(item["action_name"] as? String,
+                                              limit: 120) ?? "MCP tool"
+            return [TranscriptEvent(id: id + "-mcp", timestamp: timestamp,
+                                    kind: .toolUse(
+                                        name: name,
+                                        detail: CodexRolloutText.toolDetail(item["invocation"])))]
+        case "web_search_begin", "web_search_end", "web_search_call":
+            return [TranscriptEvent(id: id + "-search", timestamp: timestamp,
+                                    kind: .toolUse(
+                                        name: "Web search",
+                                        detail: CodexRolloutText.toolDetail(
+                                            item["query"] ?? item["action"])))]
+        case "token_count":
+            return tokenEvent(item, id: id, timestamp: timestamp)
+        case "task_complete":
+            var text = "Turn complete"
+            if let duration = (item["duration_ms"] as? NSNumber)?.intValue {
+                text += " · \(duration)ms"
+            }
+            return [TranscriptEvent(id: id + "-complete", timestamp: timestamp,
+                                    kind: .system(subtype: "Codex turn", text: text))]
+        case "turn_aborted":
+            let reason = CodexRolloutText.clean(item["reason"] as? String,
+                                                limit: 300) ?? "Turn aborted"
+            return [TranscriptEvent(id: id + "-aborted", timestamp: timestamp,
+                                    kind: .system(subtype: "Codex turn", text: reason))]
+        case "context_compacted":
+            return [TranscriptEvent(id: id + "-compact", timestamp: timestamp,
+                                    kind: .summary("Codex context compacted"))]
+        default:
+            return []
+        }
+    }
+
+    private static func tokenEvent(_ item: [String: Any], id: String,
+                                   timestamp: Date?) -> [TranscriptEvent] {
+        guard let info = item["info"] as? [String: Any] else { return [] }
+        let last = CodexTokenUsage(info["last_token_usage"] as? [String: Any])
+        let total = CodexTokenUsage(info["total_token_usage"] as? [String: Any])
+        guard let usage = last ?? total else { return [] }
+        var text = "\(usage.inputTokens) input"
+        if usage.cachedInputTokens > 0 { text += " · \(usage.cachedInputTokens) cached" }
+        text += " · \(usage.outputTokens) output"
+        if usage.reasoningOutputTokens > 0 {
+            text += " · \(usage.reasoningOutputTokens) reasoning"
+        }
+        if last == nil { text = "Cumulative · " + text }
+        return [TranscriptEvent(id: id + "-tokens", timestamp: timestamp,
+                                kind: .system(subtype: "Codex tokens", text: text))]
+    }
+
+    private static func stringID(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
         let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? nil : cleaned
     }

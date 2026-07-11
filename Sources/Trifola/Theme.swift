@@ -43,6 +43,12 @@ enum Theme {
     static let accent = Color(nsColor: .dyn(
         light: NSColor(srgbRed: 38 / 255, green: 111 / 255, blue: 96 / 255, alpha: 1),
         dark: NSColor(srgbRed: 66 / 255, green: 153 / 255, blue: 132 / 255, alpha: 1)))
+    /// A deliberately provider-neutral model hue for the Codex tier. This is a
+    /// slate-teal data color, not OpenAI green and not Trifola's action accent;
+    /// it appears only in small model marks alongside the existing tier hues.
+    static let codexModel = Color(nsColor: .dyn(
+        light: NSColor(srgbRed: 65 / 255, green: 112 / 255, blue: 121 / 255, alpha: 1),
+        dark: NSColor(srgbRed: 108 / 255, green: 164 / 255, blue: 172 / 255, alpha: 1)))
     static let graphite = muted
 
     // Elevation. Every stroked surface is paired with a fill; open tables and
@@ -170,8 +176,21 @@ enum Theme {
         static let sidebarWidth: CGFloat = 248
         static let minimumWindowWidth: CGFloat = 1120
         static let minimumWindowHeight: CGFloat = 720
-        static let contentMaxWidth: CGFloat = 1080
+        static let defaultWindowWidth: CGFloat = 1440
+        static let defaultWindowHeight: CGFloat = 900
+        /// Data-heavy screens use a wider, still bounded theatre. At very wide
+        /// window sizes the remaining canvas becomes deliberate margin rather
+        /// than stretching tables and plots into long scan paths.
+        static let contentMaxWidth: CGFloat = 1280
         static let proseMaxWidth: CGFloat = 700
+        static let sessionsSplitMaxWidth: CGFloat = 1420
+        static let sessionsListMinWidth: CGFloat = 460
+        static let sessionsListIdealWidth: CGFloat = 520
+        static let sessionsListMaxWidth: CGFloat = 560
+        static let sessionsListFraction: CGFloat = 0.38
+        static let sessionsInspectorMaxWidth: CGFloat = 840
+        static let sessionsCollapseWidth: CGFloat = 980
+        static let transcriptMeasure: CGFloat = 760
         static let headerHeight: CGFloat = 72
         static let screenTopInset: CGFloat = 18
         static let screenBottomInset: CGFloat = 30
@@ -615,6 +634,23 @@ enum Reveal {
         }
     }
 
+    /// Production scrolling counterpart. The subview grammar is identical to
+    /// StaggeredContent, but rows below the viewport are not laid out during a
+    /// navigation transaction. Headless renders keep using the eager variant.
+    struct LazyStaggeredContent<Content: View>: View {
+        @ViewBuilder let content: () -> Content
+
+        var body: some View {
+            LazyVStack(alignment: .leading, spacing: Theme.blockGap) {
+                Group(subviews: content()) { subviews in
+                    ForEach(Array(subviews.indices.enumerated()), id: \.offset) { ordinal, index in
+                        subviews[index].modifier(BlockModifier(index: ordinal))
+                    }
+                }
+            }
+        }
+    }
+
     /// Supplies an animation-owned 0→1 geometry value exactly once for the
     /// section's first appearance. Reduce Motion always receives complete
     /// geometry; the enclosing block supplies its 160ms opacity fade.
@@ -747,6 +783,7 @@ extension ModelTier {
         case .opus: return Color(red: 204 / 255, green: 124 / 255, blue: 94 / 255) // Claude terracotta
         case .sonnet: return Color(red: 70 / 255, green: 180 / 255, blue: 130 / 255) // muted green
         case .haiku: return Color(red: 73 / 255, green: 163 / 255, blue: 176 / 255) // muted blue
+        case .codex: return Theme.codexModel
         case .user: return Color(red: 0.58, green: 0.52, blue: 0.79)   // muted amber (user-defined tier)
         case .other: return Color(nsColor: .secondaryLabelColor)
         }

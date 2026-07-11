@@ -14,6 +14,7 @@ final class LaunchStore: ObservableObject {
     @Published private(set) var persistenceError: String?
     let repo: RecipeRepository
     private var persistenceRetry: (() -> Void)?
+    private var reloadGeneration = 0
 
     var persistenceLocation: URL { repo.directory }
 
@@ -22,7 +23,16 @@ final class LaunchStore: ObservableObject {
     }
 
     func reload() {
-        recipes = repo.list()
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        let repository = repo
+        Task { [weak self] in
+            let loaded = await Task.detached(priority: .utility) {
+                repository.list()
+            }.value
+            guard let self, self.reloadGeneration == generation else { return }
+            self.recipes = loaded
+        }
     }
 
     @discardableResult

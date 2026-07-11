@@ -167,16 +167,20 @@ public struct TerminalLinkTarget: Sendable, Equatable {
     public let ownerProcessID: Int32?
     public let ownerApplication: TerminalApplication?
     public let match: Match
+    /// Command of the selected live Claude process. AX scoring uses only small
+    /// executable/session hints derived from it; the app never renders it.
+    public let processCommand: String?
 
     public init(processID: Int32, tty: String?, startedAt: Date,
                 ownerProcessID: Int32?, ownerApplication: TerminalApplication?,
-                match: Match = .cwd) {
+                match: Match = .cwd, processCommand: String? = nil) {
         self.processID = processID
         self.tty = tty
         self.startedAt = startedAt
         self.ownerProcessID = ownerProcessID
         self.ownerApplication = ownerApplication
         self.match = match
+        self.processCommand = processCommand
     }
 
     /// True when all information needed for Tier 1 is present.
@@ -347,7 +351,8 @@ public struct TerminalLinkResolver: Sendable, TerminalLinkResolving {
             startedAt: selected.startedAt,
             ownerProcessID: owner?.processID,
             ownerApplication: owner?.application,
-            match: match
+            match: match,
+            processCommand: selected.command
         )
     }
 
@@ -538,18 +543,21 @@ public struct TerminalAutomationError: Sendable, Equatable {
     }
 }
 
-public enum TerminalExactTargetResult: Sendable, Equatable {
-    case targeted
-    case notFound
-    case permissionDenied(TerminalAutomationError)
-    case failed(TerminalAutomationError)
-}
-
 /// The complete user-facing result of an Open session attempt. These cases are
 /// intentionally exhaustive: no AppleScript or resolution failure is reduced to
 /// a boolean and silently discarded.
 public enum TerminalLaunchOutcome: Sendable, Equatable {
     case exact(TerminalLinkTarget)
+    case axTargeted(TerminalLinkTarget, matchedTitle: String)
+    /// Accessibility was unavailable and the user chose today's safe fallback:
+    /// activate the owning app without claiming an exact workspace.
+    case axDenied(TerminalLinkTarget)
+    case axNoConfidentMatch(TerminalLinkTarget)
+    case axFailed(TerminalLinkTarget, reason: String)
+    /// The at-value explainer opened Privacy & Security. Do not front the
+    /// terminal or reveal a transcript over System Settings.
+    case axSettingsOpened(TerminalLinkTarget)
+    case axSettingsOpenFailed(TerminalLinkTarget)
     case ownerActivated(TerminalLinkTarget)
     /// A newer user action superseded this launch. Intentionally silent: the
     /// replacement action owns the visible outcome.
@@ -561,7 +569,9 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
 
     public var fallbackMessage: String? {
         switch self {
-        case .exact, .ownerActivated, .cancelled:
+        case .exact, .axTargeted, .axDenied, .axNoConfidentMatch,
+             .axFailed, .axSettingsOpened, .axSettingsOpenFailed,
+             .ownerActivated, .cancelled:
             nil
         case .permissionDenied:
             "Terminal automation permission denied — System Settings → Privacy & Security → Automation; showing transcript"
@@ -586,6 +596,18 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
             } else {
                 "Jumped to your session in \(target.ownerApplication?.displayName ?? "your terminal")"
             }
+        case .axTargeted(let target, let matchedTitle):
+            "Jumped to workspace '\(matchedTitle)' in \(target.ownerApplication?.displayName ?? "your terminal")"
+        case .axDenied(let target):
+            "Grant Accessibility to jump to the exact workspace — fronting \(target.ownerApplication?.displayName ?? "your terminal") instead"
+        case .axNoConfidentMatch(let target):
+            "No confident workspace match in \(target.ownerApplication?.displayName ?? "your terminal") — brought it to the front instead"
+        case .axFailed(let target, let reason):
+            "Workspace targeting failed in \(target.ownerApplication?.displayName ?? "your terminal"): \(reason) — brought it to the front instead"
+        case .axSettingsOpened:
+            "Opened Accessibility settings — grant Trifola access, then try Open session again"
+        case .axSettingsOpenFailed(let target):
+            "Could not open Accessibility settings — fronting \(target.ownerApplication?.displayName ?? "your terminal") instead"
         case .ownerActivated(let target):
             if target.match == .cwd {
                 "Brought \(target.ownerApplication?.displayName ?? "your terminal") to the front using a working-directory match (no registry entry)"
@@ -619,11 +641,6 @@ public enum TerminalLaunchFailure: Sendable, Equatable {
 }
 
 @MainActor
-public protocol TerminalExactTargeting: AnyObject {
-    func target(tty: String, application: TerminalApplication) -> TerminalExactTargetResult
-}
-
-@MainActor
 public protocol TerminalOwnerActivating: AnyObject {
     func activate(processID: Int32, application: TerminalApplication?) async -> Bool
 }
@@ -644,22 +661,27 @@ public protocol TerminalWindowAdapting: AnyObject {
 @MainActor
 public struct TerminalLaunchFlow {
     private let resolver: any TerminalLinkResolving
-    private let exactTargeter: any TerminalExactTargeting
+    private let scriptTargeter: any WorkspaceTargeting
+    private let axTargeter: any WorkspaceTargeting
     private let ownerActivator: any TerminalOwnerActivating
     private let windows: any TerminalWindowAdapting
 
     public init(resolver: any TerminalLinkResolving,
-                exactTargeter: any TerminalExactTargeting,
+                scriptTargeter: any WorkspaceTargeting,
+                axTargeter: any WorkspaceTargeting,
                 ownerActivator: any TerminalOwnerActivating,
                 windows: any TerminalWindowAdapting) {
         self.resolver = resolver
-        self.exactTargeter = exactTargeter
+        self.scriptTargeter = scriptTargeter
+        self.axTargeter = axTargeter
         self.ownerActivator = ownerActivator
         self.windows = windows
     }
 
     @discardableResult
-    public func open(sessionID: String, cwd: String,
+    public func open(sessionID: String, cwd: String, project: String = "",
+                     sessionName: String? = nil,
+                     gitBranch: String? = nil,
                      machineID: String) async -> TerminalLaunchOutcome {
         guard !Task.isCancelled else { return .cancelled }
         guard machineID == Machine.localID else {
@@ -680,26 +702,93 @@ public struct TerminalLaunchFlow {
         case .failed(let reason):
             return presentFallback(.failed(.resolution(reason)), sessionID: sessionID)
         case .target(let target):
-            return await launch(target: target, sessionID: sessionID)
+            let request = WorkspaceTargetRequest(
+                target: target,
+                sessionID: sessionID,
+                sessionName: sessionName,
+                cwd: cwd,
+                project: project,
+                gitBranch: gitBranch)
+            return await launch(
+                target: target, request: request, sessionID: sessionID)
         }
     }
 
     private func launch(target: TerminalLinkTarget,
+                        request: WorkspaceTargetRequest,
                         sessionID: String) async -> TerminalLaunchOutcome {
         guard !Task.isCancelled else { return .cancelled }
         var automationFailure: TerminalAutomationError?
-        if target.supportsExactTargeting,
-           let tty = target.tty,
-           let application = target.ownerApplication {
-            switch exactTargeter.target(tty: tty, application: application) {
+        if target.supportsExactTargeting {
+            switch await scriptTargeter.target(request) {
             case .targeted:
                 return Task.isCancelled ? .cancelled : .exact(target)
-            case .notFound:
+            case .notFound, .noConfidentMatch, .settingsOpened,
+                 .settingsOpenFailed:
                 break
-            case .permissionDenied(let error):
-                return presentFallback(.permissionDenied(error), sessionID: sessionID)
-            case .failed(let error):
+            case .permissionDenied(.automation(let error)):
+                return presentFallback(
+                    .permissionDenied(error), sessionID: sessionID)
+            case .permissionDenied(.accessibility):
+                break
+            case .failed(.automation(let error)):
                 automationFailure = error
+            case .failed(.accessibility(let reason)):
+                automationFailure = TerminalAutomationError(
+                    number: nil,
+                    message: reason,
+                    dictionary: ["stage": "script-targeting"])
+            }
+        } else if target.ownerProcessID != nil {
+            let result = await axTargeter.target(request)
+            guard !Task.isCancelled else { return .cancelled }
+            switch result {
+            case .settingsOpened:
+                return .axSettingsOpened(target)
+            case .settingsOpenFailed:
+                return await activateOwner(
+                    target: target,
+                    success: .axSettingsOpenFailed(target),
+                    sessionID: sessionID)
+            case .targeted(let matchedTitle):
+                let title = matchedTitle?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !title.isEmpty {
+                    return await activateAndVerifyAX(
+                        target: target,
+                        request: request,
+                        matchedTitle: title,
+                        sessionID: sessionID)
+                }
+                return await activateOwner(
+                    target: target,
+                    success: .axNoConfidentMatch(target),
+                    sessionID: sessionID)
+            case .notFound, .noConfidentMatch:
+                return await activateOwner(
+                    target: target,
+                    success: .axNoConfidentMatch(target),
+                    sessionID: sessionID)
+            case .permissionDenied(.accessibility):
+                return await activateOwner(
+                    target: target,
+                    success: .axDenied(target),
+                    sessionID: sessionID)
+            case .permissionDenied(.automation(let error)):
+                return await activateOwner(
+                    target: target,
+                    success: .axFailed(target, reason: error.message),
+                    sessionID: sessionID)
+            case .failed(.accessibility(let reason)):
+                return await activateOwner(
+                    target: target,
+                    success: .axFailed(target, reason: reason),
+                    sessionID: sessionID)
+            case .failed(.automation(let error)):
+                return await activateOwner(
+                    target: target,
+                    success: .axFailed(target, reason: error.message),
+                    sessionID: sessionID)
             }
         }
 
@@ -719,6 +808,62 @@ public struct TerminalLaunchFlow {
         let failure = automationFailure.map(TerminalLaunchFailure.automation)
             ?? .noTerminalOwner
         return presentFallback(.failed(failure), sessionID: sessionID)
+    }
+
+    private func activateOwner(
+        target: TerminalLinkTarget,
+        success: TerminalLaunchOutcome,
+        sessionID: String
+    ) async -> TerminalLaunchOutcome {
+        guard let ownerProcessID = target.ownerProcessID else {
+            return presentFallback(
+                .failed(.noTerminalOwner), sessionID: sessionID)
+        }
+        let activated = await ownerActivator.activate(
+            processID: ownerProcessID,
+            application: target.ownerApplication)
+        guard !Task.isCancelled else { return .cancelled }
+        guard activated else {
+            return presentFallback(
+                .failed(.ownerActivationFailed(target.ownerApplication)),
+                sessionID: sessionID)
+        }
+        return success
+    }
+
+    private func activateAndVerifyAX(
+        target: TerminalLinkTarget,
+        request: WorkspaceTargetRequest,
+        matchedTitle: String,
+        sessionID: String
+    ) async -> TerminalLaunchOutcome {
+        guard let ownerProcessID = target.ownerProcessID else {
+            return presentFallback(
+                .failed(.noTerminalOwner), sessionID: sessionID)
+        }
+        let activated = await ownerActivator.activate(
+            processID: ownerProcessID,
+            application: target.ownerApplication)
+        guard !Task.isCancelled else { return .cancelled }
+        guard activated else {
+            return presentFallback(
+                .failed(.ownerActivationFailed(target.ownerApplication)),
+                sessionID: sessionID)
+        }
+
+        let verification = await axTargeter.verify(
+            request, matchedTitle: matchedTitle)
+        guard !Task.isCancelled else { return .cancelled }
+        switch verification {
+        case .verified:
+            return .axTargeted(target, matchedTitle: matchedTitle)
+        case .unavailable:
+            return .axFailed(
+                target,
+                reason: "Workspace selection could not be verified after activation")
+        case .failed(let reason):
+            return .axFailed(target, reason: reason)
+        }
     }
 
     private func presentFallback(_ outcome: TerminalLaunchOutcome,

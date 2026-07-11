@@ -10,6 +10,7 @@ enum TerminalLauncher {
     static func open(
         session: SessionSummary,
         resolver: any TerminalLinkResolving = TerminalLinkResolver(),
+        workspacePermissionHandler: @escaping @MainActor @Sendable (String) async -> WorkspaceAccessAction,
         openMainWindow: @escaping @MainActor () -> Void,
         selectSession: @escaping @MainActor (String) -> Void,
         revealTranscript: @escaping @MainActor (String, TerminalLaunchOutcome) -> Void,
@@ -17,7 +18,9 @@ enum TerminalLauncher {
     ) -> Task<Void, Never> {
         let flow = TerminalLaunchFlow(
             resolver: resolver,
-            exactTargeter: AppleScriptTerminalTargeter(),
+            scriptTargeter: AppleScriptTerminalTargeter(),
+            axTargeter: AccessibilityWorkspaceTargeter(
+                permissionHandler: workspacePermissionHandler),
             ownerActivator: RunningApplicationActivator(),
             windows: ClosureTerminalWindowAdapter(
                 openMainWindow: openMainWindow,
@@ -26,6 +29,10 @@ enum TerminalLauncher {
             )
         )
         return Task {
+            let cwd = session.cwd
+            let gitBranch = await Task.detached(priority: .utility) {
+                WorkspaceGitBranchReader.branch(at: cwd)
+            }.value
             // The outcome was previously discarded, so a successful Tier-1/2 open
             // gave no in-app signal — invisible when the terminal was already
             // frontmost. Surface a confirmation on success; failures already
@@ -33,13 +40,74 @@ enum TerminalLauncher {
             let outcome = await flow.open(
                 sessionID: session.id,
                 cwd: session.cwd,
+                project: session.project,
+                sessionName: session.name ?? session.handle,
+                gitBranch: gitBranch,
                 machineID: session.machineID
             )
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                Self.diagnostic("result=cancelled-after-flow")
+                return
+            }
             if let message = outcome.successMessage {
+                Self.diagnostic("result=confirmation message=\(message)")
                 confirmLaunch(message)
+            } else {
+                Self.diagnostic("result=no-confirmation")
             }
         }
+    }
+
+    private static func diagnostic(_ message: String) {
+        guard ProcessInfo.processInfo.environment[
+            "TRIFOLA_AX_DIAGNOSTICS"] == "1" else { return }
+        FileHandle.standardError.write(
+            Data("[terminal-launch] \(message)\n".utf8))
+    }
+}
+
+private enum WorkspaceGitBranchReader {
+    nonisolated static func branch(at cwd: String) -> String? {
+        guard !cwd.isEmpty else { return nil }
+        var directory = URL(fileURLWithPath: cwd, isDirectory: true)
+            .standardizedFileURL
+        let fileManager = FileManager.default
+        for _ in 0..<32 {
+            let marker = directory.appendingPathComponent(".git")
+            var isDirectory = ObjCBool(false)
+            if fileManager.fileExists(
+                atPath: marker.path, isDirectory: &isDirectory) {
+                let head: URL?
+                if isDirectory.boolValue {
+                    head = marker.appendingPathComponent("HEAD")
+                } else if let markerText = try? String(
+                    contentsOf: marker, encoding: .utf8),
+                          markerText.hasPrefix("gitdir:") {
+                    let path = markerText
+                        .dropFirst("gitdir:".count)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let gitDirectory = URL(
+                        fileURLWithPath: path,
+                        relativeTo: directory).standardizedFileURL
+                    head = gitDirectory.appendingPathComponent("HEAD")
+                } else {
+                    head = nil
+                }
+                guard let head,
+                      let contents = try? String(
+                          contentsOf: head, encoding: .utf8) else { return nil }
+                let value = contents.trimmingCharacters(
+                    in: .whitespacesAndNewlines)
+                let prefix = "ref: refs/heads/"
+                guard value.hasPrefix(prefix) else { return nil }
+                let branch = String(value.dropFirst(prefix.count))
+                return branch.isEmpty ? nil : branch
+            }
+            let parent = directory.deletingLastPathComponent()
+            if parent.path == directory.path { break }
+            directory = parent
+        }
+        return nil
     }
 }
 
@@ -96,8 +164,32 @@ private final class RunningApplicationActivator: TerminalOwnerActivating {
         // Some terminal owners accept the cooperative request without taking
         // focus. The direct request is the bounded compatibility fallback.
         guard !Task.isCancelled else { return false }
-        guard app.activate(options: [.activateAllWindows]) else { return false }
-        return await Self.waitUntilActive(app)
+        if app.activate(options: [.activateAllWindows]),
+           await Self.waitUntilActive(app) {
+            return true
+        }
+
+        // `NSRunningApplication.activate` can be accepted without crossing to
+        // a window on another macOS Space. LaunchServices owns that transition;
+        // ask it to reopen the exact running bundle without creating a second
+        // instance, then verify the returned PID and actual active state.
+        guard !Task.isCancelled,
+              !app.isTerminated,
+              let bundleURL = app.bundleURL else { return false }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        configuration.createsNewApplicationInstance = false
+        configuration.promptsUserIfNeeded = false
+        do {
+            let activated = try await NSWorkspace.shared.openApplication(
+                at: bundleURL, configuration: configuration)
+            guard activated.processIdentifier == app.processIdentifier,
+                  !activated.isTerminated else { return false }
+            return await Self.waitUntilActive(activated)
+        } catch {
+            return false
+        }
     }
 
     private static func waitUntilActive(_ app: NSRunningApplication) async -> Bool {
@@ -136,9 +228,12 @@ private final class RunningApplicationActivator: TerminalOwnerActivating {
 }
 
 @MainActor
-private final class AppleScriptTerminalTargeter: TerminalExactTargeting {
-    func target(tty: String,
-                application: TerminalApplication) -> TerminalExactTargetResult {
+private final class AppleScriptTerminalTargeter: WorkspaceTargeting {
+    func target(_ request: WorkspaceTargetRequest) async -> WorkspaceTargetResult {
+        guard let tty = request.target.tty,
+              let application = request.target.ownerApplication else {
+            return .notFound
+        }
         let quotedTTY = Self.appleScriptQuoted(tty)
         let source: String
         switch application {
@@ -181,11 +276,11 @@ private final class AppleScriptTerminalTargeter: TerminalExactTargeting {
         }
 
         guard let script = NSAppleScript(source: source) else {
-            return .failed(TerminalAutomationError(
+            return .failed(.automation(TerminalAutomationError(
                 number: nil,
                 message: "AppleScript could not be compiled",
                 dictionary: ["stage": "compile"]
-            ))
+            )))
         }
 
         var dictionary: NSDictionary?
@@ -197,11 +292,12 @@ private final class AppleScriptTerminalTargeter: TerminalExactTargeting {
                 || lowered.contains("not authorized")
                 || lowered.contains("not permitted")
                 || lowered.contains("privilege violation") {
-                return .permissionDenied(error)
+                return .permissionDenied(.automation(error))
             }
-            return .failed(error)
+            return .failed(.automation(error))
         }
-        return result.booleanValue ? .targeted : .notFound
+        return result.booleanValue
+            ? .targeted(matchedTitle: nil) : .notFound
     }
 
     private static func preservedError(_ error: NSDictionary) -> TerminalAutomationError {

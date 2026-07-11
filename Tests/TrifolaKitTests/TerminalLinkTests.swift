@@ -159,6 +159,7 @@ struct TerminalLinkTests {
         #expect(target.processID == 702)
         #expect(target.match == .sessionID)
         #expect(target.tty == "/dev/ttys001")
+        #expect(target.processCommand == "claude")
     }
 
     @Test("a stale exact registry PID never falls through to a cwd peer")
@@ -349,16 +350,31 @@ private struct FixedTerminalResolver: TerminalLinkResolving {
 }
 
 @MainActor
-private final class FakeExactTargeter: TerminalExactTargeting {
-    var result: TerminalExactTargetResult
-    private(set) var calls: [(String, TerminalApplication)] = []
+private final class FakeWorkspaceTargeter: WorkspaceTargeting {
+    var result: WorkspaceTargetResult
+    var verification: WorkspaceTargetVerification
+    private(set) var calls: [WorkspaceTargetRequest] = []
+    private(set) var verificationCalls: [(WorkspaceTargetRequest, String)] = []
 
-    init(_ result: TerminalExactTargetResult) { self.result = result }
+    init(
+        _ result: WorkspaceTargetResult,
+        verification: WorkspaceTargetVerification = .verified
+    ) {
+        self.result = result
+        self.verification = verification
+    }
 
-    func target(tty: String,
-                application: TerminalApplication) -> TerminalExactTargetResult {
-        calls.append((tty, application))
+    func target(_ request: WorkspaceTargetRequest) async -> WorkspaceTargetResult {
+        calls.append(request)
         return result
+    }
+
+    func verify(
+        _ request: WorkspaceTargetRequest,
+        matchedTitle: String
+    ) async -> WorkspaceTargetVerification {
+        verificationCalls.append((request, matchedTitle))
+        return verification
     }
 }
 
@@ -422,14 +438,16 @@ private final class FakeTerminalWindows: TerminalWindowAdapting {
 private func launchTarget(ownerProcessID: Int32? = 500,
                           application: TerminalApplication? = .terminal,
                           tty: String? = "/dev/ttys005",
-                          match: TerminalLinkTarget.Match = .sessionID) -> TerminalLinkTarget {
+                          match: TerminalLinkTarget.Match = .sessionID,
+                          processCommand: String? = nil) -> TerminalLinkTarget {
     TerminalLinkTarget(
         processID: 502,
         tty: tty,
         startedAt: Date(timeIntervalSince1970: 1_700_000_000),
         ownerProcessID: ownerProcessID,
         ownerApplication: application,
-        match: match
+        match: match,
+        processCommand: processCommand
     )
 }
 
@@ -445,6 +463,26 @@ struct TerminalLaunchOutcomeCopyTests {
                 == "Brought Warp to the front")
         #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(application: nil)).successMessage
                 == "Brought your terminal to the front")
+        #expect(TerminalLaunchOutcome.axTargeted(
+            launchTarget(application: .other(name: "WorkspaceTerm")),
+            matchedTitle: "portfolio").successMessage
+                == "Jumped to workspace 'portfolio' in WorkspaceTerm")
+        #expect(TerminalLaunchOutcome.axDenied(
+            launchTarget(application: .other(name: "WorkspaceTerm"))).successMessage
+                == "Grant Accessibility to jump to the exact workspace — fronting WorkspaceTerm instead")
+        #expect(TerminalLaunchOutcome.axNoConfidentMatch(
+            launchTarget(application: .ghostty)).successMessage
+                == "No confident workspace match in Ghostty — brought it to the front instead")
+        #expect(TerminalLaunchOutcome.axFailed(
+            launchTarget(application: .other(name: "Warp")), reason: "AX timeout")
+            .successMessage
+                == "Workspace targeting failed in Warp: AX timeout — brought it to the front instead")
+        #expect(TerminalLaunchOutcome.axSettingsOpened(
+            launchTarget(application: .other(name: "WorkspaceTerm"))).successMessage
+                == "Opened Accessibility settings — grant Trifola access, then try Open session again")
+        #expect(TerminalLaunchOutcome.axSettingsOpenFailed(
+            launchTarget(application: .other(name: "WorkspaceTerm"))).successMessage
+                == "Could not open Accessibility settings — fronting WorkspaceTerm instead")
         // Every fallback path stays silent on success so the toast never lies.
         #expect(TerminalLaunchOutcome.notLive.successMessage == nil)
         #expect(TerminalLaunchOutcome.ambiguous.successMessage == nil)
@@ -466,6 +504,12 @@ struct TerminalLaunchOutcomeCopyTests {
         let error = TerminalAutomationError(number: 1, message: "failed", dictionary: [:])
         let outcomes: [TerminalLaunchOutcome] = [
             .exact(launchTarget()),
+            .axTargeted(launchTarget(), matchedTitle: "trifola"),
+            .axDenied(launchTarget()),
+            .axNoConfidentMatch(launchTarget()),
+            .axFailed(launchTarget(), reason: "timeout"),
+            .axSettingsOpened(launchTarget()),
+            .axSettingsOpenFailed(launchTarget()),
             .ownerActivated(launchTarget(application: .ghostty)),
             .permissionDenied(error),
             .notLive,
@@ -487,12 +531,14 @@ struct TerminalLaunchFlowTests {
     @Test("exact tab targeting returns exact and does not show transcript")
     func exact() async {
         let target = launchTarget()
-        let exact = FakeExactTargeter(.targeted)
+        let script = FakeWorkspaceTargeter(.targeted(matchedTitle: nil))
+        let ax = FakeWorkspaceTargeter(.targeted(matchedTitle: "wrong"))
         let owner = FakeOwnerActivator(true)
         let windows = FakeTerminalWindows()
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .target(target)),
-            exactTargeter: exact,
+            scriptTargeter: script,
+            axTargeter: ax,
             ownerActivator: owner,
             windows: windows
         )
@@ -502,7 +548,8 @@ struct TerminalLaunchFlowTests {
         )
 
         #expect(outcome == .exact(target))
-        #expect(exact.calls.count == 1)
+        #expect(script.calls.count == 1)
+        #expect(ax.calls.isEmpty)
         #expect(owner.processIDs.isEmpty)
         #expect(windows.events.isEmpty)
     }
@@ -520,7 +567,10 @@ struct TerminalLaunchFlowTests {
         let windows = FakeTerminalWindows()
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .target(launchTarget())),
-            exactTargeter: FakeExactTargeter(.permissionDenied(error)),
+            scriptTargeter: FakeWorkspaceTargeter(
+                .permissionDenied(.automation(error))),
+            axTargeter: FakeWorkspaceTargeter(
+                .targeted(matchedTitle: "must-not-run")),
             ownerActivator: FakeOwnerActivator(true),
             windows: windows
         )
@@ -537,11 +587,13 @@ struct TerminalLaunchFlowTests {
     @Test("missing exact tab activates its known terminal owner")
     func missingTabActivatesOwner() async {
         let target = launchTarget()
+        let ax = FakeWorkspaceTargeter(.targeted(matchedTitle: "must-not-run"))
         let owner = FakeOwnerActivator(true)
         let windows = FakeTerminalWindows()
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .target(target)),
-            exactTargeter: FakeExactTargeter(.notFound),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: ax,
             ownerActivator: owner,
             windows: windows
         )
@@ -553,56 +605,218 @@ struct TerminalLaunchFlowTests {
         #expect(outcome == .ownerActivated(target))
         #expect(owner.processIDs == [500])
         #expect(owner.applications == [.terminal])
+        #expect(ax.calls.isEmpty)
         #expect(windows.events.isEmpty)
     }
 
-    @Test("Ghostty skips exact targeting and activates its discovered owner PID")
+    @Test("Ghostty uses AX before activating its discovered owner PID")
     func ghosttyActivatesOwner() async {
         let target = launchTarget(ownerProcessID: 900, application: .ghostty, tty: "/dev/ttys009")
-        let exact = FakeExactTargeter(.targeted)
+        let script = FakeWorkspaceTargeter(.targeted(matchedTitle: "wrong"))
+        let ax = FakeWorkspaceTargeter(.noConfidentMatch)
         let owner = FakeOwnerActivator(true)
         let windows = FakeTerminalWindows()
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .target(target)),
-            exactTargeter: exact,
+            scriptTargeter: script,
+            axTargeter: ax,
             ownerActivator: owner,
             windows: windows)
 
         let outcome = await flow.open(
             sessionID: "ghost", cwd: "/repo", machineID: Machine.localID)
 
-        #expect(outcome == .ownerActivated(target))
-        #expect(exact.calls.isEmpty)
+        #expect(outcome == .axNoConfidentMatch(target))
+        #expect(script.calls.isEmpty)
+        #expect(ax.calls.count == 1)
+        #expect(ax.verificationCalls.isEmpty)
         #expect(owner.processIDs == [900])
         #expect(owner.applications == [.ghostty])
         #expect(windows.events.isEmpty)
-        #expect(outcome.successMessage == "Brought Ghostty to the front")
+        #expect(outcome.successMessage
+            == "No confident workspace match in Ghostty — brought it to the front instead")
     }
 
-    @Test("an unknown macOS terminal skips exact targeting and activates its owner PID")
+    @Test("an unknown macOS terminal uses AX then activates its owner PID")
     func genericTerminalActivatesOwner() async {
         let target = launchTarget(
             ownerProcessID: 500,
             application: .other(name: "ExampleTerm"),
             tty: "/dev/ttys009")
-        let exact = FakeExactTargeter(.targeted)
+        let script = FakeWorkspaceTargeter(.targeted(matchedTitle: "wrong"))
+        let ax = FakeWorkspaceTargeter(.noConfidentMatch)
         let owner = FakeOwnerActivator(true)
         let windows = FakeTerminalWindows()
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .target(target)),
-            exactTargeter: exact,
+            scriptTargeter: script,
+            axTargeter: ax,
             ownerActivator: owner,
             windows: windows)
 
         let outcome = await flow.open(
             sessionID: "generic-live", cwd: "/repo", machineID: Machine.localID)
 
-        #expect(outcome == .ownerActivated(target))
-        #expect(exact.calls.isEmpty)
+        #expect(outcome == .axNoConfidentMatch(target))
+        #expect(script.calls.isEmpty)
+        #expect(ax.calls.count == 1)
         #expect(owner.processIDs == [500])
         #expect(owner.applications == [.other(name: "ExampleTerm")])
         #expect(windows.events.isEmpty)
-        #expect(outcome.successMessage == "Brought ExampleTerm to the front")
+        #expect(outcome.successMessage
+            == "No confident workspace match in ExampleTerm — brought it to the front instead")
+    }
+
+    @Test("AX match activates the owner and returns the matched workspace title")
+    func axTargeted() async {
+        let target = launchTarget(
+            ownerProcessID: 900,
+            application: .other(name: "WorkspaceTerm"),
+            tty: "/dev/ttys009")
+        let script = FakeWorkspaceTargeter(.targeted(matchedTitle: "wrong"))
+        let ax = FakeWorkspaceTargeter(
+            .targeted(matchedTitle: "portfolio"))
+        let owner = FakeOwnerActivator(true)
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            scriptTargeter: script,
+            axTargeter: ax,
+            ownerActivator: owner,
+            windows: windows)
+
+        let outcome = await flow.open(
+            sessionID: "1881b475-full",
+            cwd: "/Users/dev/workspace",
+            project: "workspace",
+            sessionName: "portfolio",
+            gitBranch: "feature/workspace",
+            machineID: Machine.localID)
+
+        #expect(outcome == .axTargeted(
+            target, matchedTitle: "portfolio"))
+        #expect(script.calls.isEmpty)
+        #expect(ax.calls.count == 1)
+        #expect(ax.calls.first?.identity.sessionName == "portfolio")
+        #expect(ax.calls.first?.identity.project == "workspace")
+        #expect(ax.calls.first?.identity.gitBranch == "feature/workspace")
+        #expect(ax.calls.first?.identity.tty == "/dev/ttys009")
+        #expect(ax.verificationCalls.count == 1)
+        #expect(ax.verificationCalls.first?.1 == "portfolio")
+        #expect(owner.processIDs == [900])
+        #expect(windows.events.isEmpty)
+    }
+
+    @Test("an unverified AX selection never claims an exact jump")
+    func axUnverified() async {
+        let target = launchTarget(
+            ownerProcessID: 900,
+            application: .other(name: "ExampleTerm"),
+            tty: "/dev/ttys009")
+        let ax = FakeWorkspaceTargeter(
+            .targeted(matchedTitle: "portfolio"),
+            verification: .unavailable)
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: ax,
+            ownerActivator: FakeOwnerActivator(true),
+            windows: FakeTerminalWindows())
+
+        let outcome = await flow.open(
+            sessionID: "session", cwd: "/repo", project: "portfolio",
+            machineID: Machine.localID)
+
+        #expect(outcome == .axFailed(
+            target,
+            reason: "Workspace selection could not be verified after activation"))
+        #expect(outcome.successMessage?.contains("could not be verified") == true)
+    }
+
+    @Test("AX denial degrades through verified owner activation")
+    func axDenied() async {
+        let target = launchTarget(
+            ownerProcessID: 900, application: .other(name: "WorkspaceTerm"))
+        let owner = FakeOwnerActivator(true)
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(
+                .permissionDenied(.accessibility)),
+            ownerActivator: owner,
+            windows: windows)
+
+        let outcome = await flow.open(
+            sessionID: "workspace", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .axDenied(target))
+        #expect(owner.processIDs == [900])
+        #expect(windows.events.isEmpty)
+    }
+
+    @Test("opening Accessibility settings stops before activation or transcript")
+    func axSettingsOpened() async {
+        let target = launchTarget(
+            ownerProcessID: 900, application: .other(name: "WorkspaceTerm"))
+        let owner = FakeOwnerActivator(true)
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(.settingsOpened),
+            ownerActivator: owner,
+            windows: windows)
+
+        let outcome = await flow.open(
+            sessionID: "workspace", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .axSettingsOpened(target))
+        #expect(owner.processIDs.isEmpty)
+        #expect(windows.events.isEmpty)
+    }
+
+    @Test("a failed Settings open degrades without claiming it opened")
+    func axSettingsOpenFailed() async {
+        let target = launchTarget(
+            ownerProcessID: 900, application: .other(name: "WorkspaceTerm"))
+        let owner = FakeOwnerActivator(true)
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(.settingsOpenFailed),
+            ownerActivator: owner,
+            windows: windows)
+
+        let outcome = await flow.open(
+            sessionID: "workspace", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .axSettingsOpenFailed(target))
+        #expect(owner.processIDs == [900])
+        #expect(outcome.successMessage
+            == "Could not open Accessibility settings — fronting WorkspaceTerm instead")
+        #expect(windows.events.isEmpty)
+    }
+
+    @Test("AX failure is named after verified activation")
+    func axFailure() async {
+        let target = launchTarget(
+            ownerProcessID: 500, application: .other(name: "Warp"))
+        let windows = FakeTerminalWindows()
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(
+                .failed(.accessibility("AX messaging timeout"))),
+            ownerActivator: FakeOwnerActivator(true),
+            windows: windows)
+
+        let outcome = await flow.open(
+            sessionID: "warp", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .axFailed(target, reason: "AX messaging timeout"))
+        #expect(windows.events.isEmpty)
     }
 
     @Test("a known terminal owner that rejects activation reports that cause")
@@ -611,7 +825,8 @@ struct TerminalLaunchFlowTests {
         let windows = FakeTerminalWindows()
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .target(target)),
-            exactTargeter: FakeExactTargeter(.notFound),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(.noConfidentMatch),
             ownerActivator: FakeOwnerActivator(false),
             windows: windows)
 
@@ -633,7 +848,8 @@ struct TerminalLaunchFlowTests {
                     ownerProcessID: nil, application: nil, tty: nil
                 ))
             ),
-            exactTargeter: FakeExactTargeter(.notFound),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(.notFound),
             ownerActivator: FakeOwnerActivator(false),
             windows: windows
         )
@@ -651,7 +867,8 @@ struct TerminalLaunchFlowTests {
         let windows = FakeTerminalWindows()
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .ambiguous),
-            exactTargeter: FakeExactTargeter(.notFound),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(.notFound),
             ownerActivator: FakeOwnerActivator(false),
             windows: windows
         )
@@ -672,7 +889,8 @@ struct TerminalLaunchFlowTests {
         )
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .notLive),
-            exactTargeter: FakeExactTargeter(.notFound),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(.notFound),
             ownerActivator: FakeOwnerActivator(false),
             windows: windows
         )
@@ -690,7 +908,8 @@ struct TerminalLaunchFlowTests {
         let windows = FakeTerminalWindows(frontWindow: "Settings")
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .notLive),
-            exactTargeter: FakeExactTargeter(.notFound),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(.notFound),
             ownerActivator: FakeOwnerActivator(false),
             windows: windows
         )
@@ -710,7 +929,8 @@ struct TerminalLaunchFlowTests {
             resolver: FixedTerminalResolver(
                 resolution: .failed("local resolver was invoked")
             ),
-            exactTargeter: FakeExactTargeter(.notFound),
+            scriptTargeter: FakeWorkspaceTargeter(.notFound),
+            axTargeter: FakeWorkspaceTargeter(.notFound),
             ownerActivator: FakeOwnerActivator(false),
             windows: windows
         )
@@ -725,12 +945,14 @@ struct TerminalLaunchFlowTests {
 
     @Test("a superseded launch is silent and publishes no stale fallback")
     func cancelledLaunchIsSilent() async {
-        let exact = FakeExactTargeter(.notFound)
+        let script = FakeWorkspaceTargeter(.notFound)
+        let ax = FakeWorkspaceTargeter(.targeted(matchedTitle: "must-not-run"))
         let owner = SuspendingOwnerActivator()
         let windows = FakeTerminalWindows()
         let flow = TerminalLaunchFlow(
             resolver: FixedTerminalResolver(resolution: .target(launchTarget())),
-            exactTargeter: exact,
+            scriptTargeter: script,
+            axTargeter: ax,
             ownerActivator: owner,
             windows: windows)
 
@@ -743,7 +965,8 @@ struct TerminalLaunchFlowTests {
         let outcome = await task.value
 
         #expect(outcome == .cancelled)
-        #expect(exact.calls.count == 1)
+        #expect(script.calls.count == 1)
+        #expect(ax.calls.isEmpty)
         #expect(owner.started)
         #expect(windows.events.isEmpty)
     }

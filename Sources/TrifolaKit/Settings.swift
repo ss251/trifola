@@ -55,11 +55,27 @@ public struct AppPreferences: Codable, Sendable, Equatable {
     /// Default duration offered by generic Snooze actions. Stored as whole
     /// minutes so the value is stable across UI and persistence boundaries.
     public var defaultSnoozeDurationMinutes: Int
+    /// Plan-quota access is deliberately opt-in. Claude access may read the
+    /// credential file, query Keychain, and make one HTTPS request; Codex
+    /// access reads rollout files locally and never uses the network.
+    public var claudeQuotaAccessEnabled: Bool
+    public var codexQuotaAccessEnabled: Bool
+    /// The at-value Accessibility explainer is shown once. This records only
+    /// that the user saw the explanation; macOS TCC remains the sole source of
+    /// truth for whether Accessibility is currently granted.
+    public var hasSeenAccessibilityWorkspaceExplainer: Bool
 
     public init(quietHours: QuietHours = QuietHours(),
-                defaultSnoozeDurationMinutes: Int = 60) {
+                defaultSnoozeDurationMinutes: Int = 60,
+                claudeQuotaAccessEnabled: Bool = false,
+                codexQuotaAccessEnabled: Bool = false,
+                hasSeenAccessibilityWorkspaceExplainer: Bool = false) {
         self.quietHours = quietHours
         self.defaultSnoozeDurationMinutes = max(1, defaultSnoozeDurationMinutes)
+        self.claudeQuotaAccessEnabled = claudeQuotaAccessEnabled
+        self.codexQuotaAccessEnabled = codexQuotaAccessEnabled
+        self.hasSeenAccessibilityWorkspaceExplainer =
+            hasSeenAccessibilityWorkspaceExplainer
     }
 
     /// Convenience for computing an expiry without duplicating minute-to-second
@@ -68,7 +84,11 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         date.addingTimeInterval(TimeInterval(defaultSnoozeDurationMinutes * 60))
     }
 
-    private enum CodingKeys: String, CodingKey { case quietHours, defaultSnoozeDurationMinutes }
+    private enum CodingKeys: String, CodingKey {
+        case quietHours, defaultSnoozeDurationMinutes
+        case claudeQuotaAccessEnabled, codexQuotaAccessEnabled
+        case hasSeenAccessibilityWorkspaceExplainer
+    }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -77,6 +97,29 @@ public struct AppPreferences: Codable, Sendable, Equatable {
             1,
             try values.decodeIfPresent(Int.self, forKey: .defaultSnoozeDurationMinutes) ?? 60
         )
+        claudeQuotaAccessEnabled = try values.decodeIfPresent(
+            Bool.self, forKey: .claudeQuotaAccessEnabled) ?? false
+        codexQuotaAccessEnabled = try values.decodeIfPresent(
+            Bool.self, forKey: .codexQuotaAccessEnabled) ?? false
+        hasSeenAccessibilityWorkspaceExplainer = try values.decodeIfPresent(
+            Bool.self, forKey: .hasSeenAccessibilityWorkspaceExplainer) ?? false
+    }
+}
+
+/// A value snapshot is passed into quota refreshes so the trust decision is
+/// explicit at the read boundary and cannot be bypassed by a later refactor.
+public struct QuotaConsent: Sendable, Equatable {
+    public let claude: Bool
+    public let codex: Bool
+
+    public init(claude: Bool = false, codex: Bool = false) {
+        self.claude = claude
+        self.codex = codex
+    }
+
+    public init(preferences: AppPreferences) {
+        self.init(claude: preferences.claudeQuotaAccessEnabled,
+                  codex: preferences.codexQuotaAccessEnabled)
     }
 }
 

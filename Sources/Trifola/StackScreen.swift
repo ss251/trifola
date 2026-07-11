@@ -64,6 +64,26 @@ final class StackStore: ObservableObject {
     }
 }
 
+/// A direct child of the production hierarchy's LazyVStack. The previous tree
+/// made only the three lanes lazy, while every namespace and skill inside each
+/// mounted lane lived in an eager VStack. Flattening preserves the exact lane →
+/// namespace → skill order and indentation while allowing offscreen skill rows
+/// to remain unrealized until scrolling reaches them.
+private enum SkillTreeNode: Identifiable {
+    case lane(SkillLaneGroup, isFirst: Bool)
+    case namespace(SkillNamespace)
+    case skill(Skill)
+
+    var id: String {
+        switch self {
+        case .lane(let lane, _): return "lane:\(lane.id)"
+        case .namespace(let namespace):
+            return "namespace:\(namespace.skills.first?.path ?? namespace.id)"
+        case .skill(let skill): return "skill:\(skill.path)"
+        }
+    }
+}
+
 // MARK: - Screen
 
 /// Live health of the Claude Code config surface — the config root, the skills
@@ -71,6 +91,7 @@ final class StackStore: ObservableObject {
 /// hard timeout, so this screen always renders.
 struct StackScreen: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigation: AppNavigation
     @State private var skillQuery = ""
     @State private var selectedSkillPath: String? = nil
 
@@ -112,45 +133,80 @@ struct StackScreen: View {
             skillsSection
         }
         .reorderMotion(value: store.results.isEmpty)
-        .task {
+        .task(id: navigation.section == .stack) {
+            guard navigation.section == .stack else { return }
             while !Task.isCancelled {
                 await store.refreshIfStale(30)
                 try? await Task.sleep(for: .seconds(30))
             }
         }
-        .task { await skillsStore.refreshIfStale() }
+        .task(id: navigation.section == .stack) {
+            guard navigation.section == .stack else { return }
+            await skillsStore.refreshIfStale()
+        }
     }
 
     // MARK: Skill hierarchy (VISION 3.3)
 
-    private var hierarchy: SkillHierarchy { skillsStore.hierarchy }
-    private var ledger: SkillLedger { services.auditReport.report.skillLedger }
-
-    /// Join key → ledger entry, from both fired + dead entries.
-    private var ledgerIndex: [String: SkillLedgerEntry] {
+    /// Join key → ledger entry, from both fired + dead entries. This must be
+    /// materialized once per screen pass: a computed `ledgerIndex` accessed by
+    /// every row rebuilt the whole dictionary up to three times per skill.
+    private static func makeLedgerIndex(
+        _ ledger: SkillLedger
+    ) -> [String: SkillLedgerEntry] {
         var m: [String: SkillLedgerEntry] = [:]
         for e in ledger.fired { m[e.name] = e }
         for e in ledger.dead where m[e.name] == nil { m[e.name] = e }
         return m
     }
-    private func entry(for s: Skill) -> SkillLedgerEntry? {
-        ledgerIndex[s.qualifiedID] ?? ledgerIndex[s.id] ?? ledgerIndex[s.name]
+
+    private static func entry(
+        for skill: Skill,
+        in ledgerIndex: [String: SkillLedgerEntry]
+    ) -> SkillLedgerEntry? {
+        ledgerIndex[skill.qualifiedID]
+            ?? ledgerIndex[skill.id]
+            ?? ledgerIndex[skill.name]
     }
 
-    private var filteredSkills: [Skill] {
-        SkillsStore.filter(skillsStore.allSkills, query: skillQuery)
-            .sorted { $0.id < $1.id }
-    }
-
-    private var selectedSkill: Skill? {
-        skillsStore.allSkills.first { $0.path == selectedSkillPath }
+    private static func makeTreeNodes(
+        _ hierarchy: SkillHierarchy
+    ) -> [SkillTreeNode] {
+        var nodes: [SkillTreeNode] = []
+        nodes.reserveCapacity(hierarchy.totalSkills + hierarchy.lanes.count * 4)
+        for (laneIndex, lane) in hierarchy.lanes.enumerated() {
+            nodes.append(.lane(lane, isFirst: laneIndex == 0))
+            for namespace in lane.namespaces {
+                if namespace.count > 1
+                    || namespace.key == "gstack"
+                    || !namespace.key.isEmpty {
+                    nodes.append(.namespace(namespace))
+                }
+                nodes.append(contentsOf: namespace.skills.map(SkillTreeNode.skill))
+            }
+        }
+        return nodes
     }
 
     private func seedBuilder(_ skill: Skill) { services.seedLaunch(skill: skill.qualifiedID) }
 
-    @ViewBuilder
     private var skillsSection: some View {
-        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+        let hierarchy = skillsStore.hierarchy
+        let ledger = services.auditReport.report.skillLedger
+        let allSkills = skillsStore.allSkills
+        let ledgerIndex = Self.makeLedgerIndex(ledger)
+        // Empty-query navigation never needs a redundant filter + sort. With a
+        // query, compute it once for both the match count and the flat list.
+        let filteredSkills = skillQuery.isEmpty
+            ? []
+            : SkillsStore.filter(allSkills, query: skillQuery)
+                .sorted { $0.id < $1.id }
+        let treeNodes = skillQuery.isEmpty ? Self.makeTreeNodes(hierarchy) : []
+        let selectedSkill = selectedSkillPath.flatMap { selectedPath in
+            allSkills.first { $0.path == selectedPath }
+        }
+
+        return VStack(alignment: .leading, spacing: Theme.sectionGap) {
             HStack(spacing: 8) {
                 SectionLabel("Skill hierarchy")
                 Text("\(hierarchy.totalSkills) skills · 3 source lanes")
@@ -207,10 +263,18 @@ struct StackScreen: View {
                 }
 
                 HStack(alignment: .top, spacing: Theme.sectionGap) {
-                    (skillQuery.isEmpty ? AnyView(hierarchyTree) : AnyView(flatList))
-                        .frame(width: 360)
+                    if skillQuery.isEmpty {
+                        hierarchyTree(nodes: treeNodes, ledgerIndex: ledgerIndex)
+                            .frame(width: 360)
+                    } else {
+                        flatList(skills: filteredSkills, ledgerIndex: ledgerIndex)
+                            .frame(width: 360)
+                    }
                     if let skill = selectedSkill {
-                        SkillDetail(skill: skill, entry: entry(for: skill)) { seedBuilder(skill) }
+                        SkillDetail(
+                            skill: skill,
+                            entry: Self.entry(for: skill, in: ledgerIndex)
+                        ) { seedBuilder(skill) }
                     } else {
                         EmptyState(icon: "puzzlepiece.extension",
                                    title: skillQuery.isEmpty ? "Pick a skill" : "No match",
@@ -226,15 +290,14 @@ struct StackScreen: View {
         .padding(.top, Theme.micro)
     }
 
-    private var hierarchyTree: some View {
+    private func hierarchyTree(
+        nodes: [SkillTreeNode],
+        ledgerIndex: [String: SkillLedgerEntry]
+    ) -> some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(hierarchy.lanes) { lane in
-                    SkillLaneView(lane: lane,
-                                  selectedPath: selectedSkillPath,
-                                  entryFor: { entry(for: $0) },
-                                  onSelect: { selectedSkillPath = $0.path },
-                                  onLaunch: { seedBuilder($0) })
+            LazyVStack(alignment: .leading, spacing: 4) {
+                ForEach(nodes) { node in
+                    hierarchyRow(node, ledgerIndex: ledgerIndex)
                 }
             }
             .padding(Theme.intraCell)
@@ -247,12 +310,37 @@ struct StackScreen: View {
         }
     }
 
-    private var flatList: some View {
+    @ViewBuilder
+    private func hierarchyRow(
+        _ node: SkillTreeNode,
+        ledgerIndex: [String: SkillLedgerEntry]
+    ) -> some View {
+        switch node {
+        case .lane(let lane, let isFirst):
+            SkillLaneHeader(lane: lane)
+                .padding(.top, isFirst ? 0 : 4)
+        case .namespace(let namespace):
+            SkillNamespaceHeader(namespace: namespace)
+        case .skill(let skill):
+            HierarchySkillRow(
+                skill: skill,
+                entry: Self.entry(for: skill, in: ledgerIndex),
+                isSelected: skill.path == selectedSkillPath,
+                onSelect: { selectedSkillPath = skill.path },
+                onLaunch: { seedBuilder(skill) })
+                .padding(.leading, Theme.codePadding)
+        }
+    }
+
+    private func flatList(
+        skills: [Skill],
+        ledgerIndex: [String: SkillLedgerEntry]
+    ) -> some View {
         ScrollView {
             LazyVStack(spacing: 2) {
-                ForEach(filteredSkills) { skill in
+                ForEach(skills) { skill in
                     HierarchySkillRow(skill: skill,
-                                      entry: entry(for: skill),
+                                      entry: Self.entry(for: skill, in: ledgerIndex),
                                       isSelected: skill.path == selectedSkillPath,
                                       showLane: true,
                                       onSelect: { selectedSkillPath = skill.path },
@@ -676,6 +764,49 @@ struct TriggerCollisionsPanel: View {
 }
 
 /// One source lane, its namespaces, and their skill nodes.
+private struct SkillLaneHeader: View {
+    let lane: SkillLaneGroup
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: lane.lane.icon)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(Theme.muted)
+                .frame(width: 16)
+            Text(lane.lane.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.ink)
+            Text("\(lane.count)")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
+            Spacer()
+            Text(lane.lane.subtitle)
+                .font(.caption2)
+                .foregroundStyle(Theme.muted)
+        }
+    }
+}
+
+private struct SkillNamespaceHeader: View {
+    let namespace: SkillNamespace
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Theme.faint)
+            Text(namespace.displayName)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Theme.muted)
+            Text("\(namespace.count)")
+                .font(.caption2)
+                .foregroundStyle(Theme.muted)
+        }
+        .padding(.leading, Theme.micro)
+        .padding(.top, Theme.rhythm / 2)
+    }
+}
+
 struct SkillLaneView: View {
     let lane: SkillLaneGroup
     var selectedPath: String? = nil
@@ -685,21 +816,10 @@ struct SkillLaneView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: lane.lane.icon).font(.footnote.weight(.medium)).foregroundStyle(Theme.muted).frame(width: 16)
-                Text(lane.lane.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
-                Text("\(lane.count)").font(.caption).foregroundStyle(Theme.muted)
-                Spacer()
-                Text(lane.lane.subtitle).font(.caption2).foregroundStyle(Theme.muted)
-            }
+            SkillLaneHeader(lane: lane)
             ForEach(lane.namespaces) { ns in
                 if ns.count > 1 || ns.key == "gstack" || !ns.key.isEmpty {
-                    HStack(spacing: 5) {
-                        Image(systemName: "chevron.right").font(.caption2.weight(.medium)).foregroundStyle(Theme.faint)
-                        Text(ns.displayName).font(.caption.weight(.medium)).foregroundStyle(Theme.muted)
-                        Text("\(ns.count)").font(.caption2).foregroundStyle(Theme.muted)
-                    }
-                    .padding(.leading, Theme.micro).padding(.top, Theme.rhythm / 2)
+                    SkillNamespaceHeader(namespace: ns)
                 }
                 ForEach(ns.skills) { s in
                     HierarchySkillRow(skill: s, entry: entryFor(s),

@@ -27,16 +27,30 @@ struct OverviewHeroComposition: View {
             Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 224) {
                 BurnGovernorSection(governor: snapshot.governor, showsDisclaimer: false)
             }
-            HStack(alignment: .top, spacing: Theme.gutter) {
-                Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 196) {
-                    TierSpendSection(stats: snapshot.tierStats, total: snapshot.tierTotal)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: Theme.gutter) {
+                    tierCard.frame(minWidth: 400)
+                    liveCard.frame(minWidth: 400)
                 }
-                Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 196) {
-                    LiveNowSection(sessions: snapshot.liveSessions, limit: 3,
-                                   onOpenBoard: onOpenLiveBoard,
-                                   onSelect: onSelectSession)
+                VStack(alignment: .leading, spacing: Theme.sectionGap) {
+                    tierCard
+                    liveCard
                 }
             }
+        }
+    }
+
+    private var tierCard: some View {
+        Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 196) {
+            TierSpendSection(stats: snapshot.tierStats, total: snapshot.tierTotal)
+        }
+    }
+
+    private var liveCard: some View {
+        Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 196) {
+            LiveNowSection(sessions: snapshot.liveSessions, limit: 3,
+                           onOpenBoard: onOpenLiveBoard,
+                           onSelect: onSelectSession)
         }
     }
 }
@@ -88,11 +102,12 @@ private struct OverviewReadout: View {
 /// context-weight offenders and the routing audit — one glance, whole story.
 struct OverviewScreen: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
     @State private var refreshRequested = false
 
     private var store: SessionStore { services.sessions }
 
-    private var subtitle: String {
+    private func subtitle(_ corpus: CorpusProjection?) -> String {
         let progress = store.scanProgress
         if store.scanPresentation.isProvisional {
             return scanProgressSentence
@@ -101,12 +116,10 @@ struct OverviewScreen: View {
         if isLocalCorpusMissing && store.sessions.isEmpty {
             return "Local, read-only session intelligence · refreshed \(fmtAgo(store.lastRefresh))\(refreshing)"
         }
-        // Distinct-project COUNT only — `projectSpend` also prices every
-        // session (a full cost rollup per body pass) just to be counted here.
-        let projects = Set(store.sessions.map(\.project)).count
-        let base = "\(store.sessions.count) sessions across \(projects) projects"
-        let fleet = services.isCrossMachine && store.machineCount > 1
-            ? "\(store.machineCount) machines · " : ""
+        guard let corpus else { return "Preparing local session intelligence…" }
+        let base = "\(store.sessions.count) sessions across \(corpus.distinctProjectCount) projects"
+        let machineCount = navigationSnapshots.fleet?.machineRollups.count ?? 1
+        let fleet = machineCount > 1 ? "\(machineCount) machines · " : ""
         return "\(fleet)\(base) · refreshed \(fmtAgo(store.lastRefresh))\(refreshing) · dollar values are API-rate estimates, not your bill"
     }
 
@@ -123,7 +136,7 @@ struct OverviewScreen: View {
     }
 
     private var isLocalCorpusMissing: Bool {
-        !services.hasLocalClaudeCorpus
+        services.providerCorpusPresence.isEmpty
     }
 
     private var isRefreshing: Bool {
@@ -135,7 +148,7 @@ struct OverviewScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Overview",
-            subtitle: subtitle
+            subtitle: subtitle(navigationSnapshots.corpus)
         ) {
             QuietTapButton(action: {
                 refreshRequested = true
@@ -153,26 +166,32 @@ struct OverviewScreen: View {
                 : "Rescan sessions, skills, and audit evidence")
             .help(isRefreshing ? "Refreshing data…" : "Refresh data · \(AppCommandMap.refresh.glyph)")
         } content: {
-            let governor = store.burnGovernor(now: services.now)
-            verdictLine(governor: governor)
-            if isLocalCorpusMissing {
-                CalloutPanel(tone: Theme.graphite) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Waiting on your first Claude Code session")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Theme.ink)
-                        Text("Trifola reads ~/.claude/projects — it appears after your first claude run. Nothing to configure; nothing leaves this machine.")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+            if let corpus = navigationSnapshots.corpus {
+                verdictLine(
+                    governor: corpus.burnGovernor,
+                    board: navigationSnapshots.fleet?.attention)
+                // First-run/loading copy is provider-aware even when files are
+                // already detectable but their summaries have not hydrated yet.
+                // Once any sessions are indexed, the live dashboard replaces
+                // onboarding instead of leaving a permanent setup banner.
+                if store.sessions.isEmpty {
+                    ProviderOnboardingCallout(
+                        presence: services.providerCorpusPresence)
                 }
-            }
-            if store.scanPresentation.showsColdScanningPlaceholder {
-                statRow.opacity(0.52)
+                if store.scanPresentation.showsColdScanningPlaceholder {
+                    statRow(corpus).opacity(0.52)
+                } else {
+                    populatedContent(corpus)
+                        .opacity(store.scanPresentation.isProvisional ? 0.62 : 1)
+                }
             } else {
-                populatedContent(governor: governor)
-                    .opacity(store.scanPresentation.isProvisional ? 0.62 : 1)
+                HStack(spacing: Theme.rhythm) {
+                    ProgressView().controlSize(.small)
+                    Text("Building overview snapshot…")
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(Theme.muted)
+                }
+                .frame(maxWidth: .infinity, minHeight: 260)
             }
         }
         .onChange(of: store.scanProgress.isInProgress) { _, inProgress in
@@ -181,26 +200,26 @@ struct OverviewScreen: View {
     }
 
     @ViewBuilder
-    private func populatedContent(governor: BurnGovernor) -> some View {
+    private func populatedContent(_ corpus: CorpusProjection) -> some View {
         // The launch-frame composition: verdict above, then one measured vertical
         // sequence. Fixed heights prevent surplus viewport space from entering a
         // card; any remainder settles below the final pair.
         OverviewHeroComposition(
             snapshot: OverviewHeroSnapshot(
-                usageValue: fmtUSD(store.totalCost),
+                usageValue: fmtUSD(corpus.totalCost),
                 usageReading: store.scanPresentation.isProvisional
                     ? "still counting" : "estimate from recorded usage — not your bill",
-                activeCount: store.activeSessions.count,
+                activeCount: corpus.activeSessions.count,
                 activeReading: store.scanPresentation.isProvisional
                     ? "still counting"
-                    : (store.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m"),
-                savingsValue: fmtUSD(store.totalCacheSavings),
+                    : (corpus.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m"),
+                savingsValue: fmtUSD(corpus.totalCacheSavings),
                 savingsReading: store.scanPresentation.isProvisional
                     ? "still counting" : "vs. uncached input at API rates",
-                governor: governor,
-                tierStats: store.tierStats,
-                tierTotal: store.totalCost,
-                liveSessions: store.activeSessions),
+                governor: corpus.burnGovernor,
+                tierStats: corpus.tierStats,
+                tierTotal: corpus.totalCost,
+                liveSessions: corpus.activeSessions),
             onOpenLiveBoard: { services.select(.live, origin: .programmatic) },
             onSelectSession: { services.inspect($0) })
         // ScreenScaffold contributes the first 20pt; this completes the required
@@ -209,8 +228,9 @@ struct OverviewScreen: View {
 
         // Secondary evidence remains available below the launch frame. It is open
         // content, never allowed to stretch the hero instruments above.
-        if services.isCrossMachine {
-            FleetMachinesSection()
+        let machineRollups = navigationSnapshots.fleet?.machineRollups ?? []
+        if machineRollups.count > 1 || !services.machines.config.remotes.isEmpty {
+            FleetMachinesSection(rollups: machineRollups)
             Divider()
         }
         // "Show the math" (W3): the hero's whole-corpus receipt — per-model
@@ -221,43 +241,58 @@ struct OverviewScreen: View {
         // PLAN QUOTA (W7): the REAL rate-limit windows next to the estimate
         // above — "what we think you burned" vs "what Anthropic says you
         // have left". Makes the 'resets 10am' wall predictable in advance.
-        QuotaSection(snapshot: services.quota.snapshot,
-                     status: services.quota.status,
+        QuotaSection(snapshots: services.quota.snapshots,
+                     statuses: services.quota.statuses,
                      source: services.quota.source,
+                     consent: QuotaConsent(preferences: services.preferences.value),
                      now: services.now,
                      onRetry: {
-                         Task { await services.quota.refresh(minInterval: 0) }
+                         Task {
+                             await services.quota.refresh(
+                                 consent: QuotaConsent(
+                                     preferences: services.preferences.value),
+                                 minInterval: 0)
+                         }
                      })
         Divider()
         // REROUTE RECEIPTS (spree #2): fleet trend row + orchestrator-hog
         // alert. Both are evidence-gated — clean fleets render nothing.
-        let rerouteReport = Reroutes.build(sessions: store.sessions)
+        let rerouteReport = corpus.rerouteReport
         if !rerouteReport.days.isEmpty {
             RerouteTrendRow(report: rerouteReport, now: services.now)
             Divider()
         }
-        if let hog = OrchestratorHog.alert(
-            sessions: store.sessions,
-            day: CostProvenance.dayKey(for: services.now)) {
+        if let hog = corpus.orchestratorHog {
             OrchestratorHogRow(alert: hog)
             Divider()
         }
-        HStack(alignment: .top, spacing: Theme.gutter) {
-            ActivitySection(sessions: store.sessions, now: services.now)
-                .frame(maxWidth: .infinity)
-            Divider()
-            ContextOffendersSection()
-                .frame(maxWidth: .infinity)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: Theme.gutter) {
+                ActivitySection(counts: corpus.activityHistogram24h)
+                    .frame(minWidth: 380, maxWidth: .infinity)
+                Divider()
+                ContextOffendersSection(
+                    sessions: corpus.topContextRows,
+                    onInspect: services.inspect)
+                    .frame(minWidth: 380, maxWidth: .infinity)
+            }
+            VStack(alignment: .leading, spacing: Theme.sectionGap) {
+                ActivitySection(counts: corpus.activityHistogram24h)
+                Divider()
+                ContextOffendersSection(
+                    sessions: corpus.topContextRows,
+                    onInspect: services.inspect)
+            }
         }
         Divider()
         RoutingSection(audit: services.audit)
     }
 
-    private func verdictLine(governor: BurnGovernor) -> some View {
-        let board = services.alertingAttentionBoard(now: services.now)
+    private func verdictLine(governor: BurnGovernor,
+                             board: AttentionBoard?) -> some View {
         let sentence: String
         sentence = VerdictSentenceBuilder.sentence(
-            board: board,
+            board: board ?? AttentionBoard(items: [], counts: [:]),
             todayCost: governor.today.cost,
             sevenCompleteDayMean: governor.dailyRunRate)
         let parts = sentence.components(separatedBy: " · ")
@@ -289,22 +324,43 @@ struct OverviewScreen: View {
         .frame(maxWidth: ScreenScaffoldMetrics.proseMaxWidth, alignment: .leading)
     }
 
-    private var statRow: some View {
+    private func statRow(_ corpus: CorpusProjection) -> some View {
         StatRow {
             StatTile(label: "Usage at API rates",
-                     value: fmtUSD(store.totalCost),
+                     value: fmtUSD(corpus.totalCost),
                      sub: store.scanPresentation.isProvisional ? "still counting" : "estimate from recorded usage — not your bill")
             Divider()
             StatTile(label: "Active now",
-                     value: "\(store.activeSessions.count)",
+                     value: "\(corpus.activeSessions.count)",
                      sub: store.scanPresentation.isProvisional
                         ? "still counting"
-                        : (store.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m"),
-                     live: !store.activeSessions.isEmpty)
+                        : (corpus.activeSessions.isEmpty ? "fleet is quiet" : "sessions in the last 15m"),
+                     live: !corpus.activeSessions.isEmpty)
             Divider()
             StatTile(label: "Cache savings — net of write premiums",
-                     value: fmtUSD(store.totalCacheSavings),
+                     value: fmtUSD(corpus.totalCacheSavings),
                      sub: store.scanPresentation.isProvisional ? "still counting" : "vs. uncached input at API rates")
+        }
+    }
+}
+
+/// Pure provider-state view so parity renders can exercise none / Claude-only /
+/// Codex-only / both without constructing a live `AppServices` graph.
+struct ProviderOnboardingCallout: View {
+    let presence: ProviderCorpusPresence
+
+    var body: some View {
+        let copy = presence.onboardingCopy
+        CalloutPanel(tone: Theme.graphite) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(copy.headline)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.ink)
+                Text(copy.detail)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -380,19 +436,12 @@ struct TierSpendSection: View {
 // MARK: - 24h activity histogram
 
 private struct ActivitySection: View {
-    let sessions: [SessionSummary]
-    let now: Date
+    let counts: [Int]
 
     private var buckets: [Double] {
-        var b = [Double](repeating: 0, count: 24)
-        for s in sessions {
-            guard let t = s.lastActivity else { continue }
-            let hours = now.timeIntervalSince(t) / 3600
-            guard hours >= 0, hours < 24 else { continue }
-            b[23 - Int(hours)] += 1
-        }
-        let peak = max(b.max() ?? 1, 1)
-        return b.map { $0 / peak }
+        let values = counts.map(Double.init)
+        let peak = max(values.max() ?? 1, 1)
+        return values.map { $0 / peak }
     }
 
     var body: some View {
@@ -488,7 +537,8 @@ struct LiveNowSection: View {
 // MARK: - Context weight offenders
 
 private struct ContextOffendersSection: View {
-    @EnvironmentObject var services: AppServices
+    let sessions: [SessionSummary]
+    var onInspect: (SessionSummary) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.rhythm) {
@@ -499,24 +549,15 @@ private struct ContextOffendersSection: View {
                     .font(.caption2)
                     .foregroundStyle(Theme.muted)
             }
-            // contextHeavy already excludes subagent transcripts and sorts by
-            // weight; fall back to the heaviest real sessions when nothing
-            // crosses the 200k "heavy" threshold so the card never sits empty.
-            let pool = services.sessions.contextHeavy.isEmpty
-                ? services.sessions.sessions
-                    .filter { !$0.isSubagent }
-                    .sorted { $0.contextWeight > $1.contextWeight }
-                : services.sessions.contextHeavy
-            let heavy = Array(pool.prefix(5))
-            if heavy.isEmpty {
+            if sessions.isEmpty {
                 Text("Nothing parsed yet.")
                     .font(.subheadline)
                     .foregroundStyle(Theme.muted)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(heavy) { s in
+                    ForEach(sessions) { s in
                         HoverRow {
-                            services.inspect(s)
+                            onInspect(s)
                         } content: {
                             HStack(spacing: 8) {
                                 SeatMark(state: s.isActive ? .running : .idle, size: 8)
@@ -552,12 +593,11 @@ private struct ContextOffendersSection: View {
 /// a nag — an offline line for any configured remote that isn't contributing.
 struct FleetMachinesSection: View {
     @EnvironmentObject var services: AppServices
-
-    private var rollups: [MachineRollup] { services.sessions.machineRollups }
+    let rollups: [MachineRollup]
 
     private var totalSessions: Int { rollups.reduce(0) { $0 + $1.sessionCount } }
     private var totalCost: Double { rollups.reduce(0) { $0 + $1.cost } }
-    private var machineCount: Int { services.sessions.machineCount }
+    private var machineCount: Int { rollups.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {

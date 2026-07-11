@@ -362,4 +362,16 @@ struct MCPQuotaTimeoutTests {
         let elapsed = clock.duration(to: .now)
         #expect(elapsed < .seconds(40))        // < credentialReadTimeout + quotaFetchTimeout + slack
     }
+
+    @Test func blockingQuotaFetchHonorsConsentBeforeCredentialReads() {
+        let outcome = MCPIntrospectionServer.blockingQuotaFetch(
+            configDirectory: URL(fileURLWithPath: "/definitely-not-readable"),
+            consent: false)
+        switch outcome {
+        case .snapshot:
+            Issue.record("quota must not fetch without consent")
+        case .unavailable(let message):
+            #expect(message == MCPIntrospectionServer.quotaConsentRequiredMessage)
+        }
+    }
 }

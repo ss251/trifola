@@ -52,7 +52,7 @@ enum SessionOpenActionPresentation: Equatable {
         case .transcript:
             return "Show this session's local read-only transcript"
         case .session:
-            return "Open the terminal app that owns this session; show its transcript if unavailable"
+            return "Jump to this exact workspace when Accessibility is granted and a confident match exists; otherwise bring the owning terminal app forward"
         }
     }
 }

@@ -309,7 +309,7 @@ struct CodexAdapterTests {
         #expect(CodexImportManifest.load(from: link) == CodexImportManifest())
     }
 
-    @Test func codexCacheRoundTripPreservesProviderAndUsesVersion19() throws {
+    @Test func codexCacheRoundTripUsesVersion20AndRejectsVersion19() throws {
         let root = try codexTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let sessions = root.appendingPathComponent("sessions", isDirectory: true)
@@ -328,10 +328,17 @@ struct CodexAdapterTests {
         let cacheObject = try #require(
             JSONSerialization.jsonObject(with: Data(contentsOf: cache))
                 as? [String: Any])
-        #expect((cacheObject["version"] as? NSNumber)?.intValue == 19)
+        #expect((cacheObject["version"] as? NSNumber)?.intValue == 20)
         let loaded = try #require(SessionStore.loadIndexCache(from: cache))
         #expect(loaded.summaries.first?.provider == .codex)
         #expect(loaded.summaries.first?.id == "cache")
+        #expect(loaded.summaries.first?.tier == .codex)
+
+        var staleObject = cacheObject
+        staleObject["version"] = 19
+        try JSONSerialization.data(withJSONObject: staleObject)
+            .write(to: cache, options: .atomic)
+        #expect(SessionStore.loadIndexCache(from: cache) == nil)
     }
 
     @Test(
@@ -460,7 +467,7 @@ struct CodexAdapterTests {
         let sessions = root.appendingPathComponent("sessions", isDirectory: true)
         let rollout = sessions.appendingPathComponent(
             "2026/07/10/rollout-quota.jsonl")
-        let rateLine = #"{"timestamp":"2026-07-10T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":37.5,"window_minutes":300,"resets_at":1783723793},"secondary":{"used_percent":62.25,"window_minutes":10080,"resets_at":1784310593},"credits":null,"plan_type":"pro"}}}"#
+        let rateLine = #"{"timestamp":"2026-07-10T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":37.5,"window_minutes":300,"resets_at":1783723793},"secondary":{"used_percent":62.25,"window_minutes":10080,"resets_at":1784310593},"credits":{"has_credits":true,"unlimited":false,"balance":"12.50"},"plan_type":"pro"}}}"#
         try writeRollout(
             [codexMetadata(id: "quota"), rateLine],
             to: rollout)
@@ -481,5 +488,7 @@ struct CodexAdapterTests {
         #expect(snapshot.weekly?.title == "Weekly (all models)")
         #expect(snapshot.weekly?.usedPercent == 62.25)
         #expect(snapshot.scoped.isEmpty)
+        #expect(snapshot.credits == QuotaCredits(
+            hasCredits: true, unlimited: false, balance: "12.50"))
     }
 }

@@ -36,6 +36,9 @@ public enum MCPQuotaOutcome: Sendable {
 /// enforces that.
 public final class MCPIntrospectionServer {
 
+    public static let quotaConsentRequiredMessage =
+        "Claude quota access is off. Enable it in Trifola Settings → Quota."
+
     // MARK: identity + protocol
 
     public static let serverName = "trifola"
@@ -124,7 +127,13 @@ public final class MCPIntrospectionServer {
     /// no credentials → a graceful `.unavailable`, never an error reply.
     /// Every blocking wait on this path is capped — see `credentialReadTimeout`
     /// / `quotaFetchTimeout` — so one hung fetch can never freeze the server.
-    public static func blockingQuotaFetch(configDirectory: URL? = nil) -> MCPQuotaOutcome {
+    public static func blockingQuotaFetch(configDirectory: URL? = nil,
+                                          consent: Bool? = nil) -> MCPQuotaOutcome {
+        // Reading Trifola's own preference is safe; credential-file, Keychain,
+        // and network work remain strictly beyond this explicit gate.
+        let allowed = consent
+            ?? AppPreferencesStore().load().claudeQuotaAccessEnabled
+        guard allowed else { return .unavailable(quotaConsentRequiredMessage) }
         let candidates = ClaudeCredentialReader.loadCandidates(
             configDirectory: configDirectory,
             keychainTimeout: credentialReadTimeout)

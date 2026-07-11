@@ -10,6 +10,9 @@ struct SettingsPreferencesTests {
         #expect(preferences.quietHours.startMinute == 22 * 60)
         #expect(preferences.quietHours.endMinute == 8 * 60)
         #expect(preferences.defaultSnoozeDurationMinutes == 60)
+        #expect(preferences.claudeQuotaAccessEnabled == false)
+        #expect(preferences.codexQuotaAccessEnabled == false)
+        #expect(preferences.hasSeenAccessibilityWorkspaceExplainer == false)
     }
 
     @Test func roundTripsThroughAppSupportStyleStore() throws {
@@ -21,7 +24,10 @@ struct SettingsPreferencesTests {
         #expect(store.load() == AppPreferences())
         let expected = AppPreferences(
             quietHours: QuietHours(enabled: true, startMinute: 21 * 60 + 30, endMinute: 7 * 60),
-            defaultSnoozeDurationMinutes: 120
+            defaultSnoozeDurationMinutes: 120,
+            claudeQuotaAccessEnabled: true,
+            codexQuotaAccessEnabled: true,
+            hasSeenAccessibilityWorkspaceExplainer: true
         )
         #expect(store.save(expected))
         #expect(store.load() == expected)
@@ -30,6 +36,7 @@ struct SettingsPreferencesTests {
     @Test func missingNewFieldsDecodeToDefaults() throws {
         let decoded = try JSONDecoder().decode(AppPreferences.self, from: Data("{}".utf8))
         #expect(decoded == AppPreferences())
+        #expect(!decoded.hasSeenAccessibilityWorkspaceExplainer)
     }
 
     @Test func defaultStoreNeverWritesIntoClaudeConfig() {

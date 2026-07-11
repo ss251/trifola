@@ -30,8 +30,14 @@ public enum TrifolaCommandLine {
     public static let selfCheckFlags: Set<String> = ["--selfcheck", "--self-check"]
 
     public static let recognizedLongFlags: Set<String> = selfCheckFlags.union([
+        "--benchmark-nav",
+        "--benchmark-nav-live",
+        "--benchmark-nav-count",
+        "--benchmark-nav-json",
+        "--benchmark-nav-runs",
         "--help",
         "--mcp",
+        "--probe-ax",
         "--render-attention",
         "--render-audit",
         "--render-burn",
@@ -50,7 +56,13 @@ public enum TrifolaCommandLine {
         "--render-provenance",
         "--render-quota",
         "--render-reroutes",
+        "--render-sessions",
         "--render-skills",
+        "--render-spend",
+        "--render-strengthen",
+        "--render-ux",
+        "--render-parity",
+        "--render-menubar",
         "--spend-by-model",
     ])
 
@@ -67,11 +79,18 @@ public enum TrifolaCommandLine {
 
       --selfcheck, --self-check     Run the full headless diagnostic
       --mcp                         Run the read-only stdio MCP server
+      --benchmark-nav               Benchmark seeded navigation projections
+      --benchmark-nav-live          Drive the real app selection-to-draw path, then exit
+        --benchmark-nav-count N     Seed N sessions (default 6600)
+        --benchmark-nav-runs N      Measure N passes after one warm-up (default 7)
+        --benchmark-nav-json PATH   Write deterministic JSON (`-` prints it)
       --spend-by-model [day ...]    Print per-model spend for local yyyy-MM-dd days
+      --probe-ax <pid-or-app-name>  Dump a bounded, read-only Accessibility tree
       --render-icon <iconset-dir>   Export the iconset plus banner/social artwork
       --render-logo <output-dir>    Export the three launch identity studies
+      --render-strengthen <dir>     Export the 36-image 1280/1680/2560 design matrix
       --render-<surface> <base>     Export a visual QA surface
-                                    layout, attention, fleet, audit, ledger, launch,
+                                    layout, sessions, spend, attention, fleet, audit, ledger, launch,
                                     skills, crossmachine, palette, identity, burn,
                                     config, deadlines, provenance, contexttax,
                                     reroutes, or quota
@@ -131,7 +150,7 @@ public enum Provider: String, Sendable, Hashable, Codable, CaseIterable {
 }
 
 public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
-    case opus, sonnet, haiku, user, other
+    case opus, sonnet, haiku, codex, user, other
 
     /// An OPTIONAL user-defined tier. Configure it with `configureUserTier(_:)` to
     /// route model ids that contain a lowercased substring (e.g. a third-party or
@@ -162,20 +181,36 @@ public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
     public static var userTier: UserTier? { userTierBox.withLock { $0 } }
 
     public init(raw: String?) {
-        guard let r = raw?.lowercased() else { self = .other; return }
-        if r.contains("opus") { self = .opus }
+        self.init(raw: raw, userTier: Self.userTier)
+    }
+
+    /// Pure classification seam for callers that already hold a configuration
+    /// snapshot. Keeping the shared setting out of this overload also lets
+    /// tests exercise custom tiers without leaking process-global state.
+    init(raw: String?, userTier: UserTier?) {
+        guard let raw else { self = .other; return }
+        let r = PricingCatalog.normalize(raw)
+        if r.hasPrefix("gpt-")
+            || PricingCatalog.bundledCodexModelIDs.contains(r) { self = .codex }
+        else if r.contains("opus") { self = .opus }
         else if r.contains("sonnet") { self = .sonnet }
         else if r.contains("haiku") { self = .haiku }
-        else if let u = Self.userTier, !u.match.isEmpty, r.contains(u.match) { self = .user }
+        else if let userTier, !userTier.match.isEmpty,
+                r.contains(userTier.match) { self = .user }
         else { self = .other }
     }
 
     public var label: String {
+        label(userTier: Self.userTier)
+    }
+
+    func label(userTier: UserTier?) -> String {
         switch self {
         case .opus: return "Opus"
         case .sonnet: return "Sonnet"
         case .haiku: return "Haiku"
-        case .user: return ModelTier.userTier?.label ?? "Custom"
+        case .codex: return "Codex"
+        case .user: return userTier?.label ?? "Custom"
         case .other: return "Other"
         }
     }
@@ -187,11 +222,16 @@ public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
     /// date-dependent, etc. Cache multipliers for the fallback: read 0.10×,
     /// 5m write 1.25×, 1h write 2× (see `ModelRate(tier:)`).
     public var rates: (inp: Double, out: Double) {
+        rates(userTier: Self.userTier)
+    }
+
+    func rates(userTier: UserTier?) -> (inp: Double, out: Double) {
         switch self {
         case .opus:   return (5, 25)    // Opus standard
         case .sonnet: return (3, 15)    // Sonnet
         case .haiku:  return (1, 5)     // Haiku
-        case .user:   return ModelTier.userTier?.rate ?? (5, 25)
+        case .codex:  return (5, 30)    // gpt-5.6-sol representative
+        case .user:   return userTier?.rate ?? (5, 25)
         case .other:  return (5, 25)
         }
     }
@@ -946,6 +986,34 @@ public struct TierStat: Identifiable, Sendable {
     public init(tier: ModelTier, tokens: Int, cost: Double, sessions: Int) {
         self.tier = tier
         self.tokens = tokens
+        self.cost = cost
+        self.sessions = sessions
+    }
+}
+
+// MARK: - Per-model rollup (the provider-aware spend table)
+
+/// One exact model-id row in the spend table. Provider is part of identity: a
+/// model string observed under two runtimes remains two honest rows instead of
+/// silently merging provenance.
+public struct ModelSpendStat: Identifiable, Sendable, Equatable {
+    public var id: String { provider.rawValue + "\u{1}" + model }
+    public let provider: Provider
+    public let model: String
+    public let usage: SessionUsage
+    public let cost: Double
+    /// Distinct summaries that contributed at least one usage slice to the row.
+    public let sessions: Int
+
+    /// Matches the tier table's token column: fresh/cache-write input plus
+    /// output, excluding cache reads.
+    public var tokens: Int { usage.billedInput + usage.outputTokens }
+
+    public init(provider: Provider, model: String, usage: SessionUsage,
+                cost: Double, sessions: Int) {
+        self.provider = provider
+        self.model = model
+        self.usage = usage
         self.cost = cost
         self.sessions = sessions
     }

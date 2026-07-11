@@ -36,12 +36,27 @@ struct ReleaseSurfaceTests {
         #expect(TrifolaCommandLine.isSelfCheck(["--selfcheck"]))
         #expect(TrifolaCommandLine.isSelfCheck(["--self-check"]))
         #expect(TrifolaCommandLine.unknownHeadlessFlags(
-            in: ["--self-check", "--render-icon"]).isEmpty)
+            in: [
+                "--self-check",
+                "--benchmark-nav",
+                "--benchmark-nav-live",
+                "--benchmark-nav-count",
+                "--benchmark-nav-runs",
+                "--benchmark-nav-json",
+                "--probe-ax",
+                "--render-icon",
+                "--render-strengthen",
+            ]).isEmpty)
         #expect(TrifolaCommandLine.unknownHeadlessFlags(
             in: ["--self-chek"]) == ["--self-chek"])
         #expect(TrifolaCommandLine.usage.contains("--help"))
+        #expect(TrifolaCommandLine.usage.contains("--benchmark-nav-count N"))
+        #expect(TrifolaCommandLine.usage.contains("--benchmark-nav-live"))
+        #expect(TrifolaCommandLine.usage.contains("--benchmark-nav-json PATH"))
+        #expect(TrifolaCommandLine.usage.contains("--probe-ax <pid-or-app-name>"))
         #expect(TrifolaCommandLine.usage.contains("--render-icon <iconset-dir>"))
         #expect(TrifolaCommandLine.usage.contains("--render-logo <output-dir>"))
+        #expect(TrifolaCommandLine.usage.contains("--render-strengthen <dir>"))
     }
 
     @Test("brand renderer declares Apple's full iconset")

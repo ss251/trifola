@@ -99,6 +99,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             $0.canBecomeKey && !($0.className.contains("StatusBar"))
         }
         if let window {
+            if CommandLine.arguments.contains("--benchmark-nav-live") {
+                // The live harness drives the exact sidebar action itself. Ignore
+                // incidental pointer input so a human click cannot contaminate
+                // cold/warm labels while the real window is being measured.
+                window.ignoresMouseEvents = true
+            }
             // canJoinAllSpaces is stickier than moveToActiveSpace when the user
             // is actively on another Space (e.g. mid-capture).
             window.collectionBehavior.insert(.canJoinAllSpaces)
@@ -118,17 +124,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            y: (vf.midY - h / 2).rounded(),
                                            width: w, height: h), display: true)
                 }
-                presentTimer?.invalidate()
-                let deadline = Date().addingTimeInterval(60)
-                presentTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak window, weak self] t in
-                    guard let window, Date() < deadline else {
-                        t.invalidate()
-                        Task { @MainActor [weak self] in self?.presentTimer = nil }
-                        return
-                    }
-                    Task { @MainActor in
-                        NSApp.activate(ignoringOtherApps: true)
-                        window.orderFrontRegardless()
+                // Screenshot capture reasserts frontmost state because a human
+                // may keep working in another app. The navigation benchmark
+                // already ignores pointer input and owns the foreground window;
+                // a one-second orderFront timer would inject unrelated AppKit
+                // damage/draw work into the measured click path.
+                if !CommandLine.arguments.contains("--benchmark-nav-live") {
+                    presentTimer?.invalidate()
+                    let deadline = Date().addingTimeInterval(60)
+                    presentTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak window, weak self] t in
+                        guard let window, Date() < deadline else {
+                            t.invalidate()
+                            Task { @MainActor [weak self] in self?.presentTimer = nil }
+                            return
+                        }
+                        Task { @MainActor in
+                            NSApp.activate(ignoringOtherApps: true)
+                            window.orderFrontRegardless()
+                        }
                     }
                 }
             }
@@ -209,9 +222,14 @@ struct TrifolaApp: App {
         Window("Trifola", id: "main") {
             RootView()
                 .environmentObject(services)
+                .environmentObject(services.navigation)
+                .environmentObject(services.navigationSnapshots)
+                .environmentObject(services.workspaceAccess)
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1440, height: 900)
+        .defaultSize(width: Theme.Layout.defaultWindowWidth,
+                     height: Theme.Layout.defaultWindowHeight)
+        .windowResizability(.contentMinSize)
         .commands {
             TrifolaSceneCommands(services: services, menuPresence: menuPresence)
         }
@@ -234,6 +252,7 @@ struct TrifolaApp: App {
             TrifolaSettingsView(menuPresence: menuPresence,
                                 notifier: services.notifier,
                                 preferences: services.preferences,
+                                workspaceAccess: services.workspaceAccess,
                                 machines: services.machines,
                                 agency: services.agency)
         }

@@ -225,6 +225,21 @@ public struct QuotaWindow: Sendable, Equatable {
     public var roundedUsedPercent: Int { Int(usedPercent.rounded()) }
 }
 
+/// Optional Codex credit state persisted in rollout rate-limit events. Balance
+/// remains a string because the upstream value is decimal text and Trifola
+/// must not silently introduce binary floating-point rounding.
+public struct QuotaCredits: Sendable, Equatable, Hashable, Codable {
+    public let hasCredits: Bool
+    public let unlimited: Bool
+    public let balance: String?
+
+    public init(hasCredits: Bool, unlimited: Bool, balance: String?) {
+        self.hasCredits = hasCredits
+        self.unlimited = unlimited
+        self.balance = balance
+    }
+}
+
 public struct QuotaSnapshot: Sendable, Equatable {
     public let fiveHour: QuotaWindow?
     public let weekly: QuotaWindow?
@@ -233,12 +248,15 @@ public struct QuotaSnapshot: Sendable, Equatable {
     /// model name; deduped by lowercased slug. `is_active` is intentionally NOT
     /// a filter — observed enforceable scoped limits report false.
     public let scoped: [QuotaWindow]
+    public let credits: QuotaCredits?
     public let fetchedAt: Date
 
-    public init(fiveHour: QuotaWindow?, weekly: QuotaWindow?, scoped: [QuotaWindow], fetchedAt: Date) {
+    public init(fiveHour: QuotaWindow?, weekly: QuotaWindow?, scoped: [QuotaWindow],
+                credits: QuotaCredits? = nil, fetchedAt: Date) {
         self.fiveHour = fiveHour
         self.weekly = weekly
         self.scoped = scoped
+        self.credits = credits
         self.fetchedAt = fetchedAt
     }
 
@@ -444,18 +462,24 @@ public final class QuotaStore: ObservableObject {
     @Published public private(set) var snapshots: [Provider: QuotaSnapshot] = [:]
     /// Source-compatible Claude view for the existing UI and MCP surface.
     public var snapshot: QuotaSnapshot? { snapshots[.claude] }
-    @Published public private(set) var status: String = "not fetched yet"
+    @Published public private(set) var statuses: [Provider: String] = [
+        .claude: "access off",
+        .codex: "access off",
+    ]
+    /// Source-compatible Claude status for older callers.
+    public var status: String { statuses[.claude] ?? "not fetched yet" }
     @Published public private(set) var source: ClaudeCredentialSource?
 
-    private var cooldownUntil: Date?
+    private var cooldownUntil: [Provider: Date] = [:]
     private var inFlight = false
+    private var latestConsent = QuotaConsent()
     private let refreshCoordinator: ProviderRefreshCoordinator
     private let configDirectory: URL
-    private let codexProvider: CodexQuotaProvider
+    private let codexProvider: any QuotaProvider
 
     public init(refreshCoordinator: ProviderRefreshCoordinator = .shared,
                 configDirectory: URL = ClaudePaths.process.root,
-                codexProvider: CodexQuotaProvider = CodexQuotaProvider()) {
+                codexProvider: any QuotaProvider = CodexQuotaProvider()) {
         self.refreshCoordinator = refreshCoordinator
         self.configDirectory = configDirectory
         self.codexProvider = codexProvider
@@ -467,11 +491,35 @@ public final class QuotaStore: ObservableObject {
                   configDirectory: paths.root)
     }
 
-    public func refresh(minInterval: TimeInterval = 300) async {
+    /// Refresh only providers for which the user granted access. The consent
+    /// value is checked before constructing either probe, so a disabled Claude
+    /// provider cannot read its credential file or query Keychain, and a
+    /// disabled Codex provider cannot enumerate rollout files.
+    public func refresh(consent: QuotaConsent, minInterval: TimeInterval = 300) async {
+        latestConsent = consent
         let now = Date()
+
+        if !consent.claude {
+            snapshots.removeValue(forKey: .claude)
+            statuses[.claude] = "access off"
+            source = nil
+        }
+        if !consent.codex {
+            snapshots.removeValue(forKey: .codex)
+            statuses[.codex] = "access off"
+        }
+        // Revocation must clear visible data even while an older authorized
+        // probe is suspended. That older probe also re-checks `latestConsent`
+        // before publishing, so it cannot restore data after access is off.
         if inFlight { return }
-        if let snap = snapshot, now.timeIntervalSince(snap.fetchedAt) < minInterval { return }
-        if let cool = cooldownUntil, now < cool { return }
+
+        let refreshClaude = consent.claude
+            && needsRefresh(provider: .claude, now: now, minInterval: minInterval)
+            && !(cooldownUntil[.claude].map { now < $0 } ?? false)
+        let refreshCodex = consent.codex
+            && needsRefresh(provider: .codex, now: now, minInterval: minInterval)
+        guard refreshClaude || refreshCodex else { return }
+
         inFlight = true
         defer { inFlight = false }
 
@@ -482,40 +530,63 @@ public final class QuotaStore: ObservableObject {
         let codexResolved = Locked<Result<QuotaSnapshot, QuotaProviderFailure>?>(nil)
         let configDirectory = configDirectory
         let codexProvider = codexProvider
-        let probe = ProviderRefreshProbe(id: "claude.quota") {
-            let candidates = ClaudeCredentialReader.loadCandidates(
-                configDirectory: configDirectory)
-            let result = await ClaudeQuotaResolver.resolve(candidates: candidates)
-            resolved.withLock { $0 = result }
+        var probes: [ProviderRefreshProbe] = []
+        if refreshClaude {
+            probes.append(ProviderRefreshProbe(id: "claude.quota") {
+                let candidates = ClaudeCredentialReader.loadCandidates(
+                    configDirectory: configDirectory)
+                let result = await ClaudeQuotaResolver.resolve(candidates: candidates)
+                resolved.withLock { $0 = result }
+            })
         }
-        let codexProbe = ProviderRefreshProbe(id: "codex.quota") {
-            let result = await codexProvider.snapshot()
-            codexResolved.withLock { $0 = result }
+        if refreshCodex {
+            probes.append(ProviderRefreshProbe(id: "codex.quota") {
+                let result = await codexProvider.snapshot()
+                codexResolved.withLock { $0 = result }
+            })
         }
-        _ = await refreshCoordinator.refresh([probe, codexProbe])
+        _ = await refreshCoordinator.refresh(probes)
         // A different provider batch may have won the single flight. Its work is
         // authoritative for this trigger; the next cadence tick can try quota.
-        guard let result = resolved.withLock({ $0 }) else { return }
-
-        if let codexResult = codexResolved.withLock({ $0 }),
-           case .success(let codexSnapshot) = codexResult {
-            snapshots[.codex] = codexSnapshot
+        if refreshCodex, latestConsent.codex,
+           let codexResult = codexResolved.withLock({ $0 }) {
+            switch codexResult {
+            case .success(let codexSnapshot):
+                snapshots[.codex] = codexSnapshot
+                statuses[.codex] = codexSnapshot.isEmpty
+                    ? "rollout carried no quota windows" : "ok · local rollouts"
+            case .failure(.noRollouts):
+                snapshots.removeValue(forKey: .codex)
+                statuses[.codex] = "no Codex rollouts found"
+            case .failure(.noRateLimits):
+                snapshots.removeValue(forKey: .codex)
+                statuses[.codex] = "no rate limits in local rollouts"
+            }
         }
 
+        guard refreshClaude, latestConsent.claude,
+              let result = resolved.withLock({ $0 }) else { return }
         switch result {
         case .success(let resolved):
             source = resolved.source
             snapshots[.claude] = resolved.snapshot
-            status = resolved.snapshot.isEmpty
+            statuses[.claude] = resolved.snapshot.isEmpty
                 ? "endpoint returned no windows (schema drift?)"
                 : "ok · \(resolved.source.rawValue)"
         case .failure(let err):
             source = nil
-            status = Self.describe(err)
+            snapshots.removeValue(forKey: .claude)
+            statuses[.claude] = Self.describe(err)
             if case .rateLimited(let after) = err {
-                cooldownUntil = after ?? Date().addingTimeInterval(300)
+                cooldownUntil[.claude] = after ?? Date().addingTimeInterval(300)
             }
         }
+    }
+
+    private func needsRefresh(provider: Provider, now: Date,
+                              minInterval: TimeInterval) -> Bool {
+        guard let snapshot = snapshots[provider] else { return true }
+        return now.timeIntervalSince(snapshot.fetchedAt) >= minInterval
     }
 
     /// One calm sentence per failure — reasons, never payloads or nags.

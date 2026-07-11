@@ -3,6 +3,7 @@ import AppKit
 import TrifolaKit
 
 struct RootView: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     // RENDER-STORM ROOT CAUSE (2026-07-08): RootView is the WindowGroup's ROOT view.
     // On macOS 26, every time the scene's root view re-evaluates, SwiftUI re-enters the
     // Liquid-Glass `glassEffectBackdropObserver` update loop and never reaches a fixed
@@ -30,13 +31,18 @@ struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background {
                         Theme.surfaceWindow.ignoresSafeArea()
-                        VisualEffectBackground(material: .underWindowBackground).opacity(0.16).ignoresSafeArea()
+                        if !reduceTransparency {
+                            VisualEffectBackground(material: .underWindowBackground)
+                                .opacity(0.16)
+                                .ignoresSafeArea()
+                        }
                     }
             }
             .background(WindowConfigurator())
             .frame(minWidth: Theme.Layout.minimumWindowWidth,
                    minHeight: Theme.Layout.minimumWindowHeight)
             .overlay { CommandPaletteHost() }
+            .background(WorkspaceAccessPromptHost())
             .background(RootLifecycle())
         }
     }
@@ -68,6 +74,45 @@ private struct CommandPaletteHost: View {
     }
 }
 
+/// The at-value Accessibility explainer lives in a child presentation host so
+/// its one rare publication never makes the scene root observe AppServices. The
+/// nested presenter observes only the dedicated low-frequency coordinator.
+private struct WorkspaceAccessPromptHost: View {
+    @EnvironmentObject private var coordinator: WorkspaceAccessCoordinator
+
+    var body: some View {
+        WorkspaceAccessPromptPresenter(coordinator: coordinator)
+    }
+}
+
+private struct WorkspaceAccessPromptPresenter: View {
+    @ObservedObject var coordinator: WorkspaceAccessCoordinator
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .alert(
+                WorkspaceAccessCopy.title,
+                isPresented: Binding(
+                    get: { coordinator.pendingPrompt != nil },
+                    // Both dismissal routes are explicit buttons below; leaving
+                    // this setter inert prevents SwiftUI from resolving Not Now
+                    // before the primary action runs.
+                    set: { _ in })
+            ) {
+                Button(WorkspaceAccessCopy.openSettingsButton) {
+                    coordinator.resolvePrompt(with: .settingsOpened)
+                }
+                Button(WorkspaceAccessCopy.notNowButton, role: .cancel) {
+                    coordinator.resolvePrompt(with: .notNow)
+                }
+            } message: {
+                Text(WorkspaceAccessCopy.body)
+            }
+            .onDisappear { coordinator.cancelPendingPrompt() }
+    }
+}
+
 /// App launch + Dock badge, isolated in a zero-size child. The Dock badge = count of
 /// BLOCKED sessions (the one alert the no-nag doctrine allows). Keeping the
 /// `blockedCount` observation (and the launch `start()`) out of RootView.body is what
@@ -83,6 +128,9 @@ private struct RootLifecycle: View {
                 }
                 AppBrand.applyDockIcon()
                 services.start()
+                if CommandLine.arguments.contains("--benchmark-nav-live") {
+                    await NavBenchmark.driveRealClickPath(using: services)
+                }
             }
             .onChange(of: services.blockedCount, initial: true) { _, n in
                 AppBrand.updateDockBadge(blockedCount: n)
@@ -96,20 +144,93 @@ private struct RootLifecycle: View {
 // MARK: - Content switch
 
 private struct ContentColumn: View {
-    @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigation: AppNavigation
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
+    @State private var presentedGeneration = 0
 
     var body: some View {
         ZStack {
-            sectionView
-                .onAppear { services.navigationDidAppear(services.section) }
-                .id(services.section)
-                .sectionTransition(enabled: services.navigationOrigin == .pointer)
-                .sectionFirstAppearance(services.firstAppearanceSection == services.section)
+            let isPending = presentedGeneration
+                != navigation.navigationMetricGeneration
+            let isReady = navigationSnapshots.isReady(for: navigation.section)
+            if isPending && (navigation.navigationCold || !isReady) {
+                destinationShell
+                    .onAppear {
+                        navigation.navigationDidAppear(navigation.section)
+                    }
+                    .navigationFirstDrawProbe(
+                        generation: navigation.navigationMetricGeneration,
+                        milestone: .firstFrame,
+                        journey: navigation.navigationMetricJourney,
+                        onDraw: presentDestinationAfterShell)
+            } else if isPending {
+                destination
+                    .navigationFirstDrawProbe(
+                        generation: navigation.navigationMetricGeneration,
+                        milestone: .firstFrame,
+                        journey: navigation.navigationMetricJourney,
+                        onDraw: presentDestinationAfterShell)
+                    .navigationFirstDrawProbe(
+                        generation: navigation.navigationMetricGeneration,
+                        milestone: .hydratedContent,
+                        journey: navigation.navigationMetricJourney)
+            } else if isReady {
+                destination
+                    .navigationFirstDrawProbe(
+                        generation: navigation.navigationMetricGeneration,
+                        milestone: .hydratedContent,
+                        journey: navigation.navigationMetricJourney)
+            } else {
+                destination
+            }
         }
     }
 
-    @ViewBuilder private var sectionView: some View {
-        switch services.section {
+    private func presentDestinationAfterShell() {
+        let generation = navigation.navigationMetricGeneration
+        // Mutate after AppKit completes this draw pass. The shell is therefore
+        // a committed visual frame, not merely a SwiftUI `.onAppear` milestone.
+        DispatchQueue.main.async {
+            guard generation == navigation.navigationMetricGeneration else { return }
+            presentedGeneration = generation
+        }
+    }
+
+    private var destination: some View {
+        sectionView(for: navigation.section)
+    }
+
+    private var destinationShell: some View {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                Text(navigation.section.title)
+                    .font(Theme.Typography.screenTitle)
+                    .foregroundStyle(Theme.ink)
+                Text("Preparing the latest local snapshot…")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
+            }
+            .frame(minHeight: ScreenScaffoldMetrics.headerHeight,
+                   alignment: .topLeading)
+            .padding(.top, ScreenScaffoldMetrics.topInset)
+            Divider()
+            HStack(spacing: Theme.rhythm) {
+                Image(systemName: "circle.dotted")
+                    .foregroundStyle(Theme.muted)
+                Text("Loading \(navigation.section.title.lowercased())…")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, Theme.gutter)
+        .background(Theme.surfaceWindow)
+        .frame(maxWidth: .infinity, maxHeight: .infinity,
+               alignment: .topLeading)
+    }
+
+    @ViewBuilder private func sectionView(for section: AppSection) -> some View {
+        switch section {
         case .overview: OverviewScreen()
         case .live: LiveScreen()
         case .fleet: FleetScreen()
@@ -122,12 +243,13 @@ private struct ContentColumn: View {
         case .stack: StackScreen()
         }
     }
+
 }
 
 // MARK: - Sidebar
 
 struct SidebarSnapshot {
-    let selected: AppSection
+    var selected: AppSection
     let worstState: AttentionState?
     let liveCount: Int
     let pendingLessonCount: Int
@@ -145,6 +267,12 @@ struct SidebarSnapshot {
         case .ledger: return pendingLessonCount > 0 ? pendingLessonCount : nil
         default: return nil
         }
+    }
+
+    func selecting(_ section: AppSection) -> SidebarSnapshot {
+        var copy = self
+        copy.selected = section
+        return copy
     }
 }
 
@@ -210,9 +338,9 @@ struct SidebarRail: View {
 
 private struct Sidebar: View {
     @EnvironmentObject var services: AppServices
+    @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
 
     var body: some View {
-        let burn = services.sessions.burnGovernor(now: services.now)
         let progress = services.sessions.scanProgress
         let refreshText: String? = {
             guard services.sessions.scanPresentation == .liveRefreshing,
@@ -220,13 +348,15 @@ private struct Sidebar: View {
             guard progress.totalEstimate > 0 else { return "refreshing" }
             return "refreshing \(fmtGrouped(progress.scanned))/~\(fmtGrouped(progress.totalEstimate))"
         }()
-        return SidebarRail(snapshot: SidebarSnapshot(
-            selected: services.section,
-            worstState: services.attentionBoard(now: services.now).worst,
-            liveCount: services.sessions.activeSessions.count,
+        let corpus = navigationSnapshots.corpus
+        return SidebarNavigationRail(snapshot: SidebarSnapshot(
+            // Replaced by SidebarNavigationRail's isolated navigation read.
+            selected: .overview,
+            worstState: navigationSnapshots.fleet?.attention.worst,
+            liveCount: corpus?.activeSessions.count ?? 0,
             pendingLessonCount: services.pendingLessonCount,
-            todayCost: burn.today.cost,
-            monthProjection: burn.monthProjection,
+            todayCost: corpus?.burnGovernor.today.cost ?? 0,
+            monthProjection: corpus?.burnGovernor.monthProjection ?? 0,
             updatedText: "updated \(fmtAgo(services.sessions.lastRefresh))",
             refreshText: refreshText,
             account: NSUserName(),
@@ -237,6 +367,23 @@ private struct Sidebar: View {
             onKeyboardSelect: { section in
                 services.select(section, origin: .keyboard)
             })
+    }
+}
+
+/// Selection is the only changing input on a navigation click. Keeping that
+/// observation one level below the operational snapshot prevents highlight
+/// movement from rebuilding burn, attention, and fleet projections.
+private struct SidebarNavigationRail: View {
+    @EnvironmentObject var navigation: AppNavigation
+    let snapshot: SidebarSnapshot
+    let onSelect: (AppSection) -> Void
+    let onKeyboardSelect: (AppSection) -> Void
+
+    var body: some View {
+        SidebarRail(
+            snapshot: snapshot.selecting(navigation.section),
+            onSelect: onSelect,
+            onKeyboardSelect: onKeyboardSelect)
     }
 }
 
@@ -267,7 +414,6 @@ private struct SidebarItem: View {
     var quiet = false
     let action: () -> Void
     let keyboardAction: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         TapButton(keyboardAction: keyboardAction, action: action) {
@@ -294,15 +440,13 @@ private struct SidebarItem: View {
         }
         .accessibilityLabel(section.title)
         .accessibilityHint("Open \(section.title), \(AppCommandMap.navigation(for: section).glyph)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .background {
             if isSelected {
                 RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
                     .fill(Theme.selectionBG)
-                    .sidebarSelectionTravel(in: selectionNamespace)
             }
         }
-        .animation(animatesSelection && !reduceMotion ? Theme.Motion.nav : nil,
-                   value: isSelected)
     }
 }
 

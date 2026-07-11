@@ -81,12 +81,10 @@ struct TerminalTranscriptReveal: Equatable {
 /// for the whole app; everything on the MainActor.
 @MainActor
 final class AppServices: ObservableObject {
-    private static let sectionOverride =
-        (ProcessInfo.processInfo.environment["TRIFOLA_SECTION"]
-            ?? ProcessInfo.processInfo.environment["CMC_SECTION"])
-            .flatMap(AppSection.init(rawValue:))
-
+    let navigation = AppNavigation()
+    let navigationSnapshots = NavigationSnapshotStore()
     let claudePaths: ClaudePaths
+    let codexPaths: CodexPaths
     let sessions: SessionStore
     let audit: RoutingAudit
     let stack = StackStore()
@@ -123,6 +121,10 @@ final class AppServices: ObservableObject {
     let notifier = BlockedNotifierService()
     /// Low-frequency Settings preferences (quiet hours + default snooze).
     let preferences = AppPreferencesModel()
+    /// Optional Accessibility trust UX for exact terminal-workspace jumps. This
+    /// stays on its own observable so a rare prompt/status refresh never becomes
+    /// another high-frequency AppServices publication source.
+    let workspaceAccess = WorkspaceAccessCoordinator()
     /// Persistent snooze/mute agency plus the visual blocked→running closure beat.
     let agency = AgencyController()
     /// PLAN QUOTA (W7): the REAL rate-limit windows (5h · weekly · model-scoped)
@@ -133,10 +135,9 @@ final class AppServices: ObservableObject {
     /// claiming a reveal must never turn a decorative animation into a render
     /// source for the whole app.
     let reveals = Reveal.Registry()
-    /// First-run truth: whether the local Claude Code corpus exists and contains
-    /// at least one transcript. Checked at launch and after each coalesced refresh,
-    /// never in a hot SwiftUI body.
-    @Published private(set) var hasLocalClaudeCorpus: Bool
+    /// First-run truth across every supported local provider. Checked at launch
+    /// and after each coalesced refresh, never in a hot SwiftUI body.
+    @Published private(set) var providerCorpusPresence: ProviderCorpusPresence
 
     // MENU-BAR PRESENCE lives on its own `MenuBarPresence` object (not here) so the
     // App scene's menu/MenuBarExtra don't observe this high-frequency store — see
@@ -150,15 +151,18 @@ final class AppServices: ObservableObject {
     /// command; RootView presents the overlay while it's true.
     @Published var showPalette = false
 
-    /// `TRIFOLA_SECTION=spend` (etc.) opens the app on a given screen — the snapshot
-    /// loop uses it to capture every screen without UI scripting.
-    @AppStorage(AppRestorationKeys.section) private var persistedSectionRaw = ""
     @AppStorage(AppRestorationKeys.inspectorSessionID) private var persistedInspectorID = ""
-    @Published var section: AppSection = .overview
-    private(set) var firstAppearanceSection: AppSection? = .overview
-    private(set) var navigationOrigin: NavOrigin = .programmatic
-    private(set) var seenSections: Set<AppSection> = [.overview]
-    private var navigationStart: (section: AppSection, nanoseconds: UInt64)?
+
+    // Read-only compatibility for commands, render fixtures, and the launch
+    // benchmark. AppNavigation is deliberately not forwarded through this
+    // object's publisher, so section selection cannot invalidate store views.
+    var section: AppSection { navigation.section }
+    var firstAppearanceSection: AppSection? { navigation.firstAppearanceSection }
+    var navigationOrigin: NavOrigin { navigation.navigationOrigin }
+    var navigationMetricGeneration: Int { navigation.navigationMetricGeneration }
+    var navigationMetricJourney: NavigationMetricJourney? {
+        navigation.navigationMetricJourney
+    }
     @Published var selectedSessionID: String? = nil {
         didSet {
             guard selectedSessionID != oldValue else { return }
@@ -184,6 +188,9 @@ final class AppServices: ObservableObject {
     private var watcher: FSEventsWatcher?
     private var ticker: Task<Void, Never>?
     private var sessionsDebounce: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshQueued = false
+    private var refreshQueuedOpenAction = false
     private var terminalLaunchTask: Task<Void, Never>?
     private var terminalRevealGeneration = 0
     private var pendingRestoredSessionID: String?
@@ -191,27 +198,20 @@ final class AppServices: ObservableObject {
     private var didRunLaunchDream = false
     private var forwarders: Set<AnyCancellable> = []
 
-    init(claudePaths: ClaudePaths = .process) {
+    init(claudePaths: ClaudePaths = .process,
+         codexPaths: CodexPaths = .process) {
         self.claudePaths = claudePaths
-        self.sessions = SessionStore(paths: claudePaths)
+        self.codexPaths = codexPaths
+        self.sessions = SessionStore(paths: claudePaths, codexPaths: codexPaths)
         self.audit = RoutingAudit(paths: claudePaths)
         self.skills = SkillsStore(paths: claudePaths)
         self.quota = QuotaStore(paths: claudePaths)
-        self.hasLocalClaudeCorpus = Self.detectLocalClaudeCorpus(paths: claudePaths)
+        self.providerCorpusPresence = ProviderCorpusPresence.detect(
+            claudePaths: claudePaths,
+            codexPaths: codexPaths)
 
-        let restoredSection = Self.sectionOverride
-            ?? AppSection(rawValue: persistedSectionRaw)
-            ?? .overview
-        self.section = restoredSection
-        self.firstAppearanceSection = restoredSection
-        self.seenSections = [restoredSection]
         self.pendingRestoredSessionID = persistedInspectorID.isEmpty
             ? nil : persistedInspectorID
-        if Self.sectionOverride == nil,
-           !persistedSectionRaw.isEmpty,
-           AppSection(rawValue: persistedSectionRaw) == nil {
-            persistedSectionRaw = ""
-        }
 
         // Nested-ObservableObject trap: views observe THIS object, but the data
         // lives in child stores. Forward every child publish so progressive scan
@@ -241,6 +241,23 @@ final class AppServices: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &forwarders)
 
+        // Apply quota trust changes immediately. Turning a provider off clears
+        // its in-memory snapshot without touching that provider's read boundary;
+        // turning it on performs the newly-authorized probe once.
+        preferences.$value
+            .map(QuotaConsent.init(preferences:))
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] consent in
+                guard let self else { return }
+                Task { @MainActor in
+                    await self.quota.refresh(
+                        consent: consent,
+                        minInterval: 0)
+                }
+            }
+            .store(in: &forwarders)
+
         // Walk-Away Notify: clicking a BLOCKED banner focuses that session's live
         // detail (the honest bridge falls back to activating the app).
         notifier.onActivateSession = { [weak self] id in
@@ -263,36 +280,14 @@ final class AppServices: ObservableObject {
         }
     }
 
-    /// The only section mutation point. A nil/disabled transaction suppresses
-    /// every transition and matched-geometry effect for non-pointer origins;
-    /// no screen or sidebar item needs to know how navigation was initiated.
+    /// Compatibility entry point used by commands and deep links. Navigation's
+    /// publisher stays isolated from this store-owned application model.
     func select(_ newSection: AppSection, origin: NavOrigin) {
-        guard section != newSection else { return }
-        navigationOrigin = origin
-        if Perf.enabled {
-            navigationStart = (newSection, DispatchTime.now().uptimeNanoseconds)
-        }
-        let isFirstAppearance = seenSections.insert(newSection).inserted
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = origin != .pointer
-        withTransaction(transaction) {
-            firstAppearanceSection = isFirstAppearance ? newSection : nil
-            section = newSection
-        }
-        persistedSectionRaw = newSection.rawValue
+        navigation.select(newSection, origin: origin)
     }
 
-    /// Destination-mount end of the opt-in navigation span. Projection spans on
-    /// each heavy destination identify which slice owns this total.
     func navigationDidAppear(_ appearedSection: AppSection) {
-        guard Perf.enabled,
-              let start = navigationStart,
-              start.section == appearedSection else { return }
-        navigationStart = nil
-        let ms = Double(DispatchTime.now().uptimeNanoseconds - start.nanoseconds)
-            / 1_000_000
-        FileHandle.standardError.write(Data(
-            "[perf] main:nav.switch.\(appearedSection.rawValue) \(String(format: "%.1f", ms))ms\n".utf8))
+        navigation.navigationDidAppear(appearedSection)
     }
 
     /// The Skill hierarchy's Launch button: jump to the builder, seeded with a
@@ -304,11 +299,13 @@ final class AppServices: ObservableObject {
 
     /// Distinct existing `<cwd>/.claude/skills` dirs across recent sessions — the
     /// project lane for the skill hierarchy (capped so the scan stays cheap).
-    private func projectSkillDirs() -> [String] {
+    private nonisolated static func projectSkillDirs(
+        sessions: [SessionSummary]
+    ) -> [String] {
         var seen = Set<String>()
         var out: [String] = []
         let fm = FileManager.default
-        for s in sessions.sessions where !s.cwd.isEmpty && !s.isSubagent {
+        for s in sessions where !s.cwd.isEmpty && !s.isSubagent {
             guard seen.insert(s.cwd).inserted else { continue }
             let dir = (s.cwd as NSString).appendingPathComponent(".claude/skills")
             var isDir: ObjCBool = false
@@ -345,7 +342,6 @@ final class AppServices: ObservableObject {
         // The SessionStore already scans ~/.codex as a second provider; watch it
         // too (when present) so Codex rollouts refresh live, not just on the next
         // Claude-triggered pass. Codex archives older rollouts as .jsonl.zst.
-        let codexPaths = CodexPaths.process
         let codexPrefix = codexPaths.sessions.standardizedFileURL.path + "/"
         var watchPaths = [claudePaths.root.path]
         if FileManager.default.fileExists(atPath: codexPaths.root.path) {
@@ -383,7 +379,11 @@ final class AppServices: ObservableObject {
                 guard let self else { return }
                 self.now = Date()
                 // Catch time-driven flips into BLOCKED (30s threshold, no file event).
-                self.evaluateNotifications()
+                let board = await self.rebuildAttentionBoardOffMain(
+                    priority: .background)
+                self.evaluateNotifications(board: board)
+                self.navigationSnapshots.refreshHeartbeat(
+                    attention: board, now: self.now)
                 if Date().timeIntervalSince(self.sessions.lastRefresh) > 120 {
                     self.refreshAll()
                 }
@@ -430,6 +430,26 @@ final class AppServices: ObservableObject {
         return board
     }
 
+    private func rebuildAttentionBoardOffMain(
+        priority: TaskPriority = .userInitiated
+    ) async -> AttentionBoard {
+        let summaries = sessions.sessions
+        let signals = attention.signals
+        let instant = now
+        let sessionsRevision = sessions.revision
+        let signalsRevision = attention.revision
+        let board = await Task.detached(priority: priority) {
+            AttentionBoard.build(
+                sessions: summaries, signals: signals, now: instant)
+        }.value
+        if sessions.revision == sessionsRevision,
+           attention.revision == signalsRevision,
+           now == instant {
+            boardCache = (instant, sessionsRevision, signalsRevision, board)
+        }
+        return board
+    }
+
     /// Agency applied to the raw board. The result retains every row for honest
     /// rendering and exposes a filtered board solely for interrupting surfaces.
     func attentionSuppression(now: Date? = nil) -> AttentionSuppressionResult {
@@ -443,6 +463,21 @@ final class AppServices: ObservableObject {
 
     /// Count of BLOCKED sessions — the dock badge + menu-bar number.
     var blockedCount: Int { alertingAttentionBoard().blockedCount }
+
+    /// Capture immutable inputs on the main actor, then let the projection store
+    /// perform every corpus walk off-main. Calling this is cheap and safe from
+    /// refresh, heartbeat, and explicit deadline mutations.
+    func refreshNavigationSnapshots() {
+        navigationSnapshots.rebuild(
+            sessions: sessions.sessions,
+            attentionSignals: attention.signals,
+            fleetSignals: fleet.signals,
+            arrival: fleet.arrival,
+            deadlineRecords: deadlines.records,
+            machines: sessions.fleetMachines,
+            liveTerminalSessionIDs: liveTerminalSessionIDs,
+            now: now)
+    }
 
     // MARK: Deadline Board
 
@@ -464,8 +499,8 @@ final class AppServices: ObservableObject {
     /// and the heartbeat ticker (a time-driven RUNNING→BLOCKED at the 30s threshold,
     /// which changes no file). Rising-edge dedup means the two callers never
     /// double-notify.
-    func evaluateNotifications() {
-        let raw = attentionBoard(now: now)
+    func evaluateNotifications(board: AttentionBoard? = nil) {
+        let raw = board ?? attentionBoard(now: now)
         agency.observe(board: raw, now: now)
         notifier.evaluate(board: agency.result(for: raw, now: now).alertingBoard,
                           signals: attention.signals)
@@ -497,86 +532,104 @@ final class AppServices: ObservableObject {
     }
 
     func refreshAll(refreshSelectedOpenAction: Bool = false) {
-        Task {
-            await Perf.span("await:sessions.refreshNow") { await sessions.refreshNow() }
-            await refreshLiveTerminalSnapshot()
-            reconcileRestoredSelection()
-            if refreshSelectedOpenAction,
-               let selectedSession {
-                prepareSessionOpenAction(for: selectedSession, force: true)
+        refreshQueuedOpenAction = refreshQueuedOpenAction || refreshSelectedOpenAction
+        guard refreshTask == nil else {
+            refreshQueued = true
+            return
+        }
+        let wantsOpenAction = refreshQueuedOpenAction
+        refreshQueuedOpenAction = false
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.performRefreshAll(refreshSelectedOpenAction: wantsOpenAction)
+            self.refreshTask = nil
+            if self.refreshQueued {
+                self.refreshQueued = false
+                self.refreshAll(
+                    refreshSelectedOpenAction: self.refreshQueuedOpenAction)
             }
-            let corpusAvailable = Self.detectLocalClaudeCorpus(paths: claudePaths)
-            if hasLocalClaudeCorpus != corpusAvailable {
-                hasLocalClaudeCorpus = corpusAvailable
-            }
-            Perf.span("main:audit.refresh") { audit.refresh(sessions: sessions.sessions) }
-            await Perf.span("await:attention.refresh") { await attention.refresh(candidates: attentionCandidates()) }
-            await Perf.span("await:fleet.refresh") { await fleet.refresh(sessions: sessions.sessions, now: Date()) }
-            now = Date()
-            // Fresh signals in hand → notify on any session that just entered BLOCKED.
-            Perf.span("main:evaluateNotifications") { evaluateNotifications() }
-            // The AUDIT pillar needs the skill catalog (dead-skill ledger); make
-            // sure it's loaded, then build all four findings from the fresh index.
-            // Feed the project lane from real session cwds before scanning.
-            skills.projectDirs = Perf.span("main:projectSkillDirs") { projectSkillDirs() }
-            await skills.refreshIfStale()
-            await Perf.span("await:auditReport.refresh") {
-                await auditReport.refresh(sessions: sessions.sessions, skills: skills.skills)
-            }
-            // DREAMING LEDGER: record exactly one on-launch pass after the first
-            // fresh audit is available. Later refreshes only re-mint silently, so
-            // navigating back to Ledger never writes another dream-log line.
-            settings = ClaudeSettings.load(paths: claudePaths)
-            if !didRunLaunchDream {
-                didRunLaunchDream = true
-                Perf.span("main:ledger.dreamOnLaunch") {
-                    ledger.dream(
-                        report: auditReport.report,
-                        catalog: skills.skills,
-                        settings: settings,
-                        sessionsScanned: sessions.sessions.count,
-                        trigger: .onLaunch)
-                }
-            } else {
-                Perf.span("main:ledger.remint") {
-                    ledger.remint(
-                        report: auditReport.report,
-                        catalog: skills.skills,
-                        settings: settings)
-                }
-            }
-            // LAUNCH pillar: load saved recipes from the app's own dir.
-            launch.reload()
-            // DEADLINE BOARD: re-parse the deadline sources (MEMORY.md/NOTES.md) →
-            // operative deadline → .toml override → persist to the app's OWN store. The
-            // card JOIN (against live activity) is rebuilt at render time. The source
-            // read + regex parse (~190ms measured) runs detached — never on main.
-            await Perf.span("await:deadlines.refresh") {
-                await deadlines.refresh(sessions: sessions.sessions, now: Date())
-            }
-            // Cross-Machine Fleet: recompute the calm online/offline indicators from
-            // the freshly-merged fleet's per-machine session counts.
-            machines.refreshStatuses(sessionCounts: machineSessionCounts())
-            // Warm the Stack screen in the background; the stale guard keeps
-            // this from re-spawning probe subprocesses on every FS event.
-            await stack.refreshIfStale(120)
-            // PLAN QUOTA (W7): read-only OAuth windows; its own minInterval +
-            // 429 cooldown make this a no-op on most refresh cycles.
-            await Perf.span("await:quota.refresh") { await quota.refresh() }
         }
     }
 
-    private static func detectLocalClaudeCorpus(paths: ClaudePaths) -> Bool {
-        let projects = paths.projects
-        guard FileManager.default.fileExists(atPath: projects.path),
-              let files = FileManager.default.enumerator(
-                at: projects,
-                includingPropertiesForKeys: nil,
-                options: [.skipsPackageDescendants]) else { return false }
-        for case let url as URL in files where url.pathExtension == "jsonl" {
-            return true
+    var isRefreshCascadeRunning: Bool { refreshTask != nil }
+
+    private func performRefreshAll(refreshSelectedOpenAction: Bool) async {
+        await Perf.span("await:sessions.refreshNow") { await sessions.refreshNow() }
+        await refreshLiveTerminalSnapshot()
+        // Sessions can hydrate immediately from the parsed cache; do not make
+        // its first visit wait for audit/ledger/deadline refresh work.
+        refreshNavigationSnapshots()
+        reconcileRestoredSelection()
+        if refreshSelectedOpenAction, let selectedSession {
+            prepareSessionOpenAction(for: selectedSession, force: true)
         }
-        return false
+
+        let claudePaths = self.claudePaths
+        let codexPaths = self.codexPaths
+        let corpusPresence = await Task.detached(priority: .utility) {
+            ProviderCorpusPresence.detect(
+                claudePaths: claudePaths, codexPaths: codexPaths)
+        }.value
+        if providerCorpusPresence != corpusPresence {
+            providerCorpusPresence = corpusPresence
+        }
+
+        await Perf.span("await:audit.refresh") {
+            await audit.refresh(sessions: sessions.sessions)
+        }
+        await Perf.span("await:attention.refresh") {
+            await attention.refresh(candidates: attentionCandidates())
+        }
+        await Perf.span("await:fleet.refresh") {
+            await fleet.refresh(sessions: sessions.sessions, now: Date())
+        }
+        now = Date()
+        let notificationBoard = await rebuildAttentionBoardOffMain()
+        evaluateNotifications(board: notificationBoard)
+
+        let projectionSessions = sessions.sessions
+        skills.projectDirs = await Task.detached(priority: .utility) {
+            Self.projectSkillDirs(sessions: projectionSessions)
+        }.value
+        await skills.refreshIfStale()
+        await Perf.span("await:auditReport.refresh") {
+            await auditReport.refresh(
+                sessions: sessions.sessions, skills: skills.skills)
+        }
+
+        settings = await Task.detached(priority: .utility) {
+            ClaudeSettings.load(paths: claudePaths)
+        }.value
+        if !didRunLaunchDream {
+            didRunLaunchDream = true
+            await Perf.span("await:ledger.dreamOnLaunch") {
+                await ledger.dreamOffMain(
+                    report: auditReport.report,
+                    catalog: skills.skills,
+                    settings: settings,
+                    sessionsScanned: sessions.sessions.count,
+                    trigger: .onLaunch)
+            }
+        } else {
+            await Perf.span("await:ledger.remint") {
+                await ledger.remintOffMain(
+                    report: auditReport.report,
+                    catalog: skills.skills,
+                    settings: settings)
+            }
+        }
+
+        launch.reload()
+        await Perf.span("await:deadlines.refresh") {
+            await deadlines.refresh(sessions: sessions.sessions, now: Date())
+        }
+        refreshNavigationSnapshots()
+        machines.refreshStatuses(sessionCounts: machineSessionCounts())
+        await stack.refreshIfStale(120)
+        let quotaConsent = QuotaConsent(preferences: preferences.value)
+        await Perf.span("await:quota.refresh") {
+            await quota.refresh(consent: quotaConsent)
+        }
     }
 
     private func handleChanges(sessions sessionsDirty: Bool, settings settingsDirty: Bool) {
@@ -591,31 +644,7 @@ final class AppServices: ObservableObject {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self, !Task.isCancelled else { return }
                 self.sessionsDebounce = nil
-                await Perf.span("await:sessions.refreshNow") { await self.sessions.refreshNow() }
-                await self.refreshLiveTerminalSnapshot()
-                self.reconcileRestoredSelection()
-                Perf.span("main:audit.refresh") { self.audit.refresh(sessions: self.sessions.sessions) }
-                await Perf.span("await:attention.refresh") {
-                    await self.attention.refresh(candidates: self.attentionCandidates())
-                }
-                await Perf.span("await:fleet.refresh") {
-                    await self.fleet.refresh(sessions: self.sessions.sessions, now: Date())
-                }
-                await Perf.span("await:auditReport.refresh") {
-                    await self.auditReport.refresh(sessions: self.sessions.sessions, skills: self.skills.skills)
-                }
-                if settingsDirty {
-                    self.settings = ClaudeSettings.load(paths: self.claudePaths)
-                }
-                Perf.span("main:ledger.remint") {
-                    self.ledger.remint(report: self.auditReport.report, catalog: self.skills.skills,
-                                       settings: self.settings)
-                }
-                await Perf.span("await:deadlines.refresh") {
-                    await self.deadlines.refresh(sessions: self.sessions.sessions, now: Date())
-                }
-                self.now = Date()
-                Perf.span("main:evaluateNotifications") { self.evaluateNotifications() }
+                self.refreshAll()
             }
         }
     }
@@ -655,8 +684,12 @@ final class AppServices: ObservableObject {
     /// same typed process/registry result the launch flow consumes. Resolution
     /// runs off-main and stays stable until selection changes or refresh is explicit.
     func prepareSessionOpenAction(for session: SessionSummary, force: Bool = false) {
-        if session.isRemote {
-            sessionOpenActions[session.id] = .transcript
+        if ProviderSessionOpenPolicy.route(
+            provider: session.provider,
+            isRemote: session.isRemote) == .transcript {
+            // `sessionOpenAction(for:)` derives this directly from provider
+            // policy. Writing the same value on every inspector mount would
+            // republish broad AppServices and rebuild the Sessions screen.
             return
         }
         if !force, sessionOpenActions[session.id] != nil { return }
@@ -679,7 +712,11 @@ final class AppServices: ObservableObject {
     }
 
     func sessionOpenAction(for session: SessionSummary) -> SessionOpenActionPresentation {
-        if session.isRemote { return .transcript }
+        if ProviderSessionOpenPolicy.route(
+            provider: session.provider,
+            isRemote: session.isRemote) == .transcript {
+            return .transcript
+        }
         return sessionOpenActions[session.id] ?? .resolving
     }
 
@@ -690,10 +727,37 @@ final class AppServices: ObservableObject {
         openTerminal(session) { MainWindowPresenter.present() }
     }
 
+    /// Async seam consumed by Tier 1.5 when AX would help but access is absent.
+    /// The first such attempt presents the explainer; a prior Not Now is honored
+    /// without another modal. Only an explicit choice is persisted, never TCC
+    /// status. The TerminalLauncher closure below supplies this method directly
+    /// to the generic Accessibility adapter.
+    func requestWorkspaceAccessExplanation(
+        terminalName: String
+    ) async -> WorkspaceAccessAction {
+        let alreadySeen = preferences.value
+            .hasSeenAccessibilityWorkspaceExplainer
+        let action = await workspaceAccess.requestExplanation(
+            terminalName: terminalName,
+            hasSeenExplainer: alreadySeen)
+        if !alreadySeen,
+           action == .settingsOpened || action == .notNow {
+            var updated = preferences.value
+            updated.hasSeenAccessibilityWorkspaceExplainer = true
+            preferences.value = updated
+        }
+        return action
+    }
+
     func openTerminal(_ session: SessionSummary,
                       openMainWindow: @escaping @MainActor () -> Void) {
-        guard !session.isRemote else {
-            showTranscript(session, message: "Remote session — showing transcript",
+        guard ProviderSessionOpenPolicy.route(
+            provider: session.provider,
+            isRemote: session.isRemote) == .claudeRegistry else {
+            let message = session.provider == .codex
+                ? "Codex terminal handoff is not available yet — showing rollout transcript"
+                : "Remote session — showing transcript"
+            showTranscript(session, message: message,
                            openMainWindow: openMainWindow)
             return
         }
@@ -703,6 +767,11 @@ final class AppServices: ObservableObject {
             resolver: TerminalLinkResolver(
                 registry: FileTerminalSessionRegistryProvider(
                     directory: claudePaths.sessions)),
+            workspacePermissionHandler: { [weak self] terminalName in
+                guard let self else { return .cancelled }
+                return await self.requestWorkspaceAccessExplanation(
+                    terminalName: terminalName)
+            },
             openMainWindow: openMainWindow,
             selectSession: { [weak self] id in
                 guard let self else { return }

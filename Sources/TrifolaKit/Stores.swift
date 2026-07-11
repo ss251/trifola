@@ -1140,6 +1140,9 @@ public final class SessionStore: ObservableObject {
     @Published public private(set) var sessions: [SessionSummary] = []
     /// Name sources outside the transcripts (live PID registry + /rename history).
     private let nameResolver: SessionNameResolver
+    /// Codex's separate bounded MRU thread-name index. Kept provider-scoped when
+    /// applied so an identical Claude/Codex transport id cannot cross-name rows.
+    private let codexNameResolver: CodexSessionNameResolver
     private let paths: ClaudePaths
     @Published public private(set) var lastRefresh: Date = Date()
     @Published public private(set) var isRefreshing = false
@@ -1176,6 +1179,8 @@ public final class SessionStore: ObservableObject {
                 codexPaths: CodexPaths = .process) {
         self.paths = paths
         self.nameResolver = SessionNameResolver(claudeDir: paths.root.path)
+        self.codexNameResolver = CodexSessionNameResolver(
+            indexURL: codexPaths.sessionIndexJSONL)
         self.sources = [
             .claude(root: paths.projects),
             .codex(root: codexPaths.sessions,
@@ -1245,7 +1250,10 @@ public final class SessionStore: ObservableObject {
         // Compare-before-assign (W6 wave 4): a refresh that found nothing new
         // must not publish — a wholesale reassignment re-renders every session
         // list, drops hover states, and re-sorts rows for zero information.
-        let named = Self.applyNames(merged, names: nameResolver.names())
+        let named = Self.applyNames(
+            Self.applyNames(merged, names: codexNameResolver.names(),
+                            provider: .codex),
+            names: nameResolver.names(), provider: .claude)
         if sessions != named {
             sessions = named
             revision += 1
@@ -1310,7 +1318,10 @@ public final class SessionStore: ObservableObject {
         appliedCount = partial.entries.count
         scanPresentation = SessionScanPresentationReducer.reduce(
             scanPresentation, event: .aggregateAvailable)
-        sessions = Self.applyNames(Self.sorted(partial.summaries), names: nameResolver.names())
+        sessions = Self.applyNames(
+            Self.applyNames(Self.sorted(partial.summaries),
+                            names: codexNameResolver.names(), provider: .codex),
+            names: nameResolver.names(), provider: .claude)
         revision += 1
     }
 
@@ -1334,10 +1345,11 @@ public final class SessionStore: ObservableObject {
     /// Overlay the resolver's names (live registry / last rename) over each
     /// summary's transcript-sourced ai-title; nil-name summaries keep the base.
     nonisolated static func applyNames(_ list: [SessionSummary],
-                                       names: [String: String]) -> [SessionSummary] {
+                                       names: [String: String],
+                                       provider: Provider = .claude) -> [SessionSummary] {
         guard !names.isEmpty else { return list }
         return list.map { s in
-            guard s.provider == .claude,
+            guard s.provider == provider,
                   let better = names[s.id], better != s.name else { return s }
             var copy = s
             copy = SessionSummary(id: s.id, provider: s.provider,
@@ -1492,7 +1504,11 @@ public final class SessionStore: ObservableObject {
     // v19: CodexRolloutAccumulator retains counter-reset epochs and its latest
     // provider-native attention signal. Old entries cannot recover either fact
     // without replaying their rollout once.
-    private nonisolated static let cacheVersion = 19
+    // v20: gpt usage re-tiers out of .other, and Codex accumulators retain their
+    // first genuine user prompt for title fallback. Cached summaries carry the
+    // old tier-keyed usage/cost bundle and no prompt, so every Codex rollout must
+    // replay once rather than preserving anonymous Other / Untitled rows.
+    private nonisolated static let cacheVersion = 20
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1555,6 +1571,11 @@ public final class SessionStore: ObservableObject {
     /// Spend split by model tier (the "silent Opus routing" panel).
     public var tierStats: [TierStat] { Self.aggregateTiers(sessions) }
 
+    /// Exact model ids, separated by provider and sorted for the Spend table.
+    public var topModelsByID: [ModelSpendStat] {
+        Self.aggregateModelsByID(sessions)
+    }
+
     /// Per-tick burn-governor memo: the sidebar footer AND the Overview each
     /// build the governor per body pass with the same (sessions, now) inputs —
     /// memoizing on (revision, now, window) halves that to one build per tick.
@@ -1596,6 +1617,91 @@ public final class SessionStore: ObservableObject {
             }
         }
         return map.values.sorted { $0.cost > $1.cost }
+    }
+
+    /// Provider-aware, exact-model rollup. Real summaries take the finest
+    /// `(local day, model id)` slices, so date-era pricing is identical to the
+    /// session headline. The older `usageByModel` fallback still preserves the
+    /// model id and prices it on the summary's activity day; synthetic summaries
+    /// fall back once more to their last model.
+    ///
+    /// Ordering is total and stable: dollars descending, then provider and model
+    /// ascending. Iterating dictionary keys in sorted order also makes the
+    /// floating-point fold reproducible across launches.
+    public nonisolated static func aggregateModelsByID(
+        _ sessions: [SessionSummary],
+        catalog: PricingCatalog = .current
+    ) -> [ModelSpendStat] {
+        struct Key: Hashable {
+            let provider: Provider
+            let model: String
+        }
+        struct Aggregate {
+            var usage = SessionUsage()
+            var cost = 0.0
+            var sessions = 0
+        }
+
+        var aggregates: [Key: Aggregate] = [:]
+        let orderedSessions = sessions.sorted {
+            ($0.provider.rawValue, $0.machineID, $0.id, $0.filePath)
+                < ($1.provider.rawValue, $1.machineID, $1.id, $1.filePath)
+        }
+
+        for session in orderedSessions {
+            var contributed = Set<Key>()
+
+            func add(rawModel: String?, day: String?, usage: SessionUsage) {
+                guard usage.total > 0 else { return }
+                let normalized = PricingCatalog.normalize(rawModel)
+                let model = normalized.isEmpty ? "<unknown>" : normalized
+                let key = Key(provider: session.provider, model: model)
+                var aggregate = aggregates[key] ?? Aggregate()
+                aggregate.usage = aggregate.usage + usage
+                aggregate.cost += usage.cost(
+                    rate: catalog.resolvedRate(model: rawModel, onDay: day))
+                aggregates[key] = aggregate
+                contributed.insert(key)
+            }
+
+            if !session.usageByModelDay.isEmpty {
+                for day in session.usageByModelDay.keys.sorted() {
+                    let byModel = session.usageByModelDay[day] ?? [:]
+                    for model in byModel.keys.sorted() {
+                        if let usage = byModel[model] {
+                            add(rawModel: model, day: day, usage: usage)
+                        }
+                    }
+                }
+            } else if !session.usageByModel.isEmpty {
+                let day = session.lastActivity.map(localDayKey)
+                for model in session.usageByModel.keys.sorted() {
+                    if let usage = session.usageByModel[model] {
+                        add(rawModel: model, day: day, usage: usage)
+                    }
+                }
+            } else {
+                add(rawModel: session.model,
+                    day: session.lastActivity.map(localDayKey),
+                    usage: session.usage)
+            }
+
+            for key in contributed {
+                aggregates[key]?.sessions += 1
+            }
+        }
+
+        return aggregates.map { key, value in
+            ModelSpendStat(provider: key.provider, model: key.model,
+                           usage: value.usage, cost: value.cost,
+                           sessions: value.sessions)
+        }.sorted {
+            if $0.cost != $1.cost { return $0.cost > $1.cost }
+            if $0.provider != $1.provider {
+                return $0.provider.rawValue < $1.provider.rawValue
+            }
+            return $0.model < $1.model
+        }
     }
 
     /// Sessions carrying a heavy context right now — the "$20 hey" risk list.
@@ -1643,17 +1749,23 @@ public final class RoutingAudit: ObservableObject {
         self.settingsFile = paths.settingsJSON
     }
 
-    public func refresh(sessions: [SessionSummary]) {
-        // read persisted default model from settings.json
-        var def = "—"
-        if let data = try? Data(contentsOf: settingsFile),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let m = obj["model"] as? String {
-            def = m
-        }
+    public func refresh(sessions: [SessionSummary]) async {
+        let file = settingsFile
+        let result = await Task.detached(priority: .utility) {
+            let def = Self.defaultModel(at: file)
+            return (def, Self.computeFlags(defaultModel: def, sessions: sessions))
+        }.value
+        let def = result.0
         if defaultModel != def { defaultModel = def }
-        let computed = Self.computeFlags(defaultModel: def, sessions: sessions)
+        let computed = result.1
         if flags != computed { flags = computed }
+    }
+
+    private nonisolated static func defaultModel(at file: URL) -> String {
+        guard let data = try? Data(contentsOf: file),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let model = obj["model"] as? String else { return "—" }
+        return model
     }
 
     public nonisolated static func computeFlags(defaultModel def: String,

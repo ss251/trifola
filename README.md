@@ -16,8 +16,8 @@ you — across every machine.
 ![Dependencies: none](https://img.shields.io/badge/dependencies-0-brightgreen)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/audit-dark.png">
-  <img alt="trifola — attribute workflow spend to a cause: re-sent context vs first-touch, dead skills, model-mismatch" src="docs/screenshots/audit-light.png" width="920">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/fleet-dark.png">
+  <img alt="trifola — Fleet Board with a blocked row and API-rate cost meter" src="docs/screenshots/fleet-light.png" width="920">
 </picture>
 
 _A truffle pig for your agent fleet: it sniffs out the valuable — and the
@@ -154,10 +154,16 @@ machines you manually configure.
 
 | Destination | Trigger | Data sent | How to disable |
 |---|---|---|---|
-| Anthropic quota API | **Automatic** when a readable Claude Code OAuth credential exists | OAuth access credential in the authorization header and standard HTTP request metadata; no transcripts | Sign out of Claude Code or otherwise make its credential unavailable; quota windows then degrade to unavailable |
+| Anthropic quota API | **Opt-in, off by default** — Settings → quota access must be enabled per provider; nothing is read before consent | OAuth access credential in the authorization header and standard HTTP request metadata; no transcripts. (Codex quota never uses the network — it reads local rollout files only.) | Leave the toggle off (the default), or turn it off at any time; quota windows then show as not enabled |
 | models.dev | **Opt-in** when you click **Refresh from models.dev** in the pricing view | A plain GET for the public pricing catalog; no credentials or transcripts | Do not use the refresh action; bundled pricing remains available offline |
 | Manually configured SSH/Tailscale host | **Only if configured** in experimental cross-machine settings | SSH connection metadata and bounded transcript path-list requests; matching transcript files are pulled from that machine into Trifola's local mirror | Remove or disable the configured machine |
 | Linear | **Opt-in** after adding a Linear key and choosing **Sync to Linear** | Confirmed deadline/project names, descriptions, target dates, and status updates; no transcripts | Do not connect/sync Linear, or remove the key |
+
+Two **local** macOS permissions are optional, prompted only at the moment of value, and never
+required: **Automation** (AppleScript) targets the exact Terminal.app/iTerm2 tab for "Open
+session," and **Accessibility** reads terminal window/tab *titles only* to jump to the exact
+workspace in apps without scripting support (Ghostty, multiplexer/workspace apps, …). Decline either and trifola
+degrades to fronting the app, saying so honestly. Neither touches transcript content.
 
 The npm CLI is narrower: it reads local files only, opens no network connection, and uploads
 nothing. The source is here—please audit it.

@@ -4,8 +4,35 @@ import TrifolaKit
 let cliArguments = Array(CommandLine.arguments.dropFirst())
 
 if cliArguments.contains("--benchmark-nav") {
-    NavBenchmark.run()
-    exit(0)
+    do {
+        let configuration = try NavBenchmark.Configuration(arguments: cliArguments)
+        try NavBenchmark.run(configuration: configuration)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data(
+            "trifola: invalid navigation benchmark: \(error)\n".utf8
+        ))
+        exit(64)
+    }
+}
+
+if cliArguments.contains("--benchmark-nav-live") {
+    MainActor.assumeIsolated { NavBenchmark.runLiveApplication() }
+}
+
+if let index = cliArguments.firstIndex(of: "--probe-ax") {
+    let next = cliArguments.index(after: index)
+    guard next < cliArguments.endIndex,
+          !cliArguments[next].hasPrefix("--") else {
+        FileHandle.standardError.write(Data(
+            "trifola: --probe-ax requires a process id or running app name\n".utf8))
+        exit(64)
+    }
+    let status = MainActor.assumeIsolated {
+        AccessibilityWorkspaceProbe.dump(
+            processOrApplication: cliArguments[next])
+    }
+    exit(status)
 }
 
 if let index = cliArguments.firstIndex(of: "--render-ux") {
@@ -13,6 +40,22 @@ if let index = cliArguments.firstIndex(of: "--render-ux") {
     let directory = next < cliArguments.endIndex && !cliArguments[next].hasPrefix("--")
         ? cliArguments[next] : "renders/ux"
     MainActor.assumeIsolated { UXEvidenceRender.run(directory: directory) }
+    exit(0)
+}
+
+if let index = cliArguments.firstIndex(of: "--render-parity") {
+    let next = cliArguments.index(after: index)
+    let directory = next < cliArguments.endIndex && !cliArguments[next].hasPrefix("--")
+        ? cliArguments[next] : "renders/parity"
+    MainActor.assumeIsolated { ParityRender.run(directory: directory) }
+    exit(0)
+}
+
+if let index = cliArguments.firstIndex(of: "--render-strengthen") {
+    let next = cliArguments.index(after: index)
+    let directory = next < cliArguments.endIndex && !cliArguments[next].hasPrefix("--")
+        ? cliArguments[next] : "renders/strengthen"
+    MainActor.assumeIsolated { StrengthenRender.run(directory: directory) }
     exit(0)
 }
 

@@ -94,6 +94,28 @@ public struct PricingCatalog: Sendable {
     /// How many models the refresh ADDED beyond the bundled seed.
     public let refreshedAdded: Int
 
+    /// The Codex model ids carried by the bundled, provider-specific seed.
+    /// `ModelTier` consults this set in addition to the forward-compatible
+    /// `gpt-*` family rule, so a future non-gpt Codex seed has one explicit
+    /// classification boundary instead of drifting into Other.
+    private static let bundledCodexRates: [
+        (id: String, input: Double, output: Double)
+    ] = [
+        ("gpt-5.6-sol", 5, 30),
+        ("gpt-5.6-terra", 2.5, 15),
+        ("gpt-5.6-luna", 1, 6),
+        ("gpt-5.5", 5, 30),
+        ("gpt-5.5-pro", 30, 180),
+        ("gpt-5.4", 2.5, 15),
+        ("gpt-5.4-mini", 0.75, 4.5),
+        ("gpt-5.4-nano", 0.20, 1.25),
+        ("gpt-5.4-pro", 30, 180),
+        ("gpt-5.3-codex", 1.75, 14),
+    ]
+    public static let bundledCodexModelIDs = Set(
+        bundledCodexRates.map { $0.id }
+    )
+
     public init(models: [String: ModelPricing], refreshedAt: Date? = nil,
                 refreshedAdded: Int = 0) {
         self.models = models
@@ -178,16 +200,9 @@ public struct PricingCatalog: Sendable {
         // OpenAI GPT-5 family. Cached input is 10% of fresh input, which the
         // two-argument ModelRate initializer derives. Codex rollout parsing
         // converts inclusive input into fresh + cache-read slices before cost.
-        put(["gpt-5.6-sol"], 5, 30)
-        put(["gpt-5.6-terra"], 2.5, 15)
-        put(["gpt-5.6-luna"], 1, 6)
-        put(["gpt-5.5"], 5, 30)
-        put(["gpt-5.5-pro"], 30, 180)
-        put(["gpt-5.4"], 2.5, 15)
-        put(["gpt-5.4-mini"], 0.75, 4.5)
-        put(["gpt-5.4-nano"], 0.20, 1.25)
-        put(["gpt-5.4-pro"], 30, 180)
-        put(["gpt-5.3-codex"], 1.75, 14)
+        for seed in bundledCodexRates {
+            put([seed.id], seed.input, seed.output)
+        }
         return PricingCatalog(models: m)
     }()
 
