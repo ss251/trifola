@@ -174,6 +174,26 @@ private struct QuotaAccessSettings: View {
                 Text("Reads rate-limit events from local ~/.codex/sessions rollout files only. No network request and no Codex process.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                Divider().padding(.vertical, 4)
+
+                Text("Custom model tier")
+                    .font(.callout.weight(.semibold))
+                HStack(spacing: 8) {
+                    TextField("model id contains…", text: preferenceBinding(
+                        get: { $0.customTierMatch },
+                        set: { $0.customTierMatch = $1 }))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 180)
+                    TextField("label", text: preferenceBinding(
+                        get: { $0.customTierLabel },
+                        set: { $0.customTierLabel = $1 }))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 120)
+                }
+                Text("Model ids containing the match display as their own tier instead of \"Other\" — for naming a private or internal model family locally. Applies immediately across the corpus.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Text("Turning a provider off clears its in-memory quota snapshot. Session, cost, and attention data are unaffected.")
@@ -183,10 +203,10 @@ private struct QuotaAccessSettings: View {
         .formStyle(.grouped)
     }
 
-    private func preferenceBinding(
-        get: @escaping (AppPreferences) -> Bool,
-        set: @escaping (inout AppPreferences, Bool) -> Void
-    ) -> Binding<Bool> {
+    private func preferenceBinding<Value>(
+        get: @escaping (AppPreferences) -> Value,
+        set: @escaping (inout AppPreferences, Value) -> Void
+    ) -> Binding<Value> {
         Binding(get: { get(preferences.value) }, set: { newValue in
             var copy = preferences.value
             set(&copy, newValue)

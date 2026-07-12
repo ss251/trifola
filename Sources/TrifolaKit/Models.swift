@@ -190,7 +190,7 @@ public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
     init(raw: String?, userTier: UserTier?) {
         guard let raw else { self = .other; return }
         let r = PricingCatalog.normalize(raw)
-        if r.hasPrefix("gpt-")
+        if r.hasPrefix("gpt-") || r.hasPrefix("codex")
             || PricingCatalog.bundledCodexModelIDs.contains(r) { self = .codex }
         else if r.contains("opus") { self = .opus }
         else if r.contains("sonnet") { self = .sonnet }

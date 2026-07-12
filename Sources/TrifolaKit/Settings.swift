@@ -64,18 +64,30 @@ public struct AppPreferences: Codable, Sendable, Equatable {
     /// that the user saw the explanation; macOS TCC remains the sole source of
     /// truth for whether Accessibility is currently granted.
     public var hasSeenAccessibilityWorkspaceExplainer: Bool
+    /// Optional user-defined model tier: model ids CONTAINING `customTierMatch`
+    /// (case-insensitive) display as their own tier labeled `customTierLabel`
+    /// instead of "Other". Lets a user name an internal/private model family
+    /// locally — the app itself ships no such name. Empty match = disabled.
+    public var customTierMatch: String
+    public var customTierLabel: String
 
     public init(quietHours: QuietHours = QuietHours(),
                 defaultSnoozeDurationMinutes: Int = 60,
                 claudeQuotaAccessEnabled: Bool = false,
                 codexQuotaAccessEnabled: Bool = false,
-                hasSeenAccessibilityWorkspaceExplainer: Bool = false) {
+                hasSeenAccessibilityWorkspaceExplainer: Bool = false,
+                customTierMatch: String = "",
+                customTierLabel: String = "Custom") {
         self.quietHours = quietHours
         self.defaultSnoozeDurationMinutes = max(1, defaultSnoozeDurationMinutes)
         self.claudeQuotaAccessEnabled = claudeQuotaAccessEnabled
         self.codexQuotaAccessEnabled = codexQuotaAccessEnabled
         self.hasSeenAccessibilityWorkspaceExplainer =
             hasSeenAccessibilityWorkspaceExplainer
+        self.customTierMatch = customTierMatch
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = customTierLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.customTierLabel = label.isEmpty ? "Custom" : label
     }
 
     /// Convenience for computing an expiry without duplicating minute-to-second
@@ -88,6 +100,7 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         case quietHours, defaultSnoozeDurationMinutes
         case claudeQuotaAccessEnabled, codexQuotaAccessEnabled
         case hasSeenAccessibilityWorkspaceExplainer
+        case customTierMatch, customTierLabel
     }
 
     public init(from decoder: Decoder) throws {
@@ -103,6 +116,19 @@ public struct AppPreferences: Codable, Sendable, Equatable {
             Bool.self, forKey: .codexQuotaAccessEnabled) ?? false
         hasSeenAccessibilityWorkspaceExplainer = try values.decodeIfPresent(
             Bool.self, forKey: .hasSeenAccessibilityWorkspaceExplainer) ?? false
+        customTierMatch = (try values.decodeIfPresent(
+            String.self, forKey: .customTierMatch) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = (try values.decodeIfPresent(
+            String.self, forKey: .customTierLabel) ?? "Custom")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        customTierLabel = label.isEmpty ? "Custom" : label
+    }
+
+    /// The user-tier snapshot this preference value describes (nil = disabled).
+    public var userTier: ModelTier.UserTier? {
+        guard !customTierMatch.isEmpty else { return nil }
+        return ModelTier.UserTier(match: customTierMatch, label: customTierLabel)
     }
 }
 

@@ -1312,6 +1312,34 @@ public final class SessionStore: ObservableObject {
         sessions.filter { $0.machineID == id }
     }
 
+    /// Re-derive every summary from its cached accumulator — the same work the
+    /// cache-load path does, without touching disk or reparsing transcripts.
+    /// Used when a summary-shaping setting changes (the user-defined model
+    /// tier): tier roll-ups are computed at summary build, so re-deriving
+    /// re-tiers the whole corpus in one off-main pass.
+    public func rederiveSummaries() {
+        let snapshot = index
+        Task.detached(priority: .userInitiated) {
+            var idx = snapshot
+            for (path, e) in idx.entries {
+                idx.entries[path] = SessionIndex.Entry(
+                    size: e.size, mtime: e.mtime, acc: e.acc,
+                    provider: e.provider, machineID: e.machineID,
+                    summary: e.acc.summary(filePath: path, machineID: e.machineID))
+            }
+            idx.reconcileCrossFileUsage()
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.index = idx
+                self.sessions = Self.applyNames(
+                    Self.applyNames(Self.sorted(idx.summaries),
+                                    names: self.codexNameResolver.names(), provider: .codex),
+                    names: self.nameResolver.names(), provider: .claude)
+                self.revision += 1
+            }
+        }
+    }
+
     /// Apply a (possibly out-of-order) snapshot: only grow, only current generation.
     private func apply(_ partial: SessionIndex, gen: Int) {
         guard gen == refreshGen, partial.entries.count > appliedCount else { return }

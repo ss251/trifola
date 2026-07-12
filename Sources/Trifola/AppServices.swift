@@ -245,6 +245,21 @@ final class AppServices: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &forwarders)
 
+        // The optional user-defined tier must be configured BEFORE the first
+        // index load: summaries (and their tier roll-ups) derive from cached
+        // accumulators at load time, so this re-tiers the whole corpus with no
+        // reparse. Changes re-derive existing summaries in place.
+        ModelTier.configureUserTier(preferences.value.userTier)
+        preferences.$value
+            .map(\.userTier)
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] tier in
+                ModelTier.configureUserTier(tier)
+                self?.sessions.rederiveSummaries()
+            }
+            .store(in: &forwarders)
+
         // Apply quota trust changes immediately. Turning a provider off clears
         // its in-memory snapshot without touching that provider's read boundary;
         // turning it on performs the newly-authorized probe once.
