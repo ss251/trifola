@@ -133,13 +133,25 @@ enum BundledWorkspaceController {
             diagnostic("surface-focus=failed")
             return nil
         }
-        guard let current = run(
-            endpoint,
-            arguments: ["rpc", "surface.current", "{}"],
-            maxOutputBytes: 8 * 1_024,
-            deadline: deadline),
-              WorkspaceBundledControlPolicy.surfaceFocusVerifies(
-                currentSurfaceOutput: current, target: target) else {
+        // The host applies focus asynchronously: an immediate current-surface
+        // read can race the switch and fail a REAL success (observed live —
+        // same click shape verified on retry). Poll briefly, like the AX
+        // title check does, inside the same operation deadline.
+        var verifiedRead: Data?
+        for attempt in 0..<10 {
+            guard let current = run(
+                endpoint,
+                arguments: ["rpc", "surface.current", "{}"],
+                maxOutputBytes: 8 * 1_024,
+                deadline: deadline) else { break }
+            if WorkspaceBundledControlPolicy.surfaceFocusVerifies(
+                currentSurfaceOutput: current, target: target) {
+                verifiedRead = current
+                break
+            }
+            if attempt < 9 { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        guard let current = verifiedRead else {
             diagnostic("surface-verify=failed")
             return nil
         }
