@@ -552,10 +552,18 @@ private struct SessionInspector: View {
         .overlay(alignment: .top) {
             if let request = services.terminalTranscriptReveal,
                request.sessionID == session.id {
-                Toast(text: request.message)
-                    .id(request.generation)
-                    .padding(.top, Theme.sectionGap)
-                    .allowsHitTesting(false)
+                // Actionable toasts must be hit-testable — the whole point of
+                // the button is that the user can act on the denial.
+                Toast(
+                    text: request.message,
+                    actionLabel: request.opensAccessibilitySettings
+                        ? "Open Settings…" : nil,
+                    action: request.opensAccessibilitySettings
+                        ? { services.openAccessibilitySettingsFromToast() } : nil
+                )
+                .id(request.generation)
+                .padding(.top, Theme.sectionGap)
+                .allowsHitTesting(request.opensAccessibilitySettings)
             }
         }
         .motion(Theme.Motion.move, value: services.terminalTranscriptReveal?.generation)
@@ -625,7 +633,22 @@ private struct SessionInspector: View {
     private var openSessionButton: some View {
         let openAction = services.sessionOpenAction(for: session)
 
-        return TapButton(
+        // The visible reason keeps by-design transcript-only states (a Codex
+        // row, a session that is not running) from reading as breakage — a
+        // hover tooltip alone was too easy to never discover.
+        return VStack(alignment: .trailing, spacing: 3) {
+            openTapButton(openAction)
+            if let caption = openAction.caption {
+                Text(caption)
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.faint)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func openTapButton(_ openAction: SessionOpenActionPresentation) -> some View {
+        TapButton(
             shortcut: KeyboardShortcut(.return, modifiers: .command),
             action: {
                 let presentMain: @MainActor () -> Void = {

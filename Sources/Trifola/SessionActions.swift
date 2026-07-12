@@ -2,11 +2,22 @@ import SwiftUI
 import AppKit
 import TrifolaKit
 
+/// WHY a session's primary action is transcript-only. Three different truths
+/// used to share one unexplained label, so by-design behavior (a Codex row, a
+/// session that simply is not running) read as breakage.
+enum TranscriptOnlyReason: Equatable {
+    case codexSession
+    case remoteSession
+    case notRunning
+    case headless
+    case unresolvable
+}
+
 enum SessionOpenActionPresentation: Equatable {
     case resolving
     case iTerm2
     case terminal
-    case transcript
+    case transcript(TranscriptOnlyReason)
     case session
 
     init(resolution: TerminalLinkResolution) {
@@ -16,10 +27,12 @@ enum SessionOpenActionPresentation: Equatable {
             case .iTerm2?: self = .iTerm2
             case .terminal?: self = .terminal
             case .ghostty?, .other?: self = .session
-            case nil: self = .transcript
+            case nil: self = .transcript(.headless)
             }
-        case .notLive, .ambiguous, .failed:
-            self = .transcript
+        case .notLive:
+            self = .transcript(.notRunning)
+        case .ambiguous, .failed:
+            self = .transcript(.unresolvable)
         }
     }
 
@@ -30,6 +43,25 @@ enum SessionOpenActionPresentation: Equatable {
         case .terminal: return "Open Terminal"
         case .transcript: return "Show transcript"
         case .session: return "Open session"
+        }
+    }
+
+    /// Short visible reason rendered beside the action when it is
+    /// transcript-only — the tooltip alone was too discoverable-hostile.
+    var caption: String? {
+        switch self {
+        case .transcript(.codexSession):
+            return "Codex session — workspace jump isn't supported yet"
+        case .transcript(.remoteSession):
+            return "Remote session"
+        case .transcript(.notRunning):
+            return "Not running — no live terminal"
+        case .transcript(.headless):
+            return "Runs headless — no terminal window"
+        case .transcript(.unresolvable):
+            return "No confident terminal match"
+        case .resolving, .iTerm2, .terminal, .session:
+            return nil
         }
     }
 
@@ -49,8 +81,20 @@ enum SessionOpenActionPresentation: Equatable {
             return "Bring this exact live iTerm2 session forward; show its transcript if unavailable"
         case .terminal:
             return "Bring this exact live Terminal session forward; show its transcript if unavailable"
-        case .transcript:
-            return "Show this session's local read-only transcript"
+        case .transcript(let reason):
+            let base = "Show this session's local read-only transcript"
+            switch reason {
+            case .codexSession:
+                return base + " — Codex threads can't be joined to the Claude live registry yet, so jumping to a terminal could target the wrong one"
+            case .remoteSession:
+                return base + " — this session runs on another machine"
+            case .notRunning:
+                return base + " — the session has no live process to jump to"
+            case .headless:
+                return base + " — the live process has no terminal window"
+            case .unresolvable:
+                return base + " — no single live terminal could be confidently matched"
+            }
         case .session:
             return "Jump to this exact workspace when Accessibility is granted and a confident match exists; otherwise bring the owning terminal app forward"
         }

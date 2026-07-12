@@ -75,6 +75,10 @@ struct TerminalTranscriptReveal: Equatable {
     let sessionID: String
     let generation: Int
     let message: String
+    /// True only for an Accessibility-denied outcome: the toast then carries a
+    /// button that opens the exact Settings pane, so a suppressed one-time
+    /// explainer can never strand the user with an unactionable sentence.
+    var opensAccessibilitySettings: Bool = false
 }
 
 /// Owns the stores, the FSEvents wiring and the navigation state. One instance
@@ -711,11 +715,17 @@ final class AppServices: ObservableObject {
         }
     }
 
+    /// The actionable denial toast's one action: open the exact Settings pane.
+    func openAccessibilitySettingsFromToast() {
+        workspaceAccess.openAccessibilitySettings()
+    }
+
     func sessionOpenAction(for session: SessionSummary) -> SessionOpenActionPresentation {
         if ProviderSessionOpenPolicy.route(
             provider: session.provider,
             isRemote: session.isRemote) == .transcript {
-            return .transcript
+            // Same route, two different truths — name the right one.
+            return .transcript(session.provider == .codex ? .codexSession : .remoteSession)
         }
         return sessionOpenActions[session.id] ?? .resolving
     }
@@ -779,10 +789,17 @@ final class AppServices: ObservableObject {
                 self.select(.sessions, origin: .programmatic)
             },
             revealTranscript: { [weak self] id, outcome in
+                // An Accessibility denial gets an actionable toast: the
+                // one-time explainer can be suppressed (its "seen" flag
+                // persists), and a bare sentence stranded the user with no
+                // way to grant. The button opens the exact Settings pane.
+                var opensAccessibility = false
+                if case .axDenied = outcome { opensAccessibility = true }
                 self?.publishTranscriptReveal(
                     sessionID: id,
                     message: outcome.fallbackMessage
-                        ?? "No live terminal found — showing transcript"
+                        ?? "No live terminal found — showing transcript",
+                    opensAccessibilitySettings: opensAccessibility
                 )
             },
             confirmLaunch: { [weak self] message in
@@ -808,16 +825,19 @@ final class AppServices: ObservableObject {
         )
     }
 
-    private func publishTranscriptReveal(sessionID: String, message: String) {
+    private func publishTranscriptReveal(sessionID: String, message: String,
+                                         opensAccessibilitySettings: Bool = false) {
         terminalRevealGeneration += 1
         let generation = terminalRevealGeneration
         terminalTranscriptReveal = TerminalTranscriptReveal(
             sessionID: sessionID,
             generation: generation,
-            message: message
+            message: message,
+            opensAccessibilitySettings: opensAccessibilitySettings
         )
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2.5))
+            // An actionable toast needs time to be acted on.
+            try? await Task.sleep(for: .seconds(opensAccessibilitySettings ? 8 : 2.5))
             guard let self,
                   self.terminalTranscriptReveal?.generation == generation else { return }
             self.terminalTranscriptReveal = nil

@@ -2079,6 +2079,11 @@ extension ScreenScaffold where Trailing == EmptyView {
 
 struct Toast: View {
     let text: String
+    /// Optional inline action ("Open Settings…") — used when the toast names a
+    /// problem the user can fix right now. Text-only toasts stay hit-inert.
+    var actionLabel: String? = nil
+    var action: (() -> Void)? = nil
+
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "checkmark.circle.fill")
@@ -2087,6 +2092,15 @@ struct Toast: View {
             Text(text)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(Theme.ink)
+            if let actionLabel, let action {
+                Button(action: action) {
+                    Text(actionLabel)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 2)
+            }
         }
         .padding(.horizontal, Theme.sectionGap)
         .padding(.vertical, Theme.toastVerticalInset)
