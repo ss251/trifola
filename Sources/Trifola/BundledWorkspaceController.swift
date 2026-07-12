@@ -15,6 +15,13 @@ struct BundledWorkspaceSelection: Sendable, Equatable {
     let sessionProcessID: Int32
 }
 
+/// A verified tab-level selection: the surface whose resume binding carries
+/// the exact session id, plus the window that hosted it at selection time.
+struct BundledSurfaceSelection: Sendable, Equatable {
+    let endpoint: BundledWorkspaceEndpoint
+    let target: WorkspaceBundledSurfaceTarget
+}
+
 /// Narrow refinement for a running terminal that ships its own structured
 /// workspace controller. Discovery is capability-based and the controller is
 /// never searched on PATH: it must be a signed, same-team executable sealed
@@ -58,6 +65,108 @@ enum BundledWorkspaceController {
             ownerProcessID: ownerProcessID,
             bundleURL: bundleURL,
             executableURL: executableURL)
+    }
+
+    /// Tab-exact selection: enumerate the host's workspaces and surfaces, join
+    /// by the session id carried in a surface's resume binding, focus that
+    /// surface, and verify the host's own current-surface read. Attempted only
+    /// when the sealed controller ALSO advertises the surface methods; every
+    /// existing gate (signature, capability version, bounded IO, fail-closed)
+    /// applies unchanged.
+    static func selectSurface(
+        endpoint: BundledWorkspaceEndpoint,
+        sessionID: String
+    ) -> BundledSurfaceSelection? {
+        guard endpointIsCurrentAndValid(endpoint) else { return nil }
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(operationTimeout * 1_000_000_000)
+
+        guard let capabilities = run(
+            endpoint,
+            arguments: ["capabilities"],
+            maxOutputBytes: 512 * 1_024,
+            deadline: deadline),
+              WorkspaceBundledControlPolicy
+                .supportsExpectedCapabilities(capabilities),
+              WorkspaceBundledControlPolicy
+                .supportsSurfaceCapabilities(capabilities) else {
+            diagnostic("surface-capabilities=unsupported")
+            return nil
+        }
+        guard let workspaceList = run(
+            endpoint,
+            arguments: ["rpc", "workspace.list", "{}"],
+            maxOutputBytes: 512 * 1_024,
+            deadline: deadline),
+              let workspaceIDs = WorkspaceBundledControlPolicy
+                .workspaceIDs(from: workspaceList) else {
+            diagnostic("surface-workspace-list=invalid")
+            return nil
+        }
+        var lists: [String: Data] = [:]
+        lists.reserveCapacity(workspaceIDs.count)
+        for workspaceID in workspaceIDs {
+            guard let parameters = jsonObject(["workspace_id": workspaceID]),
+                  let list = run(
+                    endpoint,
+                    arguments: ["rpc", "surface.list", parameters],
+                    maxOutputBytes: 512 * 1_024,
+                    deadline: deadline) else {
+                diagnostic("surface-list=failed")
+                return nil
+            }
+            lists[workspaceID] = list
+        }
+        guard let target = WorkspaceBundledControlPolicy.surfaceTarget(
+            fromSurfaceListsByWorkspaceID: lists,
+            sessionID: sessionID) else {
+            diagnostic("surface-join=no-unique-match")
+            return nil
+        }
+        diagnostic("surface-join=\(target.surfaceID)")
+        guard endpointIsCurrentAndValid(endpoint) else { return nil }
+        guard let focusParameters = jsonObject(["surface_id": target.surfaceID]),
+              run(endpoint,
+                  arguments: ["rpc", "surface.focus", focusParameters],
+                  maxOutputBytes: 8 * 1_024,
+                  deadline: deadline) != nil else {
+            diagnostic("surface-focus=failed")
+            return nil
+        }
+        guard let current = run(
+            endpoint,
+            arguments: ["rpc", "surface.current", "{}"],
+            maxOutputBytes: 8 * 1_024,
+            deadline: deadline),
+              WorkspaceBundledControlPolicy.surfaceFocusVerifies(
+                currentSurfaceOutput: current, target: target) else {
+            diagnostic("surface-verify=failed")
+            return nil
+        }
+        // Front the hosting window (cross-Space) using the same verified read.
+        if let windowID = WorkspaceBundledControlPolicy
+            .currentSurfaceWindowID(current) {
+            _ = run(endpoint,
+                    arguments: ["focus-window", "--window", windowID],
+                    maxOutputBytes: 8 * 1_024,
+                    deadline: deadline)
+        }
+        diagnostic("surface-selection=verified")
+        return BundledSurfaceSelection(endpoint: endpoint, target: target)
+    }
+
+    /// Re-verify a surface selection at the post-condition stage.
+    static func verifySurface(_ selection: BundledSurfaceSelection) -> Bool {
+        guard endpointIsCurrentAndValid(selection.endpoint) else { return false }
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(operationTimeout * 1_000_000_000)
+        guard let current = run(
+            selection.endpoint,
+            arguments: ["rpc", "surface.current", "{}"],
+            maxOutputBytes: 8 * 1_024,
+            deadline: deadline) else { return false }
+        return WorkspaceBundledControlPolicy.surfaceFocusVerifies(
+            currentSurfaceOutput: current, target: selection.target)
     }
 
     static func select(

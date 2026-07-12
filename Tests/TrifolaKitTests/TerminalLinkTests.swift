@@ -550,7 +550,7 @@ struct TerminalLaunchOutcomeCopyTests {
         #expect(TerminalLaunchOutcome.axTargeted(
             launchTarget(application: .other(name: "WorkspaceTerm")),
             matchedTitle: "portfolio").successMessage
-                == "Jumped to workspace 'portfolio' in WorkspaceTerm")
+                == "Jumped to 'portfolio' in WorkspaceTerm")
         #expect(TerminalLaunchOutcome.axDenied(
             launchTarget(application: .other(name: "WorkspaceTerm"))).successMessage
                 == "Grant Accessibility to jump to the exact workspace — fronting WorkspaceTerm instead")

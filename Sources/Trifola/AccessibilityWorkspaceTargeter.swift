@@ -129,6 +129,7 @@ private actor AXWorkspaceWorker {
         let expectedWindow: AXUIElement?
         let bundledControlEndpoint: BundledWorkspaceEndpoint?
         let bundledControlSelection: BundledWorkspaceSelection?
+        var bundledSurfaceSelection: BundledSurfaceSelection? = nil
         let allowsBundledControlFallback: Bool
     }
 
@@ -142,6 +143,30 @@ private actor AXWorkspaceWorker {
         guard !Task.isCancelled,
               let ownerPID = request.target.ownerProcessID else { return .notFound }
         pendingVerification = nil
+
+        // Surface-exact tier: the host's own surface (tab) records can carry
+        // the EXACT session id they resume — stronger than any title or PID
+        // inference, immune to renames, and tab-precise. Attempt it before
+        // any AX work; every gate inside is capability-shaped and fail-closed.
+        if let bundledControlEndpoint, !Task.isCancelled,
+           let surface = BundledWorkspaceController.selectSurface(
+               endpoint: bundledControlEndpoint,
+               sessionID: request.identity.sessionID) {
+            AccessibilityWorkspaceTargeter.diagnostic(
+                "bundled-surface=selected title=\(surface.target.title)")
+            pendingVerification = PendingVerification(
+                ownerPID: ownerPID,
+                sessionID: request.identity.sessionID,
+                matchedTitle: surface.target.title,
+                allowsObservedStatusMarker: true,
+                expectedWindow: nil,
+                bundledControlEndpoint: bundledControlEndpoint,
+                bundledControlSelection: nil,
+                bundledSurfaceSelection: surface,
+                allowsBundledControlFallback: false)
+            return .targeted(matchedTitle: surface.target.title)
+        }
+
         let application = AXUIElementCreateApplication(pid_t(ownerPID))
         AXWorkspaceTree.prepare(application)
 
@@ -319,6 +344,12 @@ private actor AXWorkspaceWorker {
         self.pendingVerification = nil
         let application = AXUIElementCreateApplication(pid_t(ownerPID))
         AXWorkspaceTree.prepare(application)
+        if let surfaceSelection = pendingVerification.bundledSurfaceSelection {
+            return verifySurfaceSelection(
+                surfaceSelection,
+                application: application,
+                pending: pendingVerification)
+        }
         if let bundledSelection = pendingVerification
             .bundledControlSelection {
             return verifyBundledSelection(
@@ -366,6 +397,45 @@ private actor AXWorkspaceWorker {
             "verification=\(observedMismatch ? "failed" : "unavailable")")
         return observedMismatch
             ? .failed("AX post-condition did not confirm the matched workspace")
+            : .unavailable
+    }
+
+    private func verifySurfaceSelection(
+        _ selection: BundledSurfaceSelection,
+        application: AXUIElement,
+        pending: PendingVerification
+    ) -> WorkspaceTargetVerification {
+        guard !Task.isCancelled,
+              BundledWorkspaceController.verifySurface(selection) else {
+            AccessibilityWorkspaceTargeter.diagnostic(
+                "bundled-surface=post-condition-failed")
+            return .failed(
+                "Bundled surface control did not confirm the exact tab and workspace")
+        }
+        var observedMismatch = false
+        for attempt in 0..<10 {
+            guard !Task.isCancelled else { return .unavailable }
+            switch AXWorkspaceTree.verifyFocusedTitle(
+                application: application,
+                matchedTitle: pending.matchedTitle,
+                allowsObservedStatusMarker: pending.allowsObservedStatusMarker,
+                expectedWindow: nil) {
+            case .verified:
+                AccessibilityWorkspaceTargeter.diagnostic(
+                    "bundled-surface=verified")
+                return .verified
+            case .failed:
+                observedMismatch = true
+            case .unavailable:
+                break
+            }
+            if attempt < 9 { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        AccessibilityWorkspaceTargeter.diagnostic(
+            "bundled-surface=ax-title-"
+            + (observedMismatch ? "mismatch" : "unavailable"))
+        return observedMismatch
+            ? .failed("AX focused-window title did not confirm the selected tab")
             : .unavailable
     }
 

@@ -487,10 +487,15 @@ public enum WorkspaceSidebarRefinementPolicy {
 
     public static func removingObservedStatusMarker(_ raw: String) -> String {
         var title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // The verified shape exposes exactly this one status marker. Do not
-        // strip arbitrary symbols or emoji: those can be real workspace names.
+        // The verified shapes expose exactly two status prefixes: the "✳ "
+        // attention marker and a single braille-cell spinner glyph ("⠐ " and
+        // its animation frames, U+2800–U+28FF) on busy surfaces. Do not strip
+        // arbitrary symbols or emoji: those can be real workspace names.
         if title.hasPrefix("✳ ") {
             title.removeFirst(2)
+        } else if let first = title.unicodeScalars.first,
+                  (0x2800...0x28FF).contains(first.value) {
+            title.removeFirst(1)
         }
         return title.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -536,6 +541,21 @@ public enum WorkspaceSidebarRefinementPolicy {
 /// Pure parsing and identity policy for an optional, bundled local workspace
 /// controller. The executable adapter discovers support by capability rather
 /// than application name. It may act only when the controller maps Trifola's
+/// A surface (tab) inside a workspace host, joined by the EXACT session id in
+/// its resume binding — tab-level precision on top of workspace selection.
+public struct WorkspaceBundledSurfaceTarget: Sendable, Equatable {
+    public let workspaceID: String
+    public let surfaceID: String
+    /// The surface's own title, status prefix removed — the confirmation name.
+    public let title: String
+
+    public init(workspaceID: String, surfaceID: String, title: String) {
+        self.workspaceID = workspaceID
+        self.surfaceID = surfaceID
+        self.title = title
+    }
+}
+
 /// already-resolved live session PID to exactly one workspace and that
 /// workspace's title agrees with the independently matched AX title.
 public struct WorkspaceBundledControlTarget: Sendable, Equatable {
@@ -715,6 +735,163 @@ public enum WorkspaceBundledControlPolicy {
         }
         guard pidMatches.count == 1 else { return nil }
         return pidMatches[0]
+    }
+
+    /// The strongest identity a workspace host can offer: a surface (tab)
+    /// whose resume binding carries the EXACT session id it fronts. No titles,
+    /// The surface (tab) tier is optional capability: attempted only when the
+    /// sealed controller advertises these methods on top of the required set.
+    public static let surfaceMethods: Set<String> = [
+        "workspace.list", "surface.list", "surface.focus", "surface.current",
+    ]
+
+    public static func supportsSurfaceCapabilities(_ data: Data) -> Bool {
+        guard let decoded = try? JSONDecoder().decode(
+            Capabilities.self, from: data),
+              decoded.version == 2 else { return false }
+        return surfaceMethods.isSubset(of: Set(decoded.methods))
+    }
+
+    /// Validated workspace UUIDs from the host's workspace.list read. Duplicate
+    /// or malformed ids, or an implausibly large list, fail closed.
+    public static func workspaceIDs(from data: Data) -> [String]? {
+        guard let decoded = try? JSONDecoder().decode(
+            WorkspaceIDList.self, from: data),
+              !decoded.workspaces.isEmpty,
+              decoded.workspaces.count <= 64 else { return nil }
+        var seen: Set<String> = []
+        var ids: [String] = []
+        for workspace in decoded.workspaces {
+            guard isUUID(workspace.id),
+                  seen.insert(workspace.id.lowercased()).inserted else {
+                return nil
+            }
+            ids.append(workspace.id)
+        }
+        return ids
+    }
+
+    private struct WorkspaceIDList: Decodable {
+        let workspaces: [Entry]
+        struct Entry: Decodable { let id: String }
+
+        // The host returns either a bare array or {"workspaces": [...]}.
+        init(from decoder: Decoder) throws {
+            if var unkeyed = try? decoder.unkeyedContainer() {
+                var out: [Entry] = []
+                while !unkeyed.isAtEnd { out.append(try unkeyed.decode(Entry.self)) }
+                workspaces = out
+                return
+            }
+            let keyed = try decoder.container(keyedBy: Keys.self)
+            workspaces = try keyed.decode([Entry].self, forKey: .workspaces)
+        }
+        private enum Keys: String, CodingKey { case workspaces }
+    }
+
+    /// no names, no PID inference — and immune to renames. Returns the unique
+    /// global match; zero, multiple, or malformed records fail closed.
+    public static func surfaceTarget(
+        fromSurfaceListsByWorkspaceID lists: [String: Data],
+        sessionID: String
+    ) -> WorkspaceBundledSurfaceTarget? {
+        let wanted = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isUUID(wanted), !lists.isEmpty else { return nil }
+        var matches: [WorkspaceBundledSurfaceTarget] = []
+        var surfaceIDs: Set<String> = []
+        for (workspaceID, data) in lists {
+            guard isUUID(workspaceID),
+                  let decoded = try? JSONDecoder().decode(
+                    SurfaceList.self, from: data) else { return nil }
+            for surface in decoded.surfaces {
+                guard isUUID(surface.id),
+                      surfaceIDs.insert(surface.id.lowercased()).inserted
+                else { return nil }
+                guard let checkpoint = surface.resumeBinding?.checkpointID,
+                      checkpoint.caseInsensitiveCompare(wanted) == .orderedSame
+                else { continue }
+                let cleaned = WorkspaceSidebarRefinementPolicy
+                    .removingObservedStatusMarker(surface.title ?? "")
+                matches.append(WorkspaceBundledSurfaceTarget(
+                    workspaceID: workspaceID,
+                    surfaceID: surface.id,
+                    title: cleaned))
+            }
+        }
+        guard matches.count == 1 else { return nil }
+        return matches[0]
+    }
+
+    /// Post-condition for a surface focus: the host's own current-surface read
+    /// must name the exact surface AND workspace UUIDs we selected.
+    public static func surfaceFocusVerifies(
+        currentSurfaceOutput: Data,
+        target: WorkspaceBundledSurfaceTarget
+    ) -> Bool {
+        guard let decoded = try? JSONDecoder().decode(
+            CurrentSurface.self, from: currentSurfaceOutput),
+              let surfaceID = decoded.surfaceID,
+              let workspaceID = decoded.workspaceID else { return false }
+        return surfaceID.caseInsensitiveCompare(target.surfaceID) == .orderedSame
+            && workspaceID.caseInsensitiveCompare(target.workspaceID) == .orderedSame
+    }
+
+    /// The current-surface read's window id, for fronting the right window
+    /// after a cross-Space surface focus. nil on malformed output.
+    public static func currentSurfaceWindowID(
+        _ currentSurfaceOutput: Data
+    ) -> String? {
+        guard let decoded = try? JSONDecoder().decode(
+            CurrentSurface.self, from: currentSurfaceOutput),
+              let windowID = decoded.windowID, isUUID(windowID) else { return nil }
+        return windowID
+    }
+
+    private struct SurfaceList: Decodable {
+        let surfaces: [Surface]
+
+        struct Surface: Decodable {
+            let id: String
+            let title: String?
+            let resumeBinding: ResumeBinding?
+            private enum CodingKeys: String, CodingKey {
+                case id, title
+                case resumeBinding = "resume_binding"
+            }
+        }
+
+        struct ResumeBinding: Decodable {
+            let checkpointID: String?
+            private enum CodingKeys: String, CodingKey {
+                case checkpointID = "checkpoint_id"
+            }
+        }
+
+        // The host returns either a bare array or {"surfaces": [...]}.
+        init(from decoder: Decoder) throws {
+            if var unkeyed = try? decoder.unkeyedContainer() {
+                var out: [Surface] = []
+                while !unkeyed.isAtEnd {
+                    out.append(try unkeyed.decode(Surface.self))
+                }
+                surfaces = out
+                return
+            }
+            let keyed = try decoder.container(keyedBy: Keys.self)
+            surfaces = try keyed.decode([Surface].self, forKey: .surfaces)
+        }
+        private enum Keys: String, CodingKey { case surfaces }
+    }
+
+    private struct CurrentSurface: Decodable {
+        let surfaceID: String?
+        let workspaceID: String?
+        let windowID: String?
+        private enum CodingKeys: String, CodingKey {
+            case surfaceID = "surface_id"
+            case workspaceID = "workspace_id"
+            case windowID = "window_id"
+        }
     }
 
     public static func verifies(

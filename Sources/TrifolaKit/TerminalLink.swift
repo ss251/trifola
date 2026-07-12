@@ -653,7 +653,7 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
                 "Jumped to your session in \(target.ownerApplication?.displayName ?? "your terminal")"
             }
         case .axTargeted(let target, let matchedTitle):
-            "Jumped to workspace '\(matchedTitle)' in \(target.ownerApplication?.displayName ?? "your terminal")"
+            "Jumped to '\(matchedTitle)' in \(target.ownerApplication?.displayName ?? "your terminal")"
         case .axDenied(let target):
             "Grant Accessibility to jump to the exact workspace — fronting \(target.ownerApplication?.displayName ?? "your terminal") instead"
         case .axNoConfidentMatch(let target):

@@ -435,6 +435,78 @@ struct WorkspaceBundledControlPolicyTests {
             matchedTitle: "atlas") == nil)
     }
 
+    @Test("surface tier: the resume-binding session id joins one exact tab")
+    func surfaceCheckpointJoin() {
+        let session = "1881B475-1396-48A7-81E2-1132A59299E7"
+        let wsA = "6FDDCE30-C7C0-4D0E-8C8D-B0230C07BE32"
+        let wsB = "48831072-781A-46A5-BE08-A0CA3B9F8FF3"
+        let tab = "434B0F87-1295-4D09-9B2F-24947B6947F1"
+        let other = "534B0F87-1295-4D09-9B2F-24947B6947F2"
+        func list(_ entries: [(id: String, checkpoint: String?, title: String)]) -> Data {
+            let items = entries.map { e in
+                var d: [String: Any] = ["id": e.id, "title": e.title]
+                if let c = e.checkpoint { d["resume_binding"] = ["checkpoint_id": c] }
+                return d
+            }
+            return try! JSONSerialization.data(withJSONObject: ["surfaces": items])
+        }
+        let lists = [
+            wsA: list([(tab, session, "⠐ trifola")]),
+            wsB: list([(other, nil, "notes")]),
+        ]
+        let target = WorkspaceBundledControlPolicy.surfaceTarget(
+            fromSurfaceListsByWorkspaceID: lists, sessionID: session)
+        #expect(target?.workspaceID == wsA)
+        #expect(target?.surfaceID == tab)
+        #expect(target?.title == "trifola")      // braille spinner stripped
+
+        // Duplicate checkpoint across workspaces → refuse.
+        let duplicated = [
+            wsA: list([(tab, session, "a")]),
+            wsB: list([(other, session, "b")]),
+        ]
+        #expect(WorkspaceBundledControlPolicy.surfaceTarget(
+            fromSurfaceListsByWorkspaceID: duplicated, sessionID: session) == nil)
+
+        // Malformed surface id anywhere → fail closed.
+        let malformed = [wsA: list([("not-a-uuid", session, "x")])]
+        #expect(WorkspaceBundledControlPolicy.surfaceTarget(
+            fromSurfaceListsByWorkspaceID: malformed, sessionID: session) == nil)
+
+        // Verification requires the host's own read to name BOTH UUIDs.
+        if let target {
+            let good = try! JSONSerialization.data(withJSONObject: [
+                "surface_id": tab, "workspace_id": wsA,
+                "window_id": "9BD38026-33B2-4DFA-AA6D-7C7754AE694B"])
+            let wrong = try! JSONSerialization.data(withJSONObject: [
+                "surface_id": other, "workspace_id": wsA])
+            #expect(WorkspaceBundledControlPolicy.surfaceFocusVerifies(
+                currentSurfaceOutput: good, target: target))
+            #expect(!WorkspaceBundledControlPolicy.surfaceFocusVerifies(
+                currentSurfaceOutput: wrong, target: target))
+            #expect(WorkspaceBundledControlPolicy.currentSurfaceWindowID(good)
+                == "9BD38026-33B2-4DFA-AA6D-7C7754AE694B")
+        }
+    }
+
+    @Test("workspace id list validates, dedupes, and bounds")
+    func workspaceIDList() {
+        let a = "6FDDCE30-C7C0-4D0E-8C8D-B0230C07BE32"
+        let b = "48831072-781A-46A5-BE08-A0CA3B9F8FF3"
+        func payload(_ ids: [String]) -> Data {
+            try! JSONSerialization.data(withJSONObject:
+                ["workspaces": ids.map { ["id": $0] }])
+        }
+        #expect(WorkspaceBundledControlPolicy.workspaceIDs(
+            from: payload([a, b])) == [a, b])
+        #expect(WorkspaceBundledControlPolicy.workspaceIDs(
+            from: payload([a, a])) == nil)               // duplicate
+        #expect(WorkspaceBundledControlPolicy.workspaceIDs(
+            from: payload(["nope"])) == nil)             // malformed
+        #expect(WorkspaceBundledControlPolicy.workspaceIDs(
+            from: payload([])) == nil)                   // empty
+    }
+
     @Test("nil title: the unique PID join stands alone and adopts the workspace's own title")
     func pidOnlyMapping() {
         // Workspace names are arbitrary (they needn't resemble the session's
