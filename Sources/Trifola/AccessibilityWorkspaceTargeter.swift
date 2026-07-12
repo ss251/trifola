@@ -412,31 +412,29 @@ private actor AXWorkspaceWorker {
             return .failed(
                 "Bundled surface control did not confirm the exact tab and workspace")
         }
-        var observedMismatch = false
-        for attempt in 0..<10 {
-            guard !Task.isCancelled else { return .unavailable }
-            switch AXWorkspaceTree.verifyFocusedTitle(
-                application: application,
-                matchedTitle: pending.matchedTitle,
-                allowsObservedStatusMarker: pending.allowsObservedStatusMarker,
-                expectedWindow: nil) {
-            case .verified:
-                AccessibilityWorkspaceTargeter.diagnostic(
-                    "bundled-surface=verified")
-                return .verified
-            case .failed:
-                observedMismatch = true
-            case .unavailable:
-                break
-            }
-            if attempt < 9 { Thread.sleep(forTimeInterval: 0.05) }
+        // The host's own current-surface read is the authoritative post-
+        // condition at tab depth: it names the exact surface AND workspace
+        // UUIDs through the same signature-gated channel that performed the
+        // focus. The workspace tier's AX window-title equality is NOT a valid
+        // invariant here — a window is titled by its workspace, never by the
+        // tab — and requiring it downgraded real successes (live finding:
+        // tab focused, host verified, toast claimed failure). The focused
+        // title is still read once as pure diagnostics.
+        switch AXWorkspaceTree.verifyFocusedTitle(
+            application: application,
+            matchedTitle: pending.matchedTitle,
+            allowsObservedStatusMarker: pending.allowsObservedStatusMarker,
+            expectedWindow: nil) {
+        case .verified:
+            AccessibilityWorkspaceTargeter.diagnostic("bundled-surface=ax-title-agrees")
+        case .failed:
+            AccessibilityWorkspaceTargeter.diagnostic(
+                "bundled-surface=ax-title-differs (window is workspace-titled; informational)")
+        case .unavailable:
+            AccessibilityWorkspaceTargeter.diagnostic("bundled-surface=ax-title-unavailable")
         }
-        AccessibilityWorkspaceTargeter.diagnostic(
-            "bundled-surface=ax-title-"
-            + (observedMismatch ? "mismatch" : "unavailable"))
-        return observedMismatch
-            ? .failed("AX focused-window title did not confirm the selected tab")
-            : .unavailable
+        AccessibilityWorkspaceTargeter.diagnostic("bundled-surface=verified")
+        return .verified
     }
 
     private func verifyBundledSelection(
