@@ -336,7 +336,8 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
             lastUserMessage: snapshot.lastUserMessage,
             handle: SessionHandles.derive(
                 autoName: nil, summary: nil,
-                firstUserMessage: snapshot.firstUserMessage),
+                firstUserMessage: snapshot.firstUserMessage,
+                cwd: snapshot.cwd),
             usageByTier: snapshot.usageByTier,
             usageByDay: snapshot.usageByDay,
             usageByModel: snapshot.usageByModel,

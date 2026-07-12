@@ -577,7 +577,8 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         self.lastUserMessage = lastUserMessage
         self.name = name
         self.handle = handle ?? SessionHandles.derive(
-            autoName: name, summary: nil, firstUserMessage: lastUserMessage)
+            autoName: name, summary: nil, firstUserMessage: lastUserMessage,
+            cwd: cwd)
         self.usageByTier = usageByTier
         self.usageByDay = usageByDay
         self.usageByModel = usageByModel
@@ -617,7 +618,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         name = try c.decodeIfPresent(String.self, forKey: .name)
         handle = try c.decodeIfPresent(String.self, forKey: .handle)
             ?? SessionHandles.derive(autoName: name, summary: nil,
-                                     firstUserMessage: lastUserMessage)
+                                     firstUserMessage: lastUserMessage, cwd: cwd)
         usageByTier = try c.decodeIfPresent([ModelTier: SessionUsage].self, forKey: .usageByTier) ?? [:]
         usageByDay = try c.decodeIfPresent([String: [ModelTier: SessionUsage]].self, forKey: .usageByDay) ?? [:]
         usageByModel = try c.decodeIfPresent([String: SessionUsage].self, forKey: .usageByModel) ?? [:]

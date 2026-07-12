@@ -34,17 +34,28 @@ public struct TerminalSessionRegistryRecord: Sendable, Equatable, Decodable {
     public let sessionID: String
     public let processID: Int32
     public let cwd: String?
+    /// Human session name (rename / auto-name) — the join key between a
+    /// headless background job and the interactive session that fronts it.
+    public let name: String?
+    /// Claude Code's registry kind: "interactive", "bg", … Background jobs run
+    /// under the daemon with no terminal of their own.
+    public let kind: String?
 
-    public init(sessionID: String, processID: Int32, cwd: String? = nil) {
+    public init(sessionID: String, processID: Int32, cwd: String? = nil,
+                name: String? = nil, kind: String? = nil) {
         self.sessionID = sessionID
         self.processID = processID
         self.cwd = cwd
+        self.name = name
+        self.kind = kind
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"
         case processID = "pid"
         case cwd
+        case name
+        case kind
     }
 }
 
@@ -158,6 +169,10 @@ public struct TerminalLinkTarget: Sendable, Equatable {
     public enum Match: Sendable, Equatable {
         case sessionID
         case cwd
+        /// The requested session runs headless (a daemon background job); the
+        /// target is the UNIQUE live interactive registry sibling sharing its
+        /// human name — the surface the user actually sees it through.
+        case namedSibling
     }
 
     public let processID: Int32
@@ -261,9 +276,24 @@ public struct TerminalLinkResolver: Sendable, TerminalLinkResolving {
                 guard let process = byPID[processID], process.isClaudeProcess else {
                     // A registry entry whose PID has exited (or been reused by a
                     // different program) is not permission to target a cwd peer.
+                    if let sibling = Self.uniqueInteractiveSibling(
+                        of: exactRecords[0], records: records, in: byPID) {
+                        return .target(Self.target(
+                            for: sibling, match: .namedSibling, in: byPID))
+                    }
                     return .failed("Registry entry exists, but its process is no longer live")
                 }
                 guard Self.isTerminalAttached(process, in: byPID) else {
+                    // A daemon background job has no terminal of its own — but
+                    // the interactive session the user SEES it through often
+                    // does (both registry entries share the human name, e.g. a
+                    // bg run named after the session that spawned it). Follow
+                    // that join only when it is unique; never guess.
+                    if let sibling = Self.uniqueInteractiveSibling(
+                        of: exactRecords[0], records: records, in: byPID) {
+                        return .target(Self.target(
+                            for: sibling, match: .namedSibling, in: byPID))
+                    }
                     return .failed(
                         "Registry entry exists, but its process is not attached to a live terminal")
                 }
@@ -293,6 +323,32 @@ public struct TerminalLinkResolver: Sendable, TerminalLinkResolving {
                 : .failed("No registry entry for this session and no live terminal matched its working directory")
         }
         return .target(Self.target(for: selected, match: .cwd, in: byPID))
+    }
+
+    /// The unique live, terminal-attached INTERACTIVE registry record sharing
+    /// the given record's human name. Zero or multiple candidates → nil (the
+    /// never-guess rule); an unnamed record can never join.
+    private static func uniqueInteractiveSibling(
+        of record: TerminalSessionRegistryRecord,
+        records: [TerminalSessionRegistryRecord],
+        in byPID: [Int32: TerminalProcess]
+    ) -> TerminalProcess? {
+        guard let name = record.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else { return nil }
+        let siblings = records.filter {
+            $0.sessionID != record.sessionID
+                && $0.processID != record.processID
+                && $0.kind == "interactive"
+                && $0.name?.trimmingCharacters(in: .whitespacesAndNewlines) == name
+        }
+        let live = siblings.compactMap { sibling -> TerminalProcess? in
+            guard let process = byPID[sibling.processID],
+                  process.isClaudeProcess,
+                  isTerminalAttached(process, in: byPID) else { return nil }
+            return process
+        }
+        guard live.count == 1 else { return nil }
+        return live[0]
     }
 
     /// Exact terminal-attached identities for filtering. CWD fallback is

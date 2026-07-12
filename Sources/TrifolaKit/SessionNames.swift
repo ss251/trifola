@@ -12,12 +12,20 @@ public enum SessionHandles {
     /// Resolve the complete precedence chain for transcript-backed handles.
     /// Explicit `/rename` and live-registry names remain the separate
     /// `SessionSummary.name` overlay and therefore outrank this result at display
-    /// time.
+    /// time. A session with no name signal at all falls back to its working
+    /// directory's basename — a real, recognizable identity — rather than the
+    /// anonymous "Untitled session" placeholder (owner call, 2026-07-12).
     public static func derive(autoName: String?, summary: String?,
-                              firstUserMessage: String?) -> String {
+                              firstUserMessage: String?,
+                              cwd: String? = nil) -> String {
         if let value = record(autoName) { return value }
         if let value = record(summary) { return value }
         if let value = fromFirstUserMessage(firstUserMessage) { return value }
+        if let cwd, !cwd.isEmpty {
+            let base = (cwd as NSString).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !base.isEmpty, base != "/" { return clipped(base) }
+        }
         return untitled
     }
 

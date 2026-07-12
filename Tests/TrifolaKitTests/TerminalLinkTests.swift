@@ -162,6 +162,90 @@ struct TerminalLinkTests {
         #expect(target.processCommand == "claude")
     }
 
+    @Test("a headless bg job transports to its unique interactive name-sibling")
+    func backgroundJobFollowsNamedSibling() {
+        // The bg job's own process (800) runs under the daemon — no terminal.
+        // Its registry record shares a human name with exactly one live
+        // interactive session (702) hosted in a real terminal: that is the
+        // surface the user sees the job through, so that is the target.
+        let ps = """
+          700     1 ??       Fri Jul 10 09:00:00 2026 /Applications/iTerm.app/Contents/MacOS/iTerm2
+          701   700 ttys001  Fri Jul 10 09:01:00 2026 /bin/zsh
+          702   701 ttys001  Fri Jul 10 09:02:00 2026 claude
+          799     1 ??       Fri Jul 10 09:03:00 2026 /opt/homebrew/bin/claude daemon run
+          800   799 ??       Fri Jul 10 09:04:00 2026 /opt/homebrew/bin/claude --session-id bg-1
+        """
+        let resolver = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(ps: ps, lsofByPID: [:]),
+            registry: FakeTerminalRegistry(value: [
+                TerminalSessionRegistryRecord(
+                    sessionID: "bg-1", processID: 800, cwd: "/Users/dev",
+                    name: "fleet-refit", kind: "bg"),
+                TerminalSessionRegistryRecord(
+                    sessionID: "int-1", processID: 702, cwd: "/Users/dev",
+                    name: "fleet-refit", kind: "interactive"),
+            ])
+        )
+        let resolution = resolver.resolve(
+            sessionID: "bg-1", cwd: "/Users/dev", machineID: Machine.localID)
+        guard case .target(let target) = resolution else {
+            Issue.record("expected the sibling target, got \(resolution)")
+            return
+        }
+        #expect(target.processID == 702)
+        #expect(target.match == .namedSibling)
+        #expect(target.ownerApplication == .iTerm2)
+    }
+
+    @Test("two interactive siblings sharing the name refuse rather than guess")
+    func ambiguousNamedSiblingsRefuse() {
+        let ps = """
+          700     1 ??       Fri Jul 10 09:00:00 2026 /Applications/iTerm.app/Contents/MacOS/iTerm2
+          701   700 ttys001  Fri Jul 10 09:01:00 2026 /bin/zsh
+          702   701 ttys001  Fri Jul 10 09:02:00 2026 claude
+          703   701 ttys002  Fri Jul 10 09:05:00 2026 claude
+          799     1 ??       Fri Jul 10 09:03:00 2026 /opt/homebrew/bin/claude daemon run
+          800   799 ??       Fri Jul 10 09:04:00 2026 /opt/homebrew/bin/claude --session-id bg-1
+        """
+        let resolver = TerminalLinkResolver(
+            snapshots: FakeTerminalSnapshots(ps: ps, lsofByPID: [:]),
+            registry: FakeTerminalRegistry(value: [
+                TerminalSessionRegistryRecord(
+                    sessionID: "bg-1", processID: 800, cwd: "/Users/dev",
+                    name: "fleet-refit", kind: "bg"),
+                TerminalSessionRegistryRecord(
+                    sessionID: "int-1", processID: 702, cwd: "/Users/dev",
+                    name: "fleet-refit", kind: "interactive"),
+                TerminalSessionRegistryRecord(
+                    sessionID: "int-2", processID: 703, cwd: "/Users/dev",
+                    name: "fleet-refit", kind: "interactive"),
+            ])
+        )
+        let resolution = resolver.resolve(
+            sessionID: "bg-1", cwd: "/Users/dev", machineID: Machine.localID)
+        guard case .failed(let reason) = resolution else {
+            Issue.record("expected an honest refusal, got \(resolution)")
+            return
+        }
+        #expect(reason.contains("not attached"))
+    }
+
+    @Test("handle falls back to the directory basename, never Untitled, when a cwd exists")
+    func handleFallsBackToDirectoryName() {
+        #expect(SessionHandles.derive(
+            autoName: nil, summary: nil, firstUserMessage: nil,
+            cwd: "/Users/dev/checkout-web") == "checkout-web")
+        // No cwd at all keeps the stable placeholder.
+        #expect(SessionHandles.derive(
+            autoName: nil, summary: nil, firstUserMessage: nil,
+            cwd: nil) == SessionHandles.untitled)
+        // A real name still outranks the directory.
+        #expect(SessionHandles.derive(
+            autoName: "Fix the burn chart", summary: nil,
+            firstUserMessage: nil, cwd: "/Users/dev/checkout-web")
+            == "Fix the burn chart")
+    }
+
     @Test("a stale exact registry PID never falls through to a cwd peer")
     func staleRegistryDoesNotRetarget() {
         let cwd = "/Users/dev/shared-project"
