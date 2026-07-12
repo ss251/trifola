@@ -489,6 +489,22 @@ struct WorkspaceBundledControlPolicyTests {
         }
     }
 
+    @Test("window containment: unique host window resolves; absent or duplicated fails closed")
+    func windowContainment() {
+        let snapshots = validSnapshots()
+        #expect(WorkspaceBundledControlPolicy.windowID(
+            containingWorkspace: targetWorkspace,
+            inSnapshotsByWindowID: snapshots) == firstWindow)
+        // A workspace no snapshot contains → nil.
+        #expect(WorkspaceBundledControlPolicy.windowID(
+            containingWorkspace: "9BD38026-33B2-4DFA-AA6D-7C7754AE694B",
+            inSnapshotsByWindowID: snapshots) == nil)
+        // Malformed workspace id → nil.
+        #expect(WorkspaceBundledControlPolicy.windowID(
+            containingWorkspace: "nope",
+            inSnapshotsByWindowID: snapshots) == nil)
+    }
+
     @Test("workspace id list validates, dedupes, and bounds")
     func workspaceIDList() {
         let a = "6FDDCE30-C7C0-4D0E-8C8D-B0230C07BE32"

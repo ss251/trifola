@@ -822,6 +822,34 @@ public enum WorkspaceBundledControlPolicy {
         return matches[0]
     }
 
+    /// The unique window whose structured snapshot contains the workspace —
+    /// needed BEFORE surface verification: current-surface answers for the
+    /// frontmost window, so a cross-Space tab must have its window fronted
+    /// first. Absent or duplicated containment fails closed.
+    public static func windowID(
+        containingWorkspace workspaceID: String,
+        inSnapshotsByWindowID snapshots: [String: Data]
+    ) -> String? {
+        guard isUUID(workspaceID), !snapshots.isEmpty else { return nil }
+        var matches: [String] = []
+        for (expectedWindowID, data) in snapshots {
+            guard isUUID(expectedWindowID),
+                  let decoded = try? JSONDecoder().decode(
+                    ResourceSnapshot.self, from: data),
+                  decoded.windows.count == 1,
+                  let window = decoded.windows.first,
+                  window.id.caseInsensitiveCompare(expectedWindowID) == .orderedSame
+            else { return nil }
+            if window.workspaces.contains(where: {
+                $0.id.caseInsensitiveCompare(workspaceID) == .orderedSame
+            }) {
+                matches.append(window.id)
+            }
+        }
+        guard matches.count == 1 else { return nil }
+        return matches[0]
+    }
+
     /// Post-condition for a surface focus: the host's own current-surface read
     /// must name the exact surface AND workspace UUIDs we selected.
     public static func surfaceFocusVerifies(

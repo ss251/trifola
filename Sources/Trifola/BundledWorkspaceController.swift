@@ -125,6 +125,59 @@ enum BundledWorkspaceController {
         }
         diagnostic("surface-join=\(target.surfaceID)")
         guard endpointIsCurrentAndValid(endpoint) else { return nil }
+
+        // Front the hosting window BEFORE focusing and verifying: the host's
+        // current-surface read answers for the frontmost window, so a tab in a
+        // window on another Space verifies only after its window is current
+        // (observed live: the same tab verified when its window happened to be
+        // front and timed out when it was not). The window is found through
+        // the same structured system.top join the workspace tier trusts.
+        guard let windowList = run(
+            endpoint,
+            arguments: ["rpc", "window.list", "{}"],
+            maxOutputBytes: 256 * 1_024,
+            deadline: deadline),
+              let windowIDs = WorkspaceBundledControlPolicy.windowIDs(
+                from: windowList),
+              windowIDs.count <= maximumWindowCount else {
+            diagnostic("surface-window-list=invalid")
+            return nil
+        }
+        var snapshots: [String: Data] = [:]
+        snapshots.reserveCapacity(windowIDs.count)
+        for windowID in windowIDs {
+            guard let parameters = jsonObject(["window_id": windowID]),
+                  let snapshot = run(
+                    endpoint,
+                    arguments: ["rpc", "system.top", parameters],
+                    maxOutputBytes: metadataOutputLimit,
+                    deadline: deadline) else {
+                diagnostic("surface-window-snapshot=failed")
+                return nil
+            }
+            snapshots[windowID] = snapshot
+        }
+        guard let hostWindowID = WorkspaceBundledControlPolicy.windowID(
+            containingWorkspace: target.workspaceID,
+            inSnapshotsByWindowID: snapshots) else {
+            diagnostic("surface-window-join=no-unique-window")
+            return nil
+        }
+        guard run(endpoint,
+                  arguments: ["focus-window", "--window", hostWindowID],
+                  maxOutputBytes: 8 * 1_024,
+                  deadline: deadline) != nil,
+              run(endpoint,
+                  arguments: [
+                      "workspace", "select", target.workspaceID,
+                      "--window", hostWindowID,
+                  ],
+                  maxOutputBytes: 8 * 1_024,
+                  deadline: deadline) != nil else {
+            diagnostic("surface-window-front=failed")
+            return nil
+        }
+
         guard let focusParameters = jsonObject(["surface_id": target.surfaceID]),
               run(endpoint,
                   arguments: ["rpc", "surface.focus", focusParameters],
@@ -151,17 +204,9 @@ enum BundledWorkspaceController {
             }
             if attempt < 9 { Thread.sleep(forTimeInterval: 0.05) }
         }
-        guard let current = verifiedRead else {
+        guard verifiedRead != nil else {
             diagnostic("surface-verify=failed")
             return nil
-        }
-        // Front the hosting window (cross-Space) using the same verified read.
-        if let windowID = WorkspaceBundledControlPolicy
-            .currentSurfaceWindowID(current) {
-            _ = run(endpoint,
-                    arguments: ["focus-window", "--window", windowID],
-                    maxOutputBytes: 8 * 1_024,
-                    deadline: deadline)
         }
         diagnostic("surface-selection=verified")
         return BundledSurfaceSelection(endpoint: endpoint, target: target)
