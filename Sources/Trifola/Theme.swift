@@ -46,9 +46,12 @@ enum Theme {
     /// A deliberately provider-neutral model hue for the Codex tier. This is a
     /// slate-teal data color, not OpenAI green and not Trifola's action accent;
     /// it appears only in small model marks alongside the existing tier hues.
+    // Steel-blue, deliberately DISTINCT from Haiku's cyan-teal (73,163,176):
+    // the original slate-teal was near-identical to it, making the tier legend
+    // and split bar ambiguous (owner catch, 2026-07-13).
     static let codexModel = Color(nsColor: .dyn(
-        light: NSColor(srgbRed: 65 / 255, green: 112 / 255, blue: 121 / 255, alpha: 1),
-        dark: NSColor(srgbRed: 108 / 255, green: 164 / 255, blue: 172 / 255, alpha: 1)))
+        light: NSColor(srgbRed: 62 / 255, green: 92 / 255, blue: 148 / 255, alpha: 1),
+        dark: NSColor(srgbRed: 124 / 255, green: 152 / 255, blue: 205 / 255, alpha: 1)))
     static let graphite = muted
 
     // Elevation. Every stroked surface is paired with a fill; open tables and

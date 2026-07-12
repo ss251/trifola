@@ -1727,7 +1727,8 @@ public final class SessionStore: ObservableObject {
         return aggregates.map { key, value in
             ModelSpendStat(provider: key.provider, model: key.model,
                            usage: value.usage, cost: value.cost,
-                           sessions: value.sessions)
+                           sessions: value.sessions,
+                           pricedByExactRate: catalog.hasExactRate(model: key.model))
         }.sorted {
             if $0.cost != $1.cost { return $0.cost > $1.cost }
             if $0.provider != $1.provider {

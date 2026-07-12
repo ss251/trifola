@@ -12,6 +12,24 @@ import Testing
 @Suite("Pricing catalog")
 struct PricingCatalogTests {
 
+    @Test func legacyCodexModelsCarryTheirOfficialRatesNotTheTierFallback() {
+        let cat = PricingCatalog.bundled
+        // gpt-5-codex is off OpenAI's main pricing page but officially
+        // $1.25/$10 (per-model page / launch pricing). Before this seed it
+        // silently priced at the codex tier fallback $5/$30 — ~4x over.
+        let codex = try! #require(cat.rate(model: "gpt-5-codex"))
+        #expect(codex.input == 1.25)
+        #expect(codex.output == 10)
+        let codex52 = try! #require(cat.rate(model: "gpt-5.2-codex"))
+        #expect(codex52.input == 1.75)
+        #expect(codex52.output == 14)
+        // Exact-rate detection powers the "est. rate" marker: seeded ids are
+        // exact; synthetic labels are not.
+        #expect(cat.hasExactRate(model: "gpt-5-codex"))
+        #expect(!cat.hasExactRate(model: "codex-auto-review"))
+        #expect(!cat.hasExactRate(model: "gpt-unattributed"))
+    }
+
     @Test func sonnet5IsDateDependent() {
         let cat = PricingCatalog.bundled
         // Intro era (through 2026-08-31): $2 in / $10 out — NOT $3/$15.

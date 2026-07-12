@@ -510,7 +510,9 @@ struct TierSpendSection: View {
                 .font(Theme.Typography.metadata.monospaced())
                 .foregroundStyle(Theme.muted)
                 .padding(.leading, 14)   // optically under the tier dot
-            Text("\(row.sessions) sessions")
+            Text(row.pricedByExactRate
+                 ? "\(row.sessions) sessions"
+                 : "\(row.sessions) sessions · est. rate")
                 .font(Theme.Typography.metadata)
                 .foregroundStyle(Theme.faint)
             Spacer()

@@ -182,6 +182,16 @@ struct SpendScreen: View {
                 header
                 ForEach(corpus.tierStats) { st in
                     tierRow(st)
+                    // Tiers are not opaque buckets: any tier aggregating more
+                    // than one model id names its members inline (owner:
+                    // "spend and routing tab still shows Other").
+                    let ids = TierSpendSection.members(
+                        of: st.tier, in: corpus.topModelsByID)
+                    if ids.count > 1 {
+                        ForEach(ids) { row in
+                            tierMemberRow(row)
+                        }
+                    }
                 }
             }
             pricingFooter
@@ -235,6 +245,28 @@ struct SpendScreen: View {
         .font(.caption)
         .foregroundStyle(Theme.muted)
         .padding(.vertical, Theme.rhythm)
+    }
+
+    private func tierMemberRow(_ row: ModelSpendStat) -> some View {
+        HStack {
+            Text(row.model)
+                .font(Theme.Typography.metadata.monospaced())
+                .foregroundStyle(Theme.muted)
+                .padding(.leading, 13)
+                .frame(width: 210, alignment: .leading)
+            Text(row.pricedByExactRate ? "" : "est. rate")
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.faint)
+            Spacer()
+            Text("\(row.sessions) sessions")
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.faint)
+            Text(fmtUSD(row.cost))
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.muted)
+                .frame(width: 84, alignment: .trailing)
+        }
+        .padding(.vertical, 3)
     }
 
     private func tierRow(_ st: TierStat) -> some View {

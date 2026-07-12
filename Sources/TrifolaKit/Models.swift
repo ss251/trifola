@@ -1010,13 +1010,18 @@ public struct ModelSpendStat: Identifiable, Sendable, Equatable {
     /// output, excluding cache reads.
     public var tokens: Int { usage.billedInput + usage.outputTokens }
 
+    /// False when the id priced through the tier fallback (no official
+    /// per-model rate) — rendered as an estimate marker.
+    public var pricedByExactRate: Bool = true
+
     public init(provider: Provider, model: String, usage: SessionUsage,
-                cost: Double, sessions: Int) {
+                cost: Double, sessions: Int, pricedByExactRate: Bool = true) {
         self.provider = provider
         self.model = model
         self.usage = usage
         self.cost = cost
         self.sessions = sessions
+        self.pricedByExactRate = pricedByExactRate
     }
 }
 

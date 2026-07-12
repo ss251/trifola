@@ -88,7 +88,7 @@ public struct PricingCatalog: Sendable {
     /// Normalized model id → pricing (possibly multi-era).
     public let models: [String: ModelPricing]
     /// The seed's provenance date (Anthropic pricing docs fetch date).
-    public static let bundledDate = "2026-07-06"
+    public static let bundledDate = "2026-07-13"
     /// When the optional models.dev refresh last succeeded; nil = seed only.
     public let refreshedAt: Date?
     /// How many models the refresh ADDED beyond the bundled seed.
@@ -98,6 +98,9 @@ public struct PricingCatalog: Sendable {
     /// `ModelTier` consults this set in addition to the forward-compatible
     /// `gpt-*` family rule, so a future non-gpt Codex seed has one explicit
     /// classification boundary instead of drifting into Other.
+    // Verified against developers.openai.com/api/docs/pricing 2026-07-13:
+    // every row matches the official page exactly (cached input is 10% of
+    // fresh input across the family, which ModelRate derives).
     private static let bundledCodexRates: [
         (id: String, input: Double, output: Double)
     ] = [
@@ -111,6 +114,11 @@ public struct PricingCatalog: Sendable {
         ("gpt-5.4-nano", 0.20, 1.25),
         ("gpt-5.4-pro", 30, 180),
         ("gpt-5.3-codex", 1.75, 14),
+        // Legacy Codex models — off the main pricing page but still official
+        // (per-model pages / launch pricing). Absent seeds silently priced
+        // real usage at the tier-fallback $5/$30, overstating gpt-5-codex ~4x.
+        ("gpt-5.2-codex", 1.75, 14),
+        ("gpt-5-codex", 1.25, 10),
     ]
     public static let bundledCodexModelIDs = Set(
         bundledCodexRates.map { $0.id }
@@ -158,6 +166,14 @@ public struct PricingCatalog: Sendable {
         rate(model: raw, onDay: day) ?? ModelRate(tier: ModelTier(raw: raw))
     }
 
+    /// True when the id resolves to a real per-model rate (bundled seed or
+    /// refreshed overlay) rather than the tier fallback. Surfaces use this to
+    /// mark fallback-priced rows as estimates instead of implying an official
+    /// price exists for ids that have none (synthetic labels, private models).
+    public func hasExactRate(model raw: String?) -> Bool {
+        rate(model: raw) != nil
+    }
+
     /// Human-readable provenance for every surface that shows a price.
     public var sourceLabel: String {
         guard let refreshedAt else { return "bundled \(Self.bundledDate)" }
@@ -167,7 +183,11 @@ public struct PricingCatalog: Sendable {
         return "bundled \(Self.bundledDate) + refreshed \(f.string(from: refreshedAt)) (+\(refreshedAdded) models)"
     }
 
-    // MARK: bundled seed (Anthropic pricing docs, 2026-07-06 — AUTHORITATIVE)
+    // MARK: bundled seed — AUTHORITATIVE, verified against the official pages
+    // 2026-07-13: platform.claude.com/docs/en/about-claude/pricing (every Claude
+    // row exact, incl. claude-fable-5 at 10/50 with cr 1 and cw 12.50/20, and
+    // the Sonnet 5 intro era) and developers.openai.com/api/docs/pricing
+    // (every GPT row exact).
 
     public static let bundled: PricingCatalog = {
         var m: [String: ModelPricing] = [:]
