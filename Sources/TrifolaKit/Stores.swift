@@ -1508,7 +1508,12 @@ public final class SessionStore: ObservableObject {
     // first genuine user prompt for title fallback. Cached summaries carry the
     // old tier-keyed usage/cost bundle and no prompt, so every Codex rollout must
     // replay once rather than preserving anonymous Other / Untitled rows.
-    private nonisolated static let cacheVersion = 20
+    // v21: usage recorded before a resumed rollout's first turn_context is now
+    // billed to the file's first observed model (placeholder → real id, or
+    // gpt-unattributed → Codex tier). Cached entries hold that slice
+    // misattributed to "Other" (~604M cached tokens on a real corpus) and must
+    // replay once.
+    private nonisolated static let cacheVersion = 21
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

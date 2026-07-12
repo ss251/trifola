@@ -118,6 +118,63 @@ struct CodexAdapterTests {
         #expect(summary.cost >= 0)
     }
 
+    @Test func usageBeforeTheFirstTurnContextBillsToTheFirstObservedModel() {
+        // Resumed rollouts emit token_count records before the file's first
+        // turn_context (3,441 of 42,688 on a real corpus). That usage must be
+        // billed to the model the file names next — never parked in "Other".
+        let lines = [
+            codexMetadata(id: "resumed"),
+            codexTokenCount(
+                lastInput: 1_000, lastCached: 400,
+                lastOutput: 50, lastReasoning: 0,
+                totalInput: 1_000, totalCached: 400,
+                totalOutput: 50, totalReasoning: 0,
+                timestamp: "2026-07-10T10:00:10Z"),
+            codexTurn(model: "gpt-5.6-sol"),
+            codexTokenCount(
+                lastInput: 2_000, lastCached: 800,
+                lastOutput: 100, lastReasoning: 0,
+                totalInput: 3_000, totalCached: 1_200,
+                totalOutput: 150, totalReasoning: 0,
+                timestamp: "2026-07-10T10:01:00Z"),
+        ]
+        var accumulator = CodexRolloutAccumulator(defaultID: "fallback")
+        accumulator.ingest(Data((lines.joined(separator: "\n") + "\n").utf8))
+        let summary = accumulator.summary(filePath: "/resumed.jsonl")
+
+        let byModel = summary.usageByModel
+        #expect(byModel[CodexRolloutAccumulator.unattributedModel] == nil)
+        let sol = byModel["gpt-5.6-sol"]
+        #expect(sol?.cacheReadTokens == 1_200)      // 400 pre-model + 800 after
+        #expect(sol?.inputTokens == 1_800)          // (1000−400) + (2000−800)
+        #expect(sol?.outputTokens == 150)
+        #expect(summary.usageByTier[.codex]?.cacheReadTokens == 1_200)
+        #expect(summary.usageByTier[.other] == nil)
+    }
+
+    @Test func modellessRolloutStaysInTheCodexTierUnderTheUnattributedId() {
+        // A rollout that never names a model must not vanish into "Other":
+        // the placeholder id maps to the Codex tier by prefix.
+        let lines = [
+            codexMetadata(id: "headless"),
+            codexTokenCount(
+                lastInput: 500, lastCached: 200,
+                lastOutput: 25, lastReasoning: 0,
+                totalInput: 500, totalCached: 200,
+                totalOutput: 25, totalReasoning: 0,
+                timestamp: "2026-07-10T10:00:10Z"),
+        ]
+        var accumulator = CodexRolloutAccumulator(defaultID: "fallback")
+        accumulator.ingest(Data((lines.joined(separator: "\n") + "\n").utf8))
+        let summary = accumulator.summary(filePath: "/headless.jsonl")
+
+        #expect(summary.usageByModel[CodexRolloutAccumulator.unattributedModel]?
+            .cacheReadTokens == 200)
+        #expect(ModelTier(raw: CodexRolloutAccumulator.unattributedModel) == .codex)
+        #expect(summary.usageByTier[.codex]?.outputTokens == 25)
+        #expect(summary.usageByTier[.other] == nil)
+    }
+
     @Test func cumulativeCounterResetStartsFreshEpochWithoutNegativeOrOverwrite() {
         let lines = [
             codexMetadata(id: "counter-reset"),
@@ -309,7 +366,7 @@ struct CodexAdapterTests {
         #expect(CodexImportManifest.load(from: link) == CodexImportManifest())
     }
 
-    @Test func codexCacheRoundTripUsesVersion20AndRejectsVersion19() throws {
+    @Test func codexCacheRoundTripUsesVersion21AndRejectsVersion20() throws {
         let root = try codexTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let sessions = root.appendingPathComponent("sessions", isDirectory: true)
@@ -328,14 +385,14 @@ struct CodexAdapterTests {
         let cacheObject = try #require(
             JSONSerialization.jsonObject(with: Data(contentsOf: cache))
                 as? [String: Any])
-        #expect((cacheObject["version"] as? NSNumber)?.intValue == 20)
+        #expect((cacheObject["version"] as? NSNumber)?.intValue == 21)
         let loaded = try #require(SessionStore.loadIndexCache(from: cache))
         #expect(loaded.summaries.first?.provider == .codex)
         #expect(loaded.summaries.first?.id == "cache")
         #expect(loaded.summaries.first?.tier == .codex)
 
         var staleObject = cacheObject
-        staleObject["version"] = 19
+        staleObject["version"] = 20
         try JSONSerialization.data(withJSONObject: staleObject)
             .write(to: cache, options: .atomic)
         #expect(SessionStore.loadIndexCache(from: cache) == nil)

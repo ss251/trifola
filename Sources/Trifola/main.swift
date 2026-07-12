@@ -458,7 +458,10 @@ if let i = CommandLine.arguments.firstIndex(of: "--spend-by-model") {
                                       cacheReadTokens: u.cacheReadTokens).cost(ModelTier(raw: model))
             total += cost; legacyTotal += legacy
             let name = model.isEmpty ? "(unknown)" : model
-            print(String(format: "  %-28s in=%11d cr=%13d cc=%11d cc1h=%11d out=%9d  $%8.2f  (flat-tier $%8.2f)",
+            // %ld, not %d: the varargs bridge truncates Swift Int to Int32 for
+            // %d, wrapping any column past 2^31 (a real day hit 2.94B cache-read
+            // tokens and printed cr=-1,355,124,992 while the dollars were right).
+            print(String(format: "  %-28s in=%11ld cr=%13ld cc=%11ld cc1h=%11ld out=%9ld  $%8.2f  (flat-tier $%8.2f)",
                          (name as NSString).utf8String!, u.inputTokens, u.cacheReadTokens,
                          u.cacheCreateTokens, u.cacheCreate1hTokens, u.outputTokens, cost, legacy))
         }

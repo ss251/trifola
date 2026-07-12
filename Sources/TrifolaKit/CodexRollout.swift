@@ -263,6 +263,11 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
         let day: String
     }
 
+    /// Billing id for usage observed before the file names a model. The gpt-
+    /// prefix maps it into the Codex tier; `reattributeUnattributedUsage`
+    /// replaces it with the real model on first observation.
+    static let unattributedModel = "gpt-unattributed"
+
     public private(set) var historyMode: CodexHistoryMode = .unknown
     var sid: String
     var cwd = ""
@@ -485,8 +490,32 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
     private mutating func consumeTurnContext(_ payload: [String: Any]) {
         if let value = clean(payload["cwd"] as? String), cwd.isEmpty { cwd = value }
         guard let value = clean(payload["model"] as? String) else { return }
+        let firstObservation = model == nil
         model = value
         tiersSeen.insert(ModelTier(raw: value))
+        if firstObservation { reattributeUnattributedUsage(to: value) }
+    }
+
+    /// Resumed rollouts emit token_count records BEFORE the file's first
+    /// turn_context (measured: 3,441 of 42,688 records on a real corpus —
+    /// ~624M input / ~604M cached tokens), so the rolling model starts nil and
+    /// that usage was billed under the placeholder id, landing in the "Other"
+    /// tier instead of Codex. The first observed model in a thread is the
+    /// honest owner of its preceding turns (Codex model changes are rare and
+    /// per-turn): re-key the placeholder usage exactly once, when the rolling
+    /// model transitions nil → value. Files that never name a model keep the
+    /// placeholder, which itself resolves to the Codex tier by prefix.
+    private mutating func reattributeUnattributedUsage(to rawModel: String) {
+        let normalized = PricingCatalog.normalize(rawModel)
+        guard !normalized.isEmpty, normalized != Self.unattributedModel else { return }
+        for (key, value) in usageByKey where value.model == Self.unattributedModel {
+            usageByKey[key] = KeyedUsage(usage: value.usage, model: normalized,
+                                         day: value.day)
+        }
+        if let orphanTurns = assistantTurnsByModel.removeValue(
+            forKey: Self.unattributedModel) {
+            assistantTurnsByModel[normalized, default: 0] += orphanTurns
+        }
     }
 
     private mutating func consumeLegacyEvent(_ payload: [String: Any],
@@ -565,7 +594,11 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
         rawUsageBlocks += 1
         contextWeight = delta.inputTokens
         let normalizedModel = PricingCatalog.normalize(model)
-        let billingModel = normalizedModel.isEmpty ? "<synthetic>" : normalizedModel
+        // The gpt- prefix keeps unattributed Codex usage in the Codex tier
+        // (priced at the tier's representative rate) instead of vanishing into
+        // "Other"; reattributeUnattributedUsage re-keys it to the real model
+        // the moment the file names one.
+        let billingModel = normalizedModel.isEmpty ? Self.unattributedModel : normalizedModel
         let day = timestamp.map(localDayKey) ?? ""
         let key: String
         if let total {
