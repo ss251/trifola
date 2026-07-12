@@ -35,3 +35,4 @@ screenshots-new/
 node_modules/
 /renders/
 /memory/
+/.hatch-pet/

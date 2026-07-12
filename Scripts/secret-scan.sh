@@ -71,7 +71,10 @@ EXCLUDES=(--binary-files=without-match -I
   --exclude-dir=.git --exclude-dir=.build --exclude-dir=dist --exclude-dir=.swiftpm
   --exclude-dir=node_modules --exclude=secret-scan.sh
   # Local handoff reports are gitignored and never enter the public tree.
-  --exclude='REPORT-*.md')
+  --exclude='REPORT-*.md'
+  # External desktop-tool state written into the cwd; gitignored, so it can
+  # never enter the public tree — excluded to keep the local gate signal clean.
+  --exclude-dir=.hatch-pet)
 
 fail=0
 
