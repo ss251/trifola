@@ -179,15 +179,15 @@ struct TerminalLinkTests {
             snapshots: FakeTerminalSnapshots(ps: ps, lsofByPID: [:]),
             registry: FakeTerminalRegistry(value: [
                 TerminalSessionRegistryRecord(
-                    sessionID: "bg-1", processID: 800, cwd: "/Users/dev",
+                    sessionID: "bg-1", processID: 800, cwd: "/Users/dev/project",
                     name: "fleet-refit", kind: "bg"),
                 TerminalSessionRegistryRecord(
-                    sessionID: "int-1", processID: 702, cwd: "/Users/dev",
+                    sessionID: "int-1", processID: 702, cwd: "/Users/dev/project",
                     name: "fleet-refit", kind: "interactive"),
             ])
         )
         let resolution = resolver.resolve(
-            sessionID: "bg-1", cwd: "/Users/dev", machineID: Machine.localID)
+            sessionID: "bg-1", cwd: "/Users/dev/project", machineID: Machine.localID)
         guard case .target(let target) = resolution else {
             Issue.record("expected the sibling target, got \(resolution)")
             return
@@ -211,18 +211,18 @@ struct TerminalLinkTests {
             snapshots: FakeTerminalSnapshots(ps: ps, lsofByPID: [:]),
             registry: FakeTerminalRegistry(value: [
                 TerminalSessionRegistryRecord(
-                    sessionID: "bg-1", processID: 800, cwd: "/Users/dev",
+                    sessionID: "bg-1", processID: 800, cwd: "/Users/dev/project",
                     name: "fleet-refit", kind: "bg"),
                 TerminalSessionRegistryRecord(
-                    sessionID: "int-1", processID: 702, cwd: "/Users/dev",
+                    sessionID: "int-1", processID: 702, cwd: "/Users/dev/project",
                     name: "fleet-refit", kind: "interactive"),
                 TerminalSessionRegistryRecord(
-                    sessionID: "int-2", processID: 703, cwd: "/Users/dev",
+                    sessionID: "int-2", processID: 703, cwd: "/Users/dev/project",
                     name: "fleet-refit", kind: "interactive"),
             ])
         )
         let resolution = resolver.resolve(
-            sessionID: "bg-1", cwd: "/Users/dev", machineID: Machine.localID)
+            sessionID: "bg-1", cwd: "/Users/dev/project", machineID: Machine.localID)
         guard case .failed(let reason) = resolution else {
             Issue.record("expected an honest refusal, got \(resolution)")
             return
