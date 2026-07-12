@@ -11,6 +11,8 @@ struct OverviewHeroSnapshot {
     let governor: BurnGovernor
     let tierStats: [TierStat]
     let tierTotal: Double
+    /// Exact per-model spend rows; tiers aggregating >1 id expand into them.
+    var topModelsByID: [ModelSpendStat] = []
     let liveSessions: [SessionSummary]
 }
 
@@ -41,8 +43,16 @@ struct OverviewHeroComposition: View {
     }
 
     private var tierCard: some View {
-        Card(padding: Theme.cardPadding + Theme.micro, fixedHeight: 196) {
-            TierSpendSection(stats: snapshot.tierStats, total: snapshot.tierTotal)
+        // The card's height derives from its expansion: tiers holding more
+        // than one model id add capped sub-rows, so the fixed frame grows
+        // exactly with them instead of clipping (hero cards stay fixed-height
+        // by design; this keeps that while making tiers non-opaque).
+        let extra = TierSpendSection.extraRowCount(
+            stats: snapshot.tierStats, modelsByID: snapshot.topModelsByID)
+        return Card(padding: Theme.cardPadding + Theme.micro,
+                    fixedHeight: 196 + CGFloat(extra) * TierSpendSection.subRowHeight) {
+            TierSpendSection(stats: snapshot.tierStats, total: snapshot.tierTotal,
+                             modelsByID: snapshot.topModelsByID)
         }
     }
 
@@ -139,11 +149,12 @@ struct OverviewScreen: View {
         services.providerCorpusPresence.isEmpty
     }
 
-    private var isRefreshing: Bool {
-        refreshRequested
-            || (store.scanPresentation == .liveRefreshing
-                && store.scanProgress.isInProgress)
-    }
+    /// The refresh control reflects ONLY a user-initiated refresh (input-origin
+    /// rule). Background FSEvents scans run constantly on a busy fleet machine;
+    /// letting them spin and DISABLE the manual control read as the app doing
+    /// things to itself (owner live report). Background activity stays in the
+    /// quiet subtitle sentence, never on the button.
+    private var isRefreshing: Bool { refreshRequested }
 
     var body: some View {
         ScreenScaffold(
@@ -219,6 +230,7 @@ struct OverviewScreen: View {
                 governor: corpus.burnGovernor,
                 tierStats: corpus.tierStats,
                 tierTotal: corpus.totalCost,
+                topModelsByID: corpus.topModelsByID,
                 liveSessions: corpus.activeSessions),
             onOpenLiveBoard: { services.select(.live, origin: .programmatic) },
             onSelectSession: { services.inspect($0) })
@@ -391,6 +403,38 @@ struct RefreshActivityGlyph: View {
 struct TierSpendSection: View {
     let stats: [TierStat]
     let total: Double
+    /// Exact per-model rows (already aggregated in the corpus snapshot). When
+    /// present, each tier expands into the model ids composing it — so "Codex"
+    /// names sol/terra/luna and "Other" names exactly what it holds, instead
+    /// of tiers being opaque buckets (owner: "not until we figure out exactly
+    /// what Other is").
+    var modelsByID: [ModelSpendStat] = []
+
+    /// At most this many named sub-rows per tier; the tail folds into one
+    /// "+N more" line so a many-model tier can't swallow the card.
+    static let subRowCap = 4
+    /// Sub-row line height for the card's derived fixed height.
+    static let subRowHeight: CGFloat = 19
+
+    static func members(of tier: ModelTier,
+                        in modelsByID: [ModelSpendStat]) -> [ModelSpendStat] {
+        modelsByID.filter { ModelTier(raw: $0.model) == tier }
+    }
+
+    /// Total extra rows (named + fold line) the section renders below the tier
+    /// rows — the card uses this to derive its fixed height.
+    static func extraRowCount(stats: [TierStat],
+                              modelsByID: [ModelSpendStat]) -> Int {
+        stats.reduce(0) { count, st in
+            let n = members(of: st.tier, in: modelsByID).count
+            guard n > 1 else { return count }
+            return count + min(n, subRowCap) + (n > subRowCap ? 1 : 0)
+        }
+    }
+
+    private func members(of tier: ModelTier) -> [ModelSpendStat] {
+        Self.members(of: tier, in: modelsByID)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.sectionGap) {
@@ -405,30 +449,79 @@ struct TierSpendSection: View {
             TierSplitBar(stats: stats)
             VStack(spacing: Theme.rhythm) {
                 ForEach(stats) { st in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Circle().fill(st.tier.color).frame(width: 6, height: 6)
-                        Text(st.tier.label)
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.ink)
-                        Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tokens excluding cache reads")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.muted)
-                            .liveNumericTransition(
-                                value: "\(st.sessions)|\(fmtTokens(st.tokens))")
-                        Spacer()
-                        Text(fmtUSD(st.cost))
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Theme.ink)
-                            .liveNumericTransition(value: fmtUSD(st.cost))
-                        Text(total > 0 ? fmtPct(st.cost / total) : "—")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.muted)
-                            .frame(width: 42, alignment: .trailing)
-                            .liveNumericTransition(
-                                value: total > 0 ? fmtPct(st.cost / total) : "—")
+                    tierRow(st)
+                    // Sub-rows appear when a tier aggregates MORE THAN ONE
+                    // model id — a single-model tier's row already names it
+                    // implicitly, and Opus/Sonnet/Haiku stay single-line.
+                    let ids = members(of: st.tier)
+                    if ids.count > 1 {
+                        ForEach(ids.prefix(Self.subRowCap)) { row in
+                            modelSubRow(row)
+                        }
+                        if ids.count > Self.subRowCap {
+                            let tail = ids.dropFirst(Self.subRowCap)
+                            let tailCost = tail.reduce(0) { $0 + $1.cost }
+                            HStack(spacing: 8) {
+                                Text("+\(tail.count) more")
+                                    .font(Theme.Typography.metadata)
+                                    .foregroundStyle(Theme.faint)
+                                    .padding(.leading, 14)
+                                Spacer()
+                                Text(fmtUSD(tailCost))
+                                    .font(Theme.Typography.metadata)
+                                    .foregroundStyle(Theme.faint)
+                                Color.clear.frame(width: 42, height: 1)
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private func tierRow(_ st: TierStat) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(st.tier.color).frame(width: 6, height: 6)
+            Text(st.tier.label)
+                .font(.subheadline)
+                .foregroundStyle(Theme.ink)
+            Text("\(st.sessions) sessions · \(fmtTokens(st.tokens)) tokens excluding cache reads")
+                .font(.footnote)
+                .foregroundStyle(Theme.muted)
+                .liveNumericTransition(
+                    value: "\(st.sessions)|\(fmtTokens(st.tokens))")
+            Spacer()
+            Text(fmtUSD(st.cost))
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Theme.ink)
+                .liveNumericTransition(value: fmtUSD(st.cost))
+            Text(total > 0 ? fmtPct(st.cost / total) : "—")
+                .font(.footnote)
+                .foregroundStyle(Theme.muted)
+                .frame(width: 42, alignment: .trailing)
+                .liveNumericTransition(
+                    value: total > 0 ? fmtPct(st.cost / total) : "—")
+        }
+    }
+
+    private func modelSubRow(_ row: ModelSpendStat) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(row.model)
+                .font(Theme.Typography.metadata.monospaced())
+                .foregroundStyle(Theme.muted)
+                .padding(.leading, 14)   // optically under the tier dot
+            Text("\(row.sessions) sessions")
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.faint)
+            Spacer()
+            Text(fmtUSD(row.cost))
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.muted)
+                .liveNumericTransition(value: fmtUSD(row.cost))
+            Text(total > 0 ? fmtPct(row.cost / total) : "—")
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.faint)
+                .frame(width: 42, alignment: .trailing)
         }
     }
 }

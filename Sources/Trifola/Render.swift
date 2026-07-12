@@ -1710,8 +1710,8 @@ enum LayoutRender {
         }
         private var tierStats: [TierStat] {
             [TierStat(tier: .opus, tokens: 68_000_000, cost: 6214, sessions: 4120),
-             TierStat(tier: .user, tokens: 12_400_000, cost: 1148, sessions: 790),
-             TierStat(tier: .sonnet, tokens: 29_100_000, cost: 1038, sessions: 1068),
+             TierStat(tier: .codex, tokens: 12_100_000, cost: 1792, sessions: 161),
+             TierStat(tier: .sonnet, tokens: 29_100_000, cost: 394, sessions: 1068),
              TierStat(tier: .haiku, tokens: 8_800_000, cost: 142, sessions: 188)]
         }
 
@@ -1767,6 +1767,25 @@ enum LayoutRender {
                             governor: burn,
                             tierStats: tierStats,
                             tierTotal: 8_542,
+                            topModelsByID: [
+                                // Codex expands into its member models; a tier
+                                // with one id stays single-line.
+                                ModelSpendStat(
+                                    provider: .codex, model: "gpt-5.6-sol",
+                                    usage: SessionUsage(inputTokens: 9_200_000,
+                                                        outputTokens: 610_000),
+                                    cost: 1_490, sessions: 118),
+                                ModelSpendStat(
+                                    provider: .codex, model: "gpt-5.6-terra",
+                                    usage: SessionUsage(inputTokens: 2_100_000,
+                                                        outputTokens: 140_000),
+                                    cost: 240, sessions: 31),
+                                ModelSpendStat(
+                                    provider: .codex, model: "gpt-5.6-luna",
+                                    usage: SessionUsage(inputTokens: 800_000,
+                                                        outputTokens: 40_000),
+                                    cost: 62, sessions: 12),
+                            ],
                             liveSessions: liveSessions))
                     }
                 }
