@@ -648,7 +648,12 @@ private struct SessionInspector: View {
     }
 
     private func openTapButton(_ openAction: SessionOpenActionPresentation) -> some View {
-        TapButton(
+        // The launch ladder can take seconds (it spawns the workspace host's
+        // controller several times). The button flips to a spinner + "Opening
+        // session…" the instant it's pressed and stays busy until the outcome
+        // toast lands — a silent working button reads as a dead one.
+        let launching = services.launchingSessionID == session.id
+        return TapButton(
             shortcut: KeyboardShortcut(.return, modifiers: .command),
             action: {
                 let presentMain: @MainActor () -> Void = {
@@ -667,12 +672,19 @@ private struct SessionInspector: View {
                 }
             }) {
                 HStack(spacing: Theme.rhythm) {
-                    Image(systemName: openAction.icon)
-                        .font(Theme.Typography.metadataMedium)
-                    Text(openAction.label)
+                    if launching {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                            .frame(width: 12, height: 12)
+                    } else {
+                        Image(systemName: openAction.icon)
+                            .font(Theme.Typography.metadataMedium)
+                    }
+                    Text(launching ? "Opening session…" : openAction.label)
                         .font(Theme.Typography.metadataMedium)
                 }
-                .foregroundStyle(Theme.ink)
+                .foregroundStyle(launching ? Theme.faint : Theme.ink)
                 .padding(.horizontal, Theme.controlHorizontalInset)
                 .padding(.vertical, Theme.compactControlVerticalInset)
                 .background {
@@ -682,7 +694,7 @@ private struct SessionInspector: View {
                         .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
                 }
             }
-            .accessibilityLabel(openAction.label)
+            .accessibilityLabel(launching ? "Opening session" : openAction.label)
             .accessibilityHint(openAction.help)
             .help("\(openAction.help) — ⌘↩")
             .disabled(openAction == .resolving)

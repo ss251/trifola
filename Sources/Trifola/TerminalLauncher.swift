@@ -14,7 +14,8 @@ enum TerminalLauncher {
         openMainWindow: @escaping @MainActor () -> Void,
         selectSession: @escaping @MainActor (String) -> Void,
         revealTranscript: @escaping @MainActor (String, TerminalLaunchOutcome) -> Void,
-        confirmLaunch: @escaping @MainActor (String) -> Void
+        confirmLaunch: @escaping @MainActor (String) -> Void,
+        onFinished: @escaping @MainActor () -> Void = {}
     ) -> Task<Void, Never> {
         let flow = TerminalLaunchFlow(
             resolver: resolver,
@@ -45,6 +46,9 @@ enum TerminalLauncher {
                 gitBranch: gitBranch,
                 machineID: session.machineID
             )
+            // Busy state must clear on EVERY exit — success, fallback, or
+            // cancellation — or the button sticks in "Opening…" forever.
+            defer { onFinished() }
             guard !Task.isCancelled else {
                 Self.diagnostic("result=cancelled-after-flow")
                 return

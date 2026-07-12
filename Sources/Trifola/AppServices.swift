@@ -196,6 +196,11 @@ final class AppServices: ObservableObject {
     private var refreshQueued = false
     private var refreshQueuedOpenAction = false
     private var terminalLaunchTask: Task<Void, Never>?
+    /// The session whose terminal launch is in flight. Drives the button's
+    /// immediate "Opening…" state and coalesces repeat clicks — the ladder can
+    /// legitimately take seconds (it spawns the workspace host's controller
+    /// binary several times), and silence read as a dead button.
+    @Published private(set) var launchingSessionID: String?
     private var terminalRevealGeneration = 0
     private var pendingRestoredSessionID: String?
     private var pendingSessionOpenActionIDs: Set<String> = []
@@ -786,7 +791,20 @@ final class AppServices: ObservableObject {
                            openMainWindow: openMainWindow)
             return
         }
+        // The launch ladder spawns the workspace host's controller binary many
+        // times and can take seconds. Re-clicking used to CANCEL the in-flight
+        // ladder and queue a fresh one behind its remaining synchronous work —
+        // the "dead button" the owner felt. Coalesce instead: while a launch
+        // for this session is in flight, a repeat click acknowledges honestly
+        // and keeps the original working.
+        if launchingSessionID == session.id {
+            publishTranscriptReveal(
+                sessionID: session.id,
+                message: "Opening session — still working…")
+            return
+        }
         terminalLaunchTask?.cancel()
+        launchingSessionID = session.id
         terminalLaunchTask = TerminalLauncher.open(
             session: session,
             resolver: TerminalLinkResolver(
@@ -821,6 +839,10 @@ final class AppServices: ObservableObject {
                 // A successful open acknowledges in-app so it never reads as a
                 // no-op — the same session-scoped banner the fallback uses.
                 self?.publishTranscriptReveal(sessionID: session.id, message: message)
+            },
+            onFinished: { [weak self] in
+                guard let self, self.launchingSessionID == session.id else { return }
+                self.launchingSessionID = nil
             }
         )
     }
