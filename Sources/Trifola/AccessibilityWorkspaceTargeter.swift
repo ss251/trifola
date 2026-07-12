@@ -209,6 +209,36 @@ private actor AXWorkspaceWorker {
                   $0.candidate.id == match.candidate.id
               }),
               let rawTitle = match.candidate.confirmationTitle else {
+            // Workspace names are arbitrary (they needn't resemble a session's
+            // cwd/project), so a title miss is the COMMON case in workspace
+            // apps — and exactly where the PID join is strongest: the live
+            // session PID maps to one workspace UUID with the same signature,
+            // capability, uniqueness, and post-condition gates. Only attempt
+            // it against a fully-enumerated workspace surface.
+            if refinedComplete, let bundledControlEndpoint, !Task.isCancelled {
+                AccessibilityWorkspaceTargeter.diagnostic(
+                    "bundled-control=pid-only-attempt")
+                if let selection = BundledWorkspaceController.select(
+                    endpoint: bundledControlEndpoint,
+                    sessionProcessID: request.target.processID,
+                    matchedTitle: nil) {
+                    let title = selection.target.matchedTitle
+                    AccessibilityWorkspaceTargeter.diagnostic(
+                        "bundled-control=pid-only-selected title=\(title)")
+                    pendingVerification = PendingVerification(
+                        ownerPID: ownerPID,
+                        sessionID: request.identity.sessionID,
+                        matchedTitle: title,
+                        allowsObservedStatusMarker: true,
+                        expectedWindow: nil,
+                        bundledControlEndpoint: bundledControlEndpoint,
+                        bundledControlSelection: selection,
+                        allowsBundledControlFallback: true)
+                    return .targeted(matchedTitle: title)
+                }
+                AccessibilityWorkspaceTargeter.diagnostic(
+                    "bundled-control=pid-only-failed")
+            }
             AccessibilityWorkspaceTargeter.diagnostic(
                 "selection=no-confident-match")
             return .noConfidentMatch

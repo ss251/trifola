@@ -63,7 +63,7 @@ enum BundledWorkspaceController {
     static func select(
         endpoint: BundledWorkspaceEndpoint,
         sessionProcessID: Int32,
-        matchedTitle: String
+        matchedTitle: String?
     ) -> BundledWorkspaceSelection? {
         guard endpointIsCurrentAndValid(endpoint), sessionProcessID > 0 else {
             diagnostic("endpoint=invalid")

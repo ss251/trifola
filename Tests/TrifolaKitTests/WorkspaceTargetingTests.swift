@@ -435,6 +435,42 @@ struct WorkspaceBundledControlPolicyTests {
             matchedTitle: "atlas") == nil)
     }
 
+    @Test("nil title: the unique PID join stands alone and adopts the workspace's own title")
+    func pidOnlyMapping() {
+        // Workspace names are arbitrary (they needn't resemble the session's
+        // cwd/project), so the AX scorer's honest miss is the common case in
+        // workspace apps. The PID join then proceeds on its own strength and
+        // the confirmation title comes from the matched workspace itself.
+        let snapshots = validSnapshots()
+        let target = WorkspaceBundledControlPolicy.target(
+            from: snapshots,
+            ownerProcessID: 400,
+            sessionProcessID: 701,
+            matchedTitle: nil)
+        #expect(target?.workspaceID == targetWorkspace)
+        #expect(target?.matchedTitle == "atlas")   // the workspace's own title
+
+        // Uniqueness still governs: a duplicated PID fails closed even title-less.
+        var duplicate = validSnapshots()
+        duplicate[secondWindow] = secondSnapshot(pids: [701, 800])
+        #expect(WorkspaceBundledControlPolicy.target(
+            from: duplicate,
+            ownerProcessID: 400,
+            sessionProcessID: 701,
+            matchedTitle: nil) == nil)
+
+        // And the returned target verifies through the same exact post-conditions.
+        if let target {
+            #expect(WorkspaceBundledControlPolicy.verifies(
+                target,
+                currentWindowOutput: Data("\(firstWindow)\n".utf8),
+                currentWorkspaceOutput: Data("\(targetWorkspace)\n".utf8),
+                targetWindowSnapshot: snapshots[firstWindow]!,
+                ownerProcessID: 400,
+                sessionProcessID: 701))
+        }
+    }
+
     @Test("duplicate PID ownership and malformed refs fail closed")
     func ambiguousOrMalformedMapping() {
         var duplicate = validSnapshots()

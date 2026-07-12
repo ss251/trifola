@@ -645,20 +645,26 @@ public enum WorkspaceBundledControlPolicy {
         return ids
     }
 
-    /// The PID join is authoritative. Title agreement is a separate
-    /// cross-check with the AX candidate, not a fallback when the PID is absent.
+    /// The PID join is authoritative. When the AX tier supplied a confident
+    /// title, agreement with it is a mandatory cross-check. When it did NOT
+    /// (`matchedTitle == nil` — workspace names are arbitrary and needn't
+    /// resemble a session's cwd/project, so the scorer's honest miss is the
+    /// COMMON case), the unique PID→workspace ownership stands on its own and
+    /// the workspace's own title becomes the confirmation title. Every other
+    /// gate (signature, capability, global uniqueness, UUID post-conditions)
+    /// is unchanged.
     public static func target(
         from snapshotsByWindowID: [String: Data],
         ownerProcessID: Int32,
         sessionProcessID: Int32,
-        matchedTitle: String
+        matchedTitle: String?
     ) -> WorkspaceBundledControlTarget? {
-        let expectedTitle = matchedTitle.trimmingCharacters(
+        let expectedTitle = matchedTitle?.trimmingCharacters(
             in: .whitespacesAndNewlines)
         guard ownerProcessID > 0,
               sessionProcessID > 0,
               ownerProcessID != sessionProcessID,
-              !expectedTitle.isEmpty,
+              expectedTitle?.isEmpty != true,
               !snapshotsByWindowID.isEmpty else { return nil }
 
         var workspaceIDs: Set<String> = []
@@ -677,12 +683,13 @@ public enum WorkspaceBundledControlPolicy {
                   !window.workspaces.isEmpty else { return nil }
 
             for workspace in window.workspaces {
+                let workspaceTitle = workspace.title.trimmingCharacters(
+                    in: .whitespacesAndNewlines)
                 guard isUUID(workspace.id),
                       validRef(workspace.ref, prefix: "workspace"),
                       workspaceIDs.insert(workspace.id.lowercased()).inserted,
                       workspaceRefs.insert(workspace.ref).inserted,
-                      !workspace.title.trimmingCharacters(
-                        in: .whitespacesAndNewlines).isEmpty,
+                      !workspaceTitle.isEmpty,
                       workspace.resources.pids.allSatisfy({ $0 > 0 }),
                       Set(workspace.resources.pids).count
                         == workspace.resources.pids.count else { return nil }
@@ -694,11 +701,15 @@ public enum WorkspaceBundledControlPolicy {
                     windowRef: window.ref,
                     workspaceID: workspace.id,
                     workspaceRef: workspace.ref,
-                    matchedTitle: expectedTitle))
-                guard WorkspaceSidebarRefinementPolicy
-                    .focusedWindowTitleMatchesExactly(
-                        workspace.title, expected: expectedTitle) else {
-                    return nil
+                    matchedTitle: expectedTitle
+                        ?? WorkspaceSidebarRefinementPolicy
+                            .removingObservedStatusMarker(workspaceTitle)))
+                if let expectedTitle {
+                    guard WorkspaceSidebarRefinementPolicy
+                        .focusedWindowTitleMatchesExactly(
+                            workspace.title, expected: expectedTitle) else {
+                        return nil
+                    }
                 }
             }
         }
