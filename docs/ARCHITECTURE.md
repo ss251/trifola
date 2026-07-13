@@ -1,18 +1,20 @@
 # Architecture
 
-trifola is a native macOS (SwiftUI, Swift 6) reader over `~/.claude`. Zero external
-dependencies. The design splits cleanly into three layers.
+trifola is a native macOS (SwiftUI, Swift 6) reader over `~/.claude` **and** `~/.codex`. Zero
+external dependencies. The design splits cleanly into three layers.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  ENGINE (Swift, MIT) — commodity, correct, fast              │
-│  version-tolerant JSONL parsers · incremental append-only    │
-│  index · FSEvents pipeline · attention state machine ·       │
-│  pricing math · render/UI · read-only MCP server             │
+│  version-tolerant per-provider parsers · incremental         │
+│  append-only index · FSEvents pipeline · attention state     │
+│  machine · pricing math · session transport ladder ·         │
+│  render/UI · read-only MCP server                            │
 ├──────────────────────────────────────────────────────────────┤
 │  STABLE CONTRACT — the "workflow schema"                     │
-│  SessionSummary · usageByTier · SkillLedger · probes:        │
-│  a documented, versioned surface the detectors query         │
+│  SessionSummary (provider-tagged) · usageByModel/Tier ·      │
+│  SkillLedger · probes: a documented, versioned surface       │
+│  the detectors query                                         │
 ├──────────────────────────────────────────────────────────────┤
 │  PLAYBOOK (data) — the judgment, shipped as content          │
 │  detectors: evidence query + threshold + finding copy +      │
@@ -23,40 +25,129 @@ dependencies. The design splits cleanly into three layers.
 
 ## Engine
 
-- **Ingestion.** One FSEvents stream over `~/.claude` → debounced incremental rescan of changed
-  transcripts → stores. Off-main, cancellable scans; prefilter-before-parse; an append-only
-  parse cache keyed by file + offset so a rescan touches only new bytes.
-- **Attention state machine.** BLOCKED / WAITING / RUNNING / IDLE derived from a dangling
-  `tool_use` older than a threshold — the signal that a human gate is open.
-- **Pricing.** A date-stamped per-model rate table with cache splits (5-minute at 1.25×, 1-hour
-  at 2×, warm reads at ~0.1×), embedded at build time. Cache **leak** (avoidable) and unavoidable
-  **first-touch** are tracked separately and never summed into one dishonest number.
-- **MCP server.** A source-safe surface (`session_brief`, `context_tax`, `reroutes`, `cost_today`,
-  `quota_windows`) so a *running* Claude Code session can introspect its own state. It never
-  mutates `~/.claude` or external systems; the shared scanner maintains an app-local session index.
+### Dual-provider ingestion
 
-## The durability battle: the upstream format
+One incremental index, N `SessionSource`s. Each source owns its root, its filename filter, and
+its parser; everything downstream consumes the same provider-tagged `SessionSummary`.
 
-Claude Code's on-disk JSONL/settings format is unversioned, undocumented, and changes. The engine
-treats it as a hostile input:
+- **Claude source** — `~/.claude/projects/**/*.jsonl` through the flat-record accumulator:
+  `(messageId, requestId)` dedup, sidechain/subagent layouts, per-message model+day usage
+  attribution, cross-file replay reconciliation.
+- **Codex source** — `$CODEX_HOME/sessions/**/rollout-*.jsonl` (+ `.jsonl.zst`, decompressed
+  through a bounded subprocess: hard deadline, output cap, kill on breach) through a tagged-union
+  rollout accumulator. Three traps it exists to defuse:
+  - **The cache trap.** Codex `input_tokens` *includes* cached input; Anthropic's excludes it.
+    Conversion to trifola's additive representation happens at parse time — applying the Claude
+    formula raw would double-bill the cached slice.
+  - **Counter resets.** Cumulative token counters can reset mid-thread; each reset starts a new
+    epoch that namespaces dedup keys, so a fresh baseline can never overwrite paid usage, and
+    `cached > input` records clamp instead of minting negative dollars.
+  - **Pre-context usage.** Resumed rollouts emit usage before the file names its model; the first
+    observed model retroactively owns it, so spend lands on a real id, not a placeholder bucket.
+  - Threads Codex re-imported *from* Claude (its import manifest) are dropped at the source so
+    the same conversation is never counted twice.
+- **FSEvents** watches both roots; changes debounce into incremental rescans (off-main,
+  cancellable, prefilter-before-parse, append-only parse cache keyed by file + offset). The
+  on-disk index cache is version-laddered — any summary-shaping change bumps the version and
+  forces a loud one-time reparse instead of silently serving stale shapes.
+
+### Attention state machine — honesty as architecture
+
+BLOCKED / WAITING / RUNNING / IDLE derive from provider-native signals, produced where the
+provider is parsed — the classifier itself is provider-free.
+
+- Claude: a dangling `tool_use` older than a threshold is the open-human-gate signal.
+- Codex: `task_complete` → WAITING, recent runtime records → RUNNING, staleness → IDLE — and a
+  `canObserveBlocking` capability gates both BLOCKED paths, because Codex approval prompts are
+  **never persisted**: disk cannot know, so trifola never claims. Encoded as a tested invariant.
+
+### The provider boundary
+
+Analyses keep to the sessions they can honestly describe. Claude-scoped: the dead-skill
+denominator (only Claude sessions carry the skill catalog in their prompts), settings-vs-resolved
+routing legs, frontier right-sizing, and the external cost-bar reconciliation. Provider-neutral:
+cache economics and burn (they price normalized usage by model id). Mixed corpora are proven by
+fixture tests to leave Claude-only findings unmoved.
+
+### Pricing
+
+A per-model, date-era rate catalog (Sonnet 5's introductory era is encoded, not hardcoded),
+bundled at build time and **verified against the official Anthropic and OpenAI pricing pages** —
+the seed states its verification date. Cache splits: 5-minute writes at 1.25×, 1-hour at 2×, warm
+reads at 0.1×. Ids without an official per-model rate price through a tier fallback and are
+*marked* "est. rate" in the UI rather than implying a source exists. Cache **leak** (avoidable)
+and unavoidable **first-touch** are tracked separately and never summed into one dishonest
+number. An opt-in models.dev refresh can extend the catalog; it never overwrites a bundled row.
+
+### Quota — a consent-gated trust boundary
+
+Plan-quota reading is **off by default, per provider**. Claude quota reads the local credential
+and may query Keychain, then makes one HTTPS request to the vendor's usage endpoint — nothing is
+read before the Settings toggle is enabled, and the MCP quota tool sits behind the same gate.
+Codex quota is a pure local read of rate-limit events already persisted in rollout files: no
+network, no spawned process, symlink- and traversal-rejecting.
+
+### Session transport — the "Open session" ladder
+
+Opening a session lands on the exact terminal surface hosting it, through ordered tiers that
+never guess:
+
+1. **Registry join** — Claude Code's live session registry maps session id → live PID; a
+   headless daemon background job follows its unique *named interactive sibling* (the surface a
+   human actually sees it through). Zero or many candidates refuse.
+2. **Exact tab via AppleScript** — Terminal.app and iTerm2 select the precise tab by TTY.
+3. **Surface-exact via a bundled controller** — workspace-style terminal apps that ship their own
+   signed control binary inside their bundle get tab-exact targeting: the session id recorded in
+   a surface's resume binding joins to exactly one tab, its hosting window is fronted first
+   (cross-Space), and the selection is verified by the host's own UUID reads. Capability-gated
+   and fail-closed: same-team code-signature required, fixed argv, bounded IO, duplicate or
+   malformed records refuse.
+4. **Accessibility scoring** — with the user's explicit, at-the-moment-of-value Accessibility
+   grant, window/tab titles are scored against session identity (cwd, project, id prefix) with a
+   confidence floor and a required winner margin; a tie is an honest miss, never a guessed tab.
+5. **Owner activation, then transcript** — fronting the owning app, else a read-only transcript
+   reveal. Every failure path names its cause in the UI; every success confirms what it did.
+
+### Navigation performance
+
+Screen projections (sessions, fleet, deadlines, burn, lessons) are store-owned snapshots computed
+off the main thread when their *inputs* change — never at click time. Navigation state lives in a
+small dedicated observable, so selecting a destination invalidates the navigation shell, not the
+heavyweight store graph. Destination switches paint within a frame and hydrate from ready
+snapshots; a benchmark harness (`--benchmark-nav-live`) drives the real selection-to-draw path.
+
+### MCP server
+
+A source-safe surface (`session_brief`, `context_tax`, `reroutes`, `cost_today`,
+`quota_windows`) so a *running* session can introspect its own state. Identity is explicit: tools
+resolve the session registered for the connection; without one, callers pass `session_id` or opt
+in with `use_newest: true` — omission alone is an error, never a silent guess. It never mutates
+`~/.claude` or `~/.codex`; the shared scanner maintains an app-local session index.
+
+## The durability battle: the upstream formats
+
+Both providers' on-disk formats are unversioned, undocumented, and change. The engine treats them
+as hostile inputs:
 
 - **Lenient, field-level parsing** — one bad field degrades to zero; never drop a record, never
-  crash a scan.
-- **A "tested against Claude Code vX.Y" fixture matrix** in CI — the biggest fragility becomes a
-  visible reliability signal.
-- **`(messageId, requestId)` dedup as a correctness invariant** with tests — the whole trust story
-  is the numbers being right, including on session resume and sidechains.
-- `CLAUDE_CONFIG_DIR`, nested sessions, and `subagents/*.jsonl` layouts are handled so totals don't
-  silently under-count.
+  crash a scan. Malformed or adversarial records (negative counters, impossible cache figures,
+  oversized compressed files) clamp or fail closed with fixtures proving it.
+- **Synthetic fixture matrices in CI** — the biggest fragility becomes a visible reliability
+  signal.
+- **Dedup as a correctness invariant** with tests — the whole trust story is the numbers being
+  right, including on session resume, sidechains, and cross-provider re-imports.
+- `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, nested sessions, and `subagents/*.jsonl` layouts are
+  handled so totals don't silently under-count.
 
 ## Performance is a feature
 
-An observability app that pegs a CPU core is disqualifying here. Idle CPU is ~0% by design
-(off-main scans, incremental cache, no polling render loop). This is a headline property, not an
-optimization footnote.
+An observability app that pegs a CPU core is disqualifying here. The pipeline is event-driven
+(FSEvents) with no polling render loop; scans are off-main and incremental. Destination
+navigation is budgeted and benchmarked, not vibes.
 
 ## Testing
 
 The `TrifolaKit` test suite runs against **synthetic** fixtures with known expected findings —
 which simultaneously serve as the personal-data strip, the CI-vs-version matrix, and the demo-mode
-corpus for marketing assets. No real `~/.claude` data ever enters the repo.
+corpus for marketing assets. No real `~/.claude` or `~/.codex` data ever enters the repo; a
+personal-identifier lint gates every commit in CI.
