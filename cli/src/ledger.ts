@@ -26,6 +26,8 @@ export interface Finding {
   catalogCount: number;
   /** Interactive (non-subagent) session transcripts scanned. */
   sessionCount: number;
+  /** Subagent transcript files scanned — disclosed next to the denominator, never blended. */
+  subagentRunCount: number;
   /** Cumulative prompt-tax cost across the scanned interactive sessions. */
   taxUsd: number;
   /** Prompt-tax cost for one scanned session. */
@@ -66,6 +68,7 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
   const deadPromptTaxTokens = dead.reduce((sum, sk) => sum + estimateDescriptionTokens(sk.description), 0);
 
   const sessionCount = corpus.sessionCount;
+  const subagentRunCount = corpus.fileCount - corpus.sessionCount;
   const taxUsdPerSession = (deadPromptTaxTokens / 1_000_000) * (SONNET_TIER_INPUT_RATE * CACHE_READ_MULTIPLIER);
   const taxUsd = taxUsdPerSession * sessionCount;
 
@@ -89,6 +92,7 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
     deadCount,
     catalogCount,
     sessionCount,
+    subagentRunCount,
     taxUsd,
     taxUsdPerSession,
     usageValueUsd,

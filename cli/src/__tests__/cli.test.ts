@@ -35,7 +35,7 @@ describe("trifola CLI entry point (subprocess)", () => {
       buildSyntheticClaudeTree(root);
       const { stdout, status } = runCli([], { ...process.env, CLAUDE_CONFIG_DIR: root });
       assert.equal(status, 0);
-      assert.match(stdout, /2 of 4 catalog skills never fired, across 2 sessions\./);
+      assert.match(stdout, /2 of 4 catalog skills never fired, across 2 sessions \(\+1 subagent run\)\./);
       assert.match(stdout, /\$18 API-equivalent across the scanned corpus/);
       assert.match(stdout, /29% of 5\.8M input tokens served from cache/);
       assert.match(stdout, /fresh-input premium above an all-cache-read floor/);

@@ -10,13 +10,18 @@
 import type { Finding } from "./ledger.js";
 import { fmtUSD, fmtTinyUSD, fmtPct, fmtCount, fmtTokens } from "./format.js";
 import { styled, teal, cream, bold, dim } from "./style.js";
+import { renderMark } from "./mark.js";
 
 const RULE = "─".repeat(58);
 
 export function renderCard(finding: Finding): string {
   const lines: string[] = [];
-  const mark = styled ? teal(bold("\u2234 ")) : "";
-  lines.push(mark + bold("trifola") + dim(" — claude code corpus finding"));
+  if (styled) {
+    lines.push("");
+    lines.push(renderMark("  "));
+    lines.push("");
+  }
+  lines.push(bold("trifola") + dim(" — claude code corpus finding"));
   lines.push(dim(RULE));
   if (finding.catalogCount === 0 && finding.sessionCount === 0) {
     lines.push("");
@@ -27,7 +32,11 @@ export function renderCard(finding: Finding): string {
   lines.push(bold(cream("DEAD SKILLS")));
   lines.push(
     `  ${teal(bold(`${fmtCount(finding.deadCount)} of ${fmtCount(finding.catalogCount)}`))} catalog skills never fired, ` +
-      `across ${fmtCount(finding.sessionCount)} sessions.`
+      `across ${fmtCount(finding.sessionCount)} sessions${
+        finding.subagentRunCount > 0
+          ? ` (+${fmtCount(finding.subagentRunCount)} subagent run${finding.subagentRunCount === 1 ? "" : "s"})`
+          : ""
+      }.`
   );
   lines.push(
     dim("  (explicit Skill-tool + slash-command invocations only — skills auto-")
@@ -73,7 +82,7 @@ export function renderCard(finding: Finding): string {
 }
 
 export interface FindingJSON {
-  deadSkills: { dead: number; catalog: number; sessions: number; note: string };
+  deadSkills: { dead: number; catalog: number; sessions: number; subagentRuns: number; note: string };
   usageValue: { usd: number; label: "API-equivalent" };
   promptTax: { perSessionUsd: number; totalUsd: number; sessions: number; label: "API-equivalent"; note: string };
   freshInput: {
@@ -102,6 +111,7 @@ export function renderJSON(finding: Finding): FindingJSON {
       dead: finding.deadCount,
       catalog: finding.catalogCount,
       sessions: finding.sessionCount,
+      subagentRuns: finding.subagentRunCount,
       note:
         "counts explicit Skill-tool + slash-command invocations only; skills auto-loaded as context aren't tracked, so this likely overstates \"dead\"",
     },

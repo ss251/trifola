@@ -4,8 +4,8 @@
 
 import { spinnerEnabled, stderrTeal, stderrDim } from "./style.js";
 
-const LOBES = [0, 1, 2, 1] as const;
-const TICK_MS = 140;
+const FRAMES = ["◒", "◐", "◓", "◑"] as const;
+const TICK_MS = 120;
 
 export interface Spinner {
   update(text: string): void;
@@ -22,11 +22,8 @@ export function spin(initial: string): Spinner {
   const err = process.stderr;
 
   const draw = (): void => {
-    const lit = LOBES[frame % LOBES.length];
-    const dots = [0, 1, 2]
-      .map((i) => (i === lit ? stderrTeal("●") : stderrDim("∙")))
-      .join("");
-    err.write(`\r\x1b[2K${dots} ${stderrDim(text)}`);
+    const glyph = stderrTeal(FRAMES[frame % FRAMES.length]);
+    err.write(`\r\x1b[2K${glyph} ${stderrDim(text)}`);
   };
 
   err.write("\x1b[?25l");
