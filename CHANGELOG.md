@@ -5,6 +5,12 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Cross-surface number honesty** — the app's Overview header now counts top-level sessions
+  (matching the npm CLI's denominator) and discloses subagent runs separately
+  ("N sessions (+M subagent runs)"); the CLI card states its scope explicitly ("Claude Code
+  only — the macOS app also reads Codex"). Two trifola surfaces must never disagree silently.
+
 ## [0.2.0] - 2026-07-13
 
 ### Added

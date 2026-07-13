@@ -127,7 +127,14 @@ struct OverviewScreen: View {
             return "Local, read-only session intelligence · refreshed \(fmtAgo(store.lastRefresh))\(refreshing)"
         }
         guard let corpus else { return "Preparing local session intelligence…" }
-        let base = "\(store.sessions.count) sessions across \(corpus.distinctProjectCount) projects"
+        // Top-level count matches the CLI's denominator; subagent transcripts are
+        // disclosed, not blended — two surfaces must never disagree silently.
+        let subagentCount = store.sessions.lazy.filter(\.isSubagent).count
+        let topLevelCount = store.sessions.count - subagentCount
+        let sessionsPart = subagentCount > 0
+            ? "\(topLevelCount) sessions (+\(subagentCount) subagent runs)"
+            : "\(topLevelCount) sessions"
+        let base = "\(sessionsPart) across \(corpus.distinctProjectCount) projects"
         let machineCount = navigationSnapshots.fleet?.machineRollups.count ?? 1
         let fleet = machineCount > 1 ? "\(machineCount) machines · " : ""
         return "\(fleet)\(base) · refreshed \(fmtAgo(store.lastRefresh))\(refreshing) · dollar values are API-rate estimates, not your bill"

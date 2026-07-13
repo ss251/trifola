@@ -66,6 +66,7 @@ export function renderCard(finding: Finding): string {
   );
   lines.push("  npx trifola");
   lines.push("reads local disk only, uploads nothing.");
+  lines.push("Claude Code only \u2014 the macOS app also reads Codex.");
   return lines.join("\n");
 }
 
