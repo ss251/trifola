@@ -9,44 +9,46 @@
 
 import type { Finding } from "./ledger.js";
 import { fmtUSD, fmtTinyUSD, fmtPct, fmtCount, fmtTokens } from "./format.js";
+import { styled, teal, cream, bold, dim } from "./style.js";
 
 const RULE = "─".repeat(58);
 
 export function renderCard(finding: Finding): string {
   const lines: string[] = [];
-  lines.push("trifola — claude code corpus finding");
-  lines.push(RULE);
+  const mark = styled ? teal(bold("\u2234 ")) : "";
+  lines.push(mark + bold("trifola") + dim(" — claude code corpus finding"));
+  lines.push(dim(RULE));
   if (finding.catalogCount === 0 && finding.sessionCount === 0) {
     lines.push("");
     lines.push("No Claude Code skills or session transcripts found under this config");
     lines.push("directory — the figures below are honestly zero, not an error.");
   }
   lines.push("");
-  lines.push("DEAD SKILLS");
+  lines.push(bold(cream("DEAD SKILLS")));
   lines.push(
-    `  ${fmtCount(finding.deadCount)} of ${fmtCount(finding.catalogCount)} catalog skills never fired, ` +
+    `  ${teal(bold(`${fmtCount(finding.deadCount)} of ${fmtCount(finding.catalogCount)}`))} catalog skills never fired, ` +
       `across ${fmtCount(finding.sessionCount)} sessions.`
   );
   lines.push(
-    "  (explicit Skill-tool + slash-command invocations only — skills auto-"
+    dim("  (explicit Skill-tool + slash-command invocations only — skills auto-")
   );
-  lines.push('  loaded as context aren\'t tracked, so this likely OVERSTATES "dead".)');
+  lines.push(dim('  loaded as context aren\'t tracked, so this likely OVERSTATES "dead".)'));
   lines.push("");
-  lines.push("EST. USAGE VALUE");
-  lines.push(`  ${fmtUSD(finding.usageValueUsd)} API-equivalent across the scanned corpus`);
+  lines.push(bold(cream("EST. USAGE VALUE")));
+  lines.push(`  ${teal(bold(fmtUSD(finding.usageValueUsd)))} API-equivalent across the scanned corpus`);
   lines.push("");
-  lines.push("PROMPT TAX");
+  lines.push(bold(cream("PROMPT TAX")));
   lines.push(
-    `  ~${fmtTinyUSD(finding.taxUsdPerSession)}/session · ${fmtTinyUSD(finding.taxUsd)} across ` +
+    `  ~${teal(bold(fmtTinyUSD(finding.taxUsdPerSession)))}/session · ${teal(bold(fmtTinyUSD(finding.taxUsd)))} across ` +
       `${fmtCount(finding.sessionCount)} scanned sessions`
   );
-  lines.push("  the dead skills' descriptions still ride every session's prompt —");
-  lines.push("  priced at the cache-read rate (input × 0.10 of a mid-tier model),");
-  lines.push("  not your raw input bill.");
+  lines.push(dim("  the dead skills' descriptions still ride every session's prompt —"));
+  lines.push(dim("  priced at the cache-read rate (input × 0.10 of a mid-tier model),"));
+  lines.push(dim("  not your raw input bill."));
   lines.push("");
-  lines.push("RE-SENT CONTEXT");
-  lines.push(`  ~${fmtUSD(finding.freshInputPremiumUsd)} fresh-input premium above an all-cache-read floor`);
-  lines.push("  the avoidable share is unknowable from logs (API-equivalent, not your bill)");
+  lines.push(bold(cream("RE-SENT CONTEXT")));
+  lines.push(`  ~${teal(bold(fmtUSD(finding.freshInputPremiumUsd)))} fresh-input premium above an all-cache-read floor`);
+  lines.push(dim("  the avoidable share is unknowable from logs (API-equivalent, not your bill)"));
   lines.push(
     `  first-touch (unavoidable cache build, shown separately, never summed): ${fmtUSD(finding.firstTouchUsd)}`
   );
@@ -60,13 +62,13 @@ export function renderCard(finding: Finding): string {
     );
   }
   lines.push("");
-  lines.push(RULE);
+  lines.push(dim(RULE));
   lines.push(
     `one power user's corpus — ${fmtCount(finding.catalogCount)} skills, ${fmtCount(finding.sessionCount)} sessions — run it on yours:`
   );
-  lines.push("  npx trifola");
-  lines.push("reads local disk only, uploads nothing.");
-  lines.push("Claude Code only \u2014 the macOS app also reads Codex.");
+  lines.push("  " + teal(bold("npx trifola")));
+  lines.push(dim("reads local disk only, uploads nothing."));
+  lines.push(dim("Claude Code only \u2014 the macOS app also reads Codex."));
   return lines.join("\n");
 }
 

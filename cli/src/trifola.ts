@@ -17,6 +17,8 @@ import { scanUserSkills } from "./skills.js";
 import { scanProjects } from "./transcripts.js";
 import { buildFinding } from "./ledger.js";
 import { renderCard, renderJSON, HELP_TEXT } from "./card.js";
+import { spin } from "./spinner.js";
+import { fmtCount } from "./format.js";
 
 function run(argv: string[]): void {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -26,9 +28,14 @@ function run(argv: string[]): void {
 
   const asJson = argv.includes("--json");
   const claudeDir = resolveClaudeDir();
+  const spinner = spin("reading your skill catalog…");
   const skills = scanUserSkills(skillsDirOf(claudeDir));
-  const corpus = scanProjects(projectsDirOf(claudeDir));
+  const corpus = scanProjects(projectsDirOf(claudeDir), (done, total) => {
+    spinner.update(`reading ${fmtCount(done + 1)} of ${fmtCount(total)} transcripts · nothing leaves this machine`);
+  });
+  spinner.update("pricing at public API rates…");
   const finding = buildFinding(skills, corpus);
+  spinner.done();
 
   if (argv.includes("--list-dead")) {
     // Local prune-list mode: real skill ids, one per line. Deliberately NOT part
