@@ -93,14 +93,13 @@ open dist/trifola.app
 Requires macOS 15+ and a Swift 6 toolchain. Zero external dependencies.
 
 **Just the numbers, no app** — the CLI audit (dead-skill count + wasted-resend estimate) runs
-straight from the clone with nothing to install (zero dependencies), and uploads nothing:
+anywhere Node does — macOS, Linux, WSL — reads local files only, and uploads nothing:
 
 ```bash
-node cli/dist/trifola.js
+npx trifola
 ```
 
-Runs anywhere Node does — macOS, Linux, WSL. (An `npx trifola` one-liner lands once the npm
-package is published.)
+(Or straight from the clone, zero dependencies: `node cli/dist/trifola.js`.)
 
 > **On signing:** trifola is an indie project without a paid Apple Developer certificate, so
 > pre-built downloads aren't notarized. **Building from source (above) runs with no warnings.**

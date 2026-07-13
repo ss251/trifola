@@ -1,12 +1,12 @@
 # trifola CLI
 
-Run it straight from the clone — zero dependencies, nothing to install:
+One line, nothing to install:
 
 ```bash
-node cli/dist/trifola.js
+npx trifola
 ```
 
-(An `npx trifola` one-liner lands once the npm package is published.)
+(Or straight from the clone, zero dependencies: `node cli/dist/trifola.js`.)
 
 By default, it prints a one-screen, anonymized finding card for your local
 Claude Code corpus: dead-skill counts, estimated prompt tax, and re-sent
