@@ -5,6 +5,8 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-13
+
 ### Added
 - **Dual-provider ingestion** — trifola now reads `~/.codex` natively alongside `~/.claude`: a
   tagged-union rollout parser (`.jsonl` + bounded `.jsonl.zst`), Codex session titles from the
@@ -85,4 +87,5 @@ Initial public tree.
 - **Headless `--render-*` harness** — a synthetic-fixture screenshot factory (also the CI-vs-version and demo surface).
 - **Personal-PII CI lint** — fails the build on configured personal identifiers or private paths.
 
-[Unreleased]: https://github.com/ss251/trifola/commits/main
+[Unreleased]: https://github.com/ss251/trifola/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ss251/trifola/releases/tag/v0.2.0
