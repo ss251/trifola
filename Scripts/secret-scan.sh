@@ -74,7 +74,10 @@ EXCLUDES=(--binary-files=without-match -I
   --exclude='REPORT-*.md'
   # External desktop-tool state written into the cwd; gitignored, so it can
   # never enter the public tree — excluded to keep the local gate signal clean.
-  --exclude-dir=.hatch-pet)
+  --exclude-dir=.hatch-pet
+  # Local launch-video working dirs + agent work orders: never committed (gitignored),
+  # and they legitimately quote the banned strings as instructions about the banlist.
+  --exclude-dir=brag-output --exclude-dir=brag-output-codex --exclude-dir=handoffs)
 
 fail=0
 
