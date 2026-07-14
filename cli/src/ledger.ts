@@ -5,7 +5,7 @@
 // leak/first-touch totals (Audit.swift) together for a single-shot CLI.
 
 import type { Skill } from "./skills.js";
-import type { CorpusStats } from "./transcripts.js";
+import type { CorpusStats, ProviderNumbers } from "./transcripts.js";
 import { costOfUsage, resolvedRate, reSentContextDollarsOfUsage, firstTouchDollarsOfUsage } from "./pricing.js";
 
 /**
@@ -26,6 +26,8 @@ export interface Finding {
   catalogCount: number;
   /** Interactive (non-subagent) session transcripts scanned. */
   sessionCount: number;
+  /** Claude sessions are the denominator for skill-catalog findings. */
+  claudeSessionCount: number;
   /** Subagent transcript files scanned — disclosed next to the denominator, never blended. */
   subagentRunCount: number;
   /** Cumulative prompt-tax cost across the scanned interactive sessions. */
@@ -34,6 +36,11 @@ export interface Finding {
   taxUsdPerSession: number;
   /** Total API-equivalent usage value across all deduped entries. */
   usageValueUsd: number;
+  usageValueByProvider: ProviderNumbers<number>;
+  totalInputTokensByProvider: ProviderNumbers<number>;
+  usageEntriesByProvider: ProviderNumbers<number>;
+  sessionsByProvider: ProviderNumbers<number>;
+  subagentRunsByProvider: ProviderNumbers<number>;
   /** Fresh-input premium above an all-cache-read floor, USD. */
   freshInputPremiumUsd: number;
   /** Unavoidable cache-build cost (5m + 1h write slices), USD — shown separately, never summed with the premium. */
@@ -46,6 +53,7 @@ export interface Finding {
   usageEntries: number;
   /** Entries explicitly marked fast/batch (or another non-standard mode). */
   unsupportedPricingModeEntries: number;
+  skippedCompressed: number;
   /** Sorted ids of the never-fired skills. LOCAL-ONLY detail: surfaced solely
    * behind `--list-dead` — never in the anonymized share card or default JSON. */
   deadNames: string[];
@@ -68,9 +76,10 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
   const deadPromptTaxTokens = dead.reduce((sum, sk) => sum + estimateDescriptionTokens(sk.description), 0);
 
   const sessionCount = corpus.sessionCount;
+  const claudeSessionCount = corpus.sessionsByProvider.claude;
   const subagentRunCount = corpus.fileCount - corpus.sessionCount;
   const taxUsdPerSession = (deadPromptTaxTokens / 1_000_000) * (SONNET_TIER_INPUT_RATE * CACHE_READ_MULTIPLIER);
-  const taxUsd = taxUsdPerSession * sessionCount;
+  const taxUsd = taxUsdPerSession * claudeSessionCount;
 
   let usageValueUsd = 0;
   let freshInputPremiumUsd = 0;
@@ -83,25 +92,48 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
       firstTouchUsd += firstTouchDollarsOfUsage(usage, rate);
     }
   }
+  const usageValueByProvider: ProviderNumbers<number> = { claude: 0, codex: 0 };
+  for (const provider of ["claude", "codex"] as const) {
+    for (const [day, byModel] of corpus.usageByProviderDayModel[provider]) {
+      for (const [model, usage] of byModel) {
+        usageValueByProvider[provider] += costOfUsage(usage, resolvedRate(model, day));
+      }
+    }
+  }
 
   const totalUsage = corpus.totalUsage;
   const totalInput = totalUsage.inputTokens + totalUsage.cacheCreateTokens + totalUsage.cacheReadTokens;
+  const totalInputTokensByProvider: ProviderNumbers<number> = { claude: 0, codex: 0 };
+  for (const provider of ["claude", "codex"] as const) {
+    const usage = corpus.totalUsageByProvider[provider];
+    totalInputTokensByProvider[provider] = usage.inputTokens + usage.cacheCreateTokens + usage.cacheReadTokens;
+  }
   const cacheHitRatePct = totalInput > 0 ? Math.round((totalUsage.cacheReadTokens / totalInput) * 100) : 0;
 
   return {
     deadCount,
     catalogCount,
     sessionCount,
+    claudeSessionCount,
     subagentRunCount,
+    sessionsByProvider: { ...corpus.sessionsByProvider },
+    subagentRunsByProvider: {
+      claude: corpus.filesByProvider.claude - corpus.sessionsByProvider.claude,
+      codex: corpus.filesByProvider.codex - corpus.sessionsByProvider.codex,
+    },
     taxUsd,
     taxUsdPerSession,
     usageValueUsd,
+    usageValueByProvider,
+    totalInputTokensByProvider,
+    usageEntriesByProvider: { ...corpus.usageEntriesByProvider },
     freshInputPremiumUsd,
     firstTouchUsd,
     cacheHitRatePct,
     totalInputTokens: totalInput,
     usageEntries: corpus.totalDedupedEntries,
     unsupportedPricingModeEntries: corpus.unsupportedPricingModeEntries,
+    skippedCompressed: corpus.skippedCompressed,
     deadNames: dead.map((sk) => sk.id).sort(),
   };
 }

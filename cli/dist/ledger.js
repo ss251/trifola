@@ -28,9 +28,10 @@ export function buildFinding(catalog, corpus) {
     const catalogCount = catalog.length;
     const deadPromptTaxTokens = dead.reduce((sum, sk) => sum + estimateDescriptionTokens(sk.description), 0);
     const sessionCount = corpus.sessionCount;
+    const claudeSessionCount = corpus.sessionsByProvider.claude;
     const subagentRunCount = corpus.fileCount - corpus.sessionCount;
     const taxUsdPerSession = (deadPromptTaxTokens / 1_000_000) * (SONNET_TIER_INPUT_RATE * CACHE_READ_MULTIPLIER);
-    const taxUsd = taxUsdPerSession * sessionCount;
+    const taxUsd = taxUsdPerSession * claudeSessionCount;
     let usageValueUsd = 0;
     let freshInputPremiumUsd = 0;
     let firstTouchUsd = 0;
@@ -42,23 +43,46 @@ export function buildFinding(catalog, corpus) {
             firstTouchUsd += firstTouchDollarsOfUsage(usage, rate);
         }
     }
+    const usageValueByProvider = { claude: 0, codex: 0 };
+    for (const provider of ["claude", "codex"]) {
+        for (const [day, byModel] of corpus.usageByProviderDayModel[provider]) {
+            for (const [model, usage] of byModel) {
+                usageValueByProvider[provider] += costOfUsage(usage, resolvedRate(model, day));
+            }
+        }
+    }
     const totalUsage = corpus.totalUsage;
     const totalInput = totalUsage.inputTokens + totalUsage.cacheCreateTokens + totalUsage.cacheReadTokens;
+    const totalInputTokensByProvider = { claude: 0, codex: 0 };
+    for (const provider of ["claude", "codex"]) {
+        const usage = corpus.totalUsageByProvider[provider];
+        totalInputTokensByProvider[provider] = usage.inputTokens + usage.cacheCreateTokens + usage.cacheReadTokens;
+    }
     const cacheHitRatePct = totalInput > 0 ? Math.round((totalUsage.cacheReadTokens / totalInput) * 100) : 0;
     return {
         deadCount,
         catalogCount,
         sessionCount,
+        claudeSessionCount,
         subagentRunCount,
+        sessionsByProvider: { ...corpus.sessionsByProvider },
+        subagentRunsByProvider: {
+            claude: corpus.filesByProvider.claude - corpus.sessionsByProvider.claude,
+            codex: corpus.filesByProvider.codex - corpus.sessionsByProvider.codex,
+        },
         taxUsd,
         taxUsdPerSession,
         usageValueUsd,
+        usageValueByProvider,
+        totalInputTokensByProvider,
+        usageEntriesByProvider: { ...corpus.usageEntriesByProvider },
         freshInputPremiumUsd,
         firstTouchUsd,
         cacheHitRatePct,
         totalInputTokens: totalInput,
         usageEntries: corpus.totalDedupedEntries,
         unsupportedPricingModeEntries: corpus.unsupportedPricingModeEntries,
+        skippedCompressed: corpus.skippedCompressed,
         deadNames: dead.map((sk) => sk.id).sort(),
     };
 }

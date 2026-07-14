@@ -51,6 +51,18 @@ put(["claude-3-5-haiku"], 0.8, 4);
 put(["claude-3-7-sonnet", "claude-3-5-sonnet", "claude-3-sonnet"], 3, 15);
 put(["claude-3-opus"], 15, 75);
 put(["claude-3-haiku"], 0.25, 1.25);
+// OpenAI Codex seed — exact values from Pricing.swift's provider-authoritative table.
+put(["gpt-5.6-sol"], 5, 30);
+put(["gpt-5.6-terra"], 2.5, 15);
+put(["gpt-5.6-luna"], 1, 6);
+put(["gpt-5.5"], 5, 30);
+put(["gpt-5.5-pro"], 30, 180);
+put(["gpt-5.4"], 2.5, 15);
+put(["gpt-5.4-mini"], 0.75, 4.5);
+put(["gpt-5.4-nano"], 0.2, 1.25);
+put(["gpt-5.4-pro"], 30, 180);
+put(["gpt-5.3-codex", "gpt-5.2-codex"], 1.75, 14);
+put(["gpt-5-codex"], 1.25, 10);
 // MARK: - Normalization
 /**
  * Canonical model id: lowercase, provider prefixes gone
@@ -72,6 +84,8 @@ export function normalizeModel(raw) {
     const claudeIdx = m.indexOf("claude-");
     if (claudeIdx !== -1)
         m = m.slice(claudeIdx);
+    if (m.startsWith("openai/"))
+        m = m.slice("openai/".length);
     if (m.length >= 9) {
         const tail = m.slice(-9);
         if (tail[0] === "-" && /^[0-9]{8}$/.test(tail.slice(1))) {
@@ -106,7 +120,9 @@ function rateOnDay(pricing, day) {
     return current;
 }
 function tierOf(raw) {
-    const r = (raw ?? "").toLowerCase();
+    const r = normalizeModel(raw);
+    if (r.startsWith("gpt-") || r.startsWith("codex"))
+        return "codex";
     if (r.includes("opus"))
         return "opus";
     if (r.includes("sonnet"))
@@ -121,6 +137,7 @@ const TIER_RATES = {
     opus: [5, 25],
     sonnet: [3, 15],
     haiku: [1, 5],
+    codex: [5, 30],
     other: [5, 25],
 };
 function tierFallbackRate(tier) {

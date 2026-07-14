@@ -17,6 +17,16 @@ export function resolveClaudeDir(env = process.env) {
     }
     return path.join(os.homedir(), ".claude");
 }
+/** Resolve Codex's approved local-state root. Mirrors CodexPaths.resolve. */
+export function resolveCodexDir(env = process.env, home = os.homedir()) {
+    const override = env.CODEX_HOME;
+    if (override && override.trim().length > 0) {
+        const value = override.trim();
+        return path.resolve(value === "~" ? home : value.startsWith("~/") ? path.join(home, value.slice(2)) : value);
+    }
+    const resolvedHome = env.HOME?.trim() || home;
+    return path.join(resolvedHome, ".codex");
+}
 /** The user-lane skills catalog directory — `<claudeDir>/skills`. */
 export function skillsDirOf(claudeDir) {
     return path.join(claudeDir, "skills");
@@ -24,4 +34,8 @@ export function skillsDirOf(claudeDir) {
 /** The session transcripts root — `<claudeDir>/projects`. */
 export function projectsDirOf(claudeDir) {
     return path.join(claudeDir, "projects");
+}
+/** The only Codex transcript tree the CLI scans. */
+export function codexSessionsDirOf(codexDir) {
+    return path.join(codexDir, "sessions");
 }

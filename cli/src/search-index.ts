@@ -7,7 +7,7 @@ import {
   MAX_ORDERED_TOKENS_PER_DOCUMENT,
   parseSearchBuffer,
   readSearchDocument,
-  searchClaudeProjects,
+  searchCorpora,
   searchMatchForDocument,
   tokenizeSearchText,
   walkJsonlFiles,
@@ -17,7 +17,13 @@ import {
   type SearchMatch,
   type SearchRequest,
   type SearchSummary,
+  type SearchRoots,
+  type SearchProvider,
+  type SearchSourceFile,
+  collectSearchFiles,
 } from "./search.js";
+import { resolveCodexDir, codexSessionsDirOf } from "./config.js";
+import { detectZstd, walkCodexRollouts } from "./codex.js";
 
 export const SEARCH_SCHEMA_VERSION = 3;
 export const CLI_INDEX_FILENAME = "search-index.sqlite3";
@@ -74,6 +80,7 @@ interface StoredDocument {
   prefixHash: bigint;
   lastActivity: string | null;
   conversationTokenCount: number;
+  provider: SearchProvider;
 }
 
 interface StoredFingerprint {
@@ -110,6 +117,7 @@ interface IndexedCandidate {
   lastActivity: string | null;
   score: number;
   exactPhrase: boolean;
+  provider: SearchProvider;
 }
 
 interface AppIndexSnapshot {
@@ -167,20 +175,32 @@ export async function runTieredSearch(
   } = {},
 ): Promise<TieredSearchResult> {
   const sqlite = detectNodeSqlite(options.sqliteLoader ?? defaultLoader);
+  const environment = options.environment ?? process.env;
+  const home = options.home ?? os.homedir();
+  const codexHome = resolveCodexDir(environment, home);
+  const roots: SearchRoots = {
+    claude: projectsDir,
+    codex: codexSessionsDirOf(codexHome),
+    codexHome,
+  };
+  const compressed = walkCodexRollouts(roots.codex).filter((file) => file.endsWith(".jsonl.zst")).length;
+  if (compressed > 0 && !detectZstd()) {
+    callbacks.onNotice?.(`${compressed} compressed rollouts skipped — Node <22.15`);
+  }
   if (!sqlite) {
     callbacks.onTier?.({
       tier: 3,
       engine: "scan",
       detail: "no index available on this Node — searching by scan (Node 22.5+ enables the index)",
     });
-    const summary = searchClaudeProjects(projectsDir, request, callbacks.onMatch, callbacks.onProgress);
+    const summary = searchCorpora(roots, request, callbacks.onMatch, callbacks.onProgress);
     return { ...summary, tier: 3, engine: "scan", indexBuilt: false };
   }
 
   const paths = resolveSearchIndexPaths(
-    options.environment ?? process.env,
+    environment,
     options.platform ?? process.platform,
-    options.home ?? os.homedir(),
+    home,
   );
 
   if (!request.rebuildIndex) {
@@ -193,7 +213,7 @@ export async function runTieredSearch(
         detail: `app index (read-only) · ${paths.app}`,
       });
       try {
-        const summary = queryIndex(app.database, projectsDir, request, "app-index", callbacks.onMatch);
+        const summary = queryIndex(app.database, roots, request, "app-index", callbacks.onMatch);
         return { ...summary, tier: 1, engine: "app-index", indexPath: paths.app, indexBuilt: false };
       } finally {
         app.database.close();
@@ -228,11 +248,11 @@ export async function runTieredSearch(
       indexPath: paths.cli,
       detail: `CLI index cold start · serving this search by scan while building ${paths.cli}`,
     });
-    const summary = searchClaudeProjects(projectsDir, request, callbacks.onMatch, callbacks.onProgress);
+    const summary = searchCorpora(roots, request, callbacks.onMatch, callbacks.onProgress);
     try {
       const database = openWritableIndex(sqlite, paths.cli);
       try {
-        const update = await updateIndex(database, projectsDir);
+        const update = await updateIndex(database, roots);
         callbacks.onNotice?.("index built — next searches are instant.");
         return {
           ...summary,
@@ -255,14 +275,14 @@ export async function runTieredSearch(
   try {
     const database = openWritableIndex(sqlite, paths.cli);
     try {
-      const update = await updateIndex(database, projectsDir);
+      const update = await updateIndex(database, roots);
       callbacks.onTier?.({
         tier: 2,
         engine: "cli-index",
         indexPath: paths.cli,
         detail: `CLI index · ${paths.cli}`,
       });
-      const summary = queryIndex(database, projectsDir, request, "cli-index", callbacks.onMatch);
+      const summary = queryIndex(database, roots, request, "cli-index", callbacks.onMatch);
       return {
         ...summary,
         tier: 2,
@@ -283,11 +303,11 @@ export async function runTieredSearch(
       indexPath: paths.cli,
       detail: `CLI index recovery · serving this search by scan while rebuilding ${paths.cli}`,
     });
-    const summary = searchClaudeProjects(projectsDir, request, callbacks.onMatch, callbacks.onProgress);
+    const summary = searchCorpora(roots, request, callbacks.onMatch, callbacks.onProgress);
     try {
       const database = openWritableIndex(sqlite, paths.cli);
       try {
-        const update = await updateIndex(database, projectsDir);
+        const update = await updateIndex(database, roots);
         callbacks.onNotice?.("index built — next searches are instant.");
         return { ...summary, tier: 2, engine: "scan", indexPath: paths.cli, indexBuilt: true, update };
       } finally {
@@ -424,10 +444,13 @@ function openWritableIndex(sqlite: SqliteModule, databasePath: string): Database
   return database;
 }
 
-export async function updateIndex(database: DatabaseSync, projectsDir: string): Promise<IndexUpdateStats> {
+export async function updateIndex(database: DatabaseSync, roots: SearchRoots | string): Promise<IndexUpdateStats> {
+  const resolvedRoots: SearchRoots = typeof roots === "string"
+    ? { claude: roots, codex: path.join(roots, ".codex-disabled"), codexHome: path.dirname(roots) }
+    : roots;
   const existing = loadStoredFingerprints(database);
-  const files = walkJsonlFiles(projectsDir);
-  const current = new Set(files);
+  const files = collectSearchFiles(resolvedRoots);
+  const current = new Set(files.map((source) => source.filePath));
   const stats: IndexUpdateStats = { rebuilt: 0, appended: 0, reused: 0, removed: 0, sourceBytesRead: 0 };
 
   database.exec("BEGIN IMMEDIATE");
@@ -440,8 +463,8 @@ export async function updateIndex(database: DatabaseSync, projectsDir: string): 
       }
     }
 
-    for (const filePath of files) {
-      const absolute = filePath;
+    for (const source of files) {
+      const absolute = source.filePath;
       const fingerprint = existing.get(absolute);
       let metadata: fs.BigIntStats;
       try {
@@ -454,7 +477,7 @@ export async function updateIndex(database: DatabaseSync, projectsDir: string): 
         continue;
       }
       const old = fingerprint ? loadStoredDocument(database, fingerprint.key) : undefined;
-      const change = prepareChange(absolute, projectsDir, metadata, old);
+      const change = prepareChange(source, metadata, old);
       if (!change) continue;
       applyChange(database, change);
       stats.sourceBytesRead += change.sourceBytesRead;
@@ -470,18 +493,19 @@ export async function updateIndex(database: DatabaseSync, projectsDir: string): 
 }
 
 function prepareChange(
-  filePath: string,
-  projectsDir: string,
+  source: SearchSourceFile,
   metadata: fs.BigIntStats,
   old?: StoredDocument,
 ): PreparedChange | null {
+  const filePath = source.filePath;
   const seed: SearchDocumentSeed | undefined = old ? {
     sessionId: old.sessionId,
     title: old.title,
     cwd: old.cwd,
     lastActivity: old.lastActivity,
+    provider: old.provider,
   } : undefined;
-  const canAppend = old
+  const canAppend = source.provider === "claude" && old
     && metadata.size > old.fileSize
     && old.parsedOffset <= metadata.size
     && prefixHash(filePath, old.prefixLength) === old.prefixHash;
@@ -489,7 +513,7 @@ function prepareChange(
   if (canAppend && old) {
     const suffix = readFromOffset(filePath, old.parsedOffset);
     if (!suffix) return null;
-    const parsed = parseSearchBuffer(suffix, filePath, projectsDir, seed);
+    const parsed = parseSearchBuffer(suffix, filePath, source.root, seed);
     const rows = tokenRows(parsed, Math.max(0, MAX_ORDERED_TOKENS_PER_DOCUMENT - old.conversationTokenCount));
     return makePreparedChange({
       old,
@@ -506,13 +530,12 @@ function prepareChange(
     });
   }
 
+  const parsed = source.provider === "claude"
+    ? readSearchDocument(filePath, source.root)
+    : readSearchDocument(filePath, source.root, { provider: "codex", sessionId: "", title: "", cwd: "", lastActivity: null });
+  if (!parsed) return null;
   let data: Buffer;
-  try {
-    data = fs.readFileSync(filePath);
-  } catch {
-    return null;
-  }
-  const parsed = parseSearchBuffer(data, filePath, projectsDir);
+  try { data = fs.readFileSync(filePath); } catch { return null; }
   const rows = tokenRows(parsed, MAX_ORDERED_TOKENS_PER_DOCUMENT);
   const prefixLength = Math.min(data.length, 4_096);
   return makePreparedChange({
@@ -544,7 +567,7 @@ function makePreparedChange(input: {
   sourceBytesRead: number;
 }): PreparedChange {
   const document = input.document;
-  const key = ["claude", "local", document.sessionId, document.filePath].join("\u0001");
+  const key = [document.provider, "local", document.sessionId, document.filePath].join("\u0001");
   const metadataTokens = tokenizeSearchText([document.title, document.project, document.cwd].join(" "));
   return {
     oldKey: input.old?.key,
@@ -586,7 +609,7 @@ function applyChange(database: DatabaseSync, change: PreparedChange): void {
   `).run(
     change.key,
     change.document.sessionId,
-    "claude",
+    change.document.provider,
     change.document.project,
     change.document.cwd,
     change.document.title,
@@ -630,7 +653,7 @@ function tokenRows(document: SearchDocument, remaining: number): { rows: string[
 function loadStoredFingerprints(database: DatabaseSync): Map<string, StoredFingerprint> {
   const statement = database.prepare(`
     SELECT key, file_path, file_size, modified_ns
-    FROM documents WHERE provider = 'claude'
+    FROM documents
   `);
   statement.setReadBigInts(true);
   const arrayRows = typeof statement.setReturnArrays === "function";
@@ -652,7 +675,7 @@ function loadStoredFingerprints(database: DatabaseSync): Map<string, StoredFinge
 
 function loadStoredDocument(database: DatabaseSync, key: string): StoredDocument | undefined {
   const statement = database.prepare(`
-    SELECT key, session_id, project, cwd, title, file_path, file_size,
+    SELECT key, session_id, provider, project, cwd, title, file_path, file_size,
            modified_ns, parsed_offset, prefix_length, prefix_hash,
            last_activity, conversation_token_count
     FROM documents WHERE key = ?
@@ -663,6 +686,7 @@ function loadStoredDocument(database: DatabaseSync, key: string): StoredDocument
   return {
       key: String(row.key),
       sessionId: String(row.session_id),
+      provider: String(row.provider) as SearchProvider,
       project: String(row.project),
       cwd: String(row.cwd),
       title: String(row.title),
@@ -681,7 +705,7 @@ function loadStoredDocument(database: DatabaseSync, key: string): StoredDocument
 
 function queryIndex(
   database: DatabaseSync,
-  projectsDir: string,
+  roots: SearchRoots,
   request: SearchRequest,
   engine: "app-index" | "cli-index",
   onMatch: (match: SearchMatch) => void,
@@ -701,13 +725,13 @@ function queryIndex(
     ? []
     : candidateKeys.length <= 900
       ? database.prepare(`
-          SELECT key, session_id, project, cwd, title, file_path, last_activity
+          SELECT key, session_id, provider, project, cwd, title, file_path, last_activity
           FROM documents
-          WHERE provider = 'claude' AND key IN (${candidateKeys.map(() => "?").join(",")})
+          WHERE key IN (${candidateKeys.map(() => "?").join(",")})
         `).all(...candidateKeys)
       : database.prepare(`
-          SELECT key, session_id, project, cwd, title, file_path, last_activity
-          FROM documents WHERE provider = 'claude'
+          SELECT key, session_id, provider, project, cwd, title, file_path, last_activity
+          FROM documents
         `).all();
   const ranked: IndexedCandidate[] = [];
   for (const row of rows) {
@@ -732,6 +756,7 @@ function queryIndex(
       lastActivity,
       score: terms.length * 25 + recency + (exactPhrase ? 1_000 : 0),
       exactPhrase,
+      provider: String(row.provider) as SearchProvider,
     });
   }
   ranked.sort((left, right) => {
@@ -744,7 +769,8 @@ function queryIndex(
   let emitted = 0;
   for (const candidate of ranked) {
     if (emitted >= request.limit) break;
-    const parsed = readSearchDocument(candidate.filePath, projectsDir, {
+    const parsed = readSearchDocument(candidate.filePath, candidate.provider === "claude" ? roots.claude : roots.codex, {
+      provider: candidate.provider,
       sessionId: candidate.sessionId,
       title: candidate.title,
       cwd: candidate.cwd,
@@ -770,7 +796,7 @@ function queryIndex(
     onMatch(match);
     emitted += 1;
   }
-  return { scannedFiles: scalarCount(database, "SELECT count(*) AS value FROM documents WHERE provider = 'claude'"), emitted };
+  return { scannedFiles: scalarCount(database, "SELECT count(*) AS value FROM documents"), emitted };
 }
 
 function matchingDocuments(database: DatabaseSync, value: string): Set<string> {
@@ -779,7 +805,7 @@ function matchingDocuments(database: DatabaseSync, value: string): Set<string> {
     FROM search_fts
     JOIN search_rows r ON r.rowid = search_fts.rowid
     JOIN documents d ON d.key = r.document_key
-    WHERE search_fts MATCH ? AND r.scope = 'conversation' AND d.provider = 'claude'
+    WHERE search_fts MATCH ? AND r.scope = 'conversation'
   `);
   const quoted = `"${value.replaceAll('"', '""')}"`;
   return new Set(statement.all(quoted).map((row) => String(row.document_key)));

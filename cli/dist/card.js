@@ -17,28 +17,34 @@ export function renderCard(finding) {
         lines.push(renderMark("  "));
         lines.push("");
     }
-    lines.push(bold("trifola") + dim(" — claude code corpus finding"));
+    lines.push(bold("trifola") + dim(" — coding-agent corpus finding"));
     lines.push(dim(RULE));
     if (finding.catalogCount === 0 && finding.sessionCount === 0) {
         lines.push("");
-        lines.push("No Claude Code skills or session transcripts found under this config");
+        lines.push("No Claude Code skills, Claude sessions, or Codex rollouts found under the configured");
         lines.push("directory — the figures below are honestly zero, not an error.");
     }
     lines.push("");
+    lines.push(bold(cream("CORPUS")));
+    lines.push(`  ${fmtCount(finding.sessionCount)} sessions${finding.subagentRunCount > 0
+        ? ` (+${fmtCount(finding.subagentRunCount)} subagent run${finding.subagentRunCount === 1 ? "" : "s"})`
+        : ""} · ${fmtCount(finding.sessionsByProvider.claude)} Claude + ${fmtCount(finding.sessionsByProvider.codex)} Codex`);
+    lines.push("");
     lines.push(bold(cream("DEAD SKILLS")));
     lines.push(`  ${teal(bold(`${fmtCount(finding.deadCount)} of ${fmtCount(finding.catalogCount)}`))} catalog skills never fired, ` +
-        `across ${fmtCount(finding.sessionCount)} sessions${finding.subagentRunCount > 0
-            ? ` (+${fmtCount(finding.subagentRunCount)} subagent run${finding.subagentRunCount === 1 ? "" : "s"})`
+        `across ${fmtCount(finding.claudeSessionCount)} Claude sessions${finding.subagentRunsByProvider.claude > 0
+            ? ` (+${fmtCount(finding.subagentRunsByProvider.claude)} Claude subagent run${finding.subagentRunsByProvider.claude === 1 ? "" : "s"})`
             : ""}.`);
     lines.push(dim("  (explicit Skill-tool + slash-command invocations only — skills auto-"));
     lines.push(dim('  loaded as context aren\'t tracked, so this likely OVERSTATES "dead".)'));
     lines.push("");
     lines.push(bold(cream("EST. USAGE VALUE")));
     lines.push(`  ${teal(bold(fmtUSD(finding.usageValueUsd)))} API-equivalent across the scanned corpus`);
+    lines.push(dim(`  Claude ${fmtUSD(finding.usageValueByProvider.claude)} · Codex ${fmtUSD(finding.usageValueByProvider.codex)}`));
     lines.push("");
     lines.push(bold(cream("PROMPT TAX")));
     lines.push(`  ~${teal(bold(fmtTinyUSD(finding.taxUsdPerSession)))}/session · ${teal(bold(fmtTinyUSD(finding.taxUsd)))} across ` +
-        `${fmtCount(finding.sessionCount)} scanned sessions`);
+        `${fmtCount(finding.claudeSessionCount)} scanned Claude sessions`);
     lines.push(dim("  the dead skills' descriptions still ride every session's prompt —"));
     lines.push(dim("  priced at the cache-read rate (input × 0.10 of a mid-tier model),"));
     lines.push(dim("  not your raw input bill."));
@@ -52,12 +58,15 @@ export function renderCard(finding) {
         lines.push(`  ${fmtCount(finding.unsupportedPricingModeEntries)} entries used fast/batch pricing modes ` +
             "trifola does not yet price — totals may be off for those entries");
     }
+    if (finding.skippedCompressed > 0) {
+        lines.push(`${fmtCount(finding.skippedCompressed)} compressed rollouts skipped — Node <22.15`);
+    }
     lines.push("");
     lines.push(dim(RULE));
     lines.push(`one power user's corpus — ${fmtCount(finding.catalogCount)} skills, ${fmtCount(finding.sessionCount)} sessions — run it on yours:`);
     lines.push("  " + teal(bold("npx trifola")));
     lines.push(dim("reads local disk only, uploads nothing."));
-    lines.push(dim("Claude Code only \u2014 the macOS app also reads Codex."));
+    lines.push(dim("Claude Code + Codex rollouts."));
     return lines.join("\n");
 }
 /** Round a dollar figure to 6 decimal places — enough precision even for tiny
@@ -71,15 +80,30 @@ export function renderJSON(finding) {
         deadSkills: {
             dead: finding.deadCount,
             catalog: finding.catalogCount,
-            sessions: finding.sessionCount,
-            subagentRuns: finding.subagentRunCount,
+            sessions: finding.claudeSessionCount,
+            subagentRuns: finding.subagentRunsByProvider.claude,
             note: "counts explicit Skill-tool + slash-command invocations only; skills auto-loaded as context aren't tracked, so this likely overstates \"dead\"",
         },
-        usageValue: { usd: round6(finding.usageValueUsd), label: "API-equivalent" },
+        sessions: {
+            total: finding.sessionCount,
+            subagentRuns: finding.subagentRunCount,
+            byProvider: {
+                claude: { sessions: finding.sessionsByProvider.claude, subagentRuns: finding.subagentRunsByProvider.claude },
+                codex: { sessions: finding.sessionsByProvider.codex, subagentRuns: finding.subagentRunsByProvider.codex },
+            },
+        },
+        usageValue: {
+            usd: round6(finding.usageValueUsd),
+            label: "API-equivalent",
+            byProvider: {
+                claude: round6(finding.usageValueByProvider.claude),
+                codex: round6(finding.usageValueByProvider.codex),
+            },
+        },
         promptTax: {
             perSessionUsd: round6(finding.taxUsdPerSession),
             totalUsd: round6(finding.taxUsd),
-            sessions: finding.sessionCount,
+            sessions: finding.claudeSessionCount,
             label: "API-equivalent",
             note: "priced at the cache-read rate (input x 0.10 of a mid-tier model), not raw input",
         },
@@ -91,17 +115,28 @@ export function renderJSON(finding) {
             totalInputTokens: finding.totalInputTokens,
             usageEntries: finding.usageEntries,
             unsupportedPricingModeEntries: finding.unsupportedPricingModeEntries,
+            compressedRolloutsSkipped: finding.skippedCompressed,
+            byProvider: {
+                claude: {
+                    totalInputTokens: finding.totalInputTokensByProvider.claude,
+                    usageEntries: finding.usageEntriesByProvider.claude,
+                },
+                codex: {
+                    totalInputTokens: finding.totalInputTokensByProvider.codex,
+                    usageEntries: finding.usageEntriesByProvider.codex,
+                },
+            },
         },
         footer: {
-            corpus: `${finding.catalogCount} skills, ${finding.sessionCount} sessions`,
+            corpus: `${finding.catalogCount} skills, ${finding.sessionCount} sessions (Claude + Codex)`,
             privacy: "reads local disk only, uploads nothing",
         },
         generatedAt: new Date().toISOString(),
     };
 }
-export const HELP_TEXT = `trifola — finding generator for your Claude Code corpus
+export const HELP_TEXT = `trifola — finding generator for your Claude Code + Codex corpus
 
-Reads your local ~/.claude (or $CLAUDE_CONFIG_DIR) and prints a one-screen
+Reads local ~/.claude and ~/.codex (or their environment overrides) and prints a one-screen
 finding: dead skills, prompt tax, and re-sent context — priced at
 API-equivalent rates, never your actual bill. Reads local disk only.
 Uploads nothing.
@@ -112,7 +147,7 @@ Usage:
   npx trifola search --rebuild-index
 
 Search:
-  Searches Claude Code conversation text only: user prompts + assistant prose.
+  Searches Claude Code and Codex conversation text: user prompts + assistant prose.
   Tool calls/results and thinking are excluded. Exact words only; no fuzzy
   matching. Search uses the app's read-only index when available, otherwise a
   separate CLI index on Node 22.5+, with the existing scan fallback on Node 18+.
@@ -131,6 +166,7 @@ Options:
 
 Environment:
   CLAUDE_CONFIG_DIR   Override the Claude Code config directory (default: ~/.claude).
+  CODEX_HOME          Override the Codex config directory (default: ~/.codex).
 
 Index storage:
   macOS: ~/Library/Caches/trifola/search-index.sqlite3

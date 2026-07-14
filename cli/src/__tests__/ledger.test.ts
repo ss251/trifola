@@ -27,14 +27,21 @@ function skill(id: string, opts: { name?: string; description?: string } = {}): 
 }
 
 function corpusWith(opts: { fired?: Record<string, number>; sessionCount?: number }): CorpusStats {
+  const sessionCount = opts.sessionCount ?? 1;
   return {
-    sessionCount: opts.sessionCount ?? 1,
-    fileCount: opts.sessionCount ?? 1,
+    sessionCount,
+    fileCount: sessionCount,
     skillFireCounts: new Map(Object.entries(opts.fired ?? {})),
     totalDedupedEntries: 0,
     unsupportedPricingModeEntries: 0,
     totalUsage: emptyUsage(),
     usageByDayModel: new Map(),
+    sessionsByProvider: { claude: sessionCount, codex: 0 },
+    filesByProvider: { claude: sessionCount, codex: 0 },
+    usageByProviderDayModel: { claude: new Map(), codex: new Map() },
+    totalUsageByProvider: { claude: emptyUsage(), codex: emptyUsage() },
+    usageEntriesByProvider: { claude: 0, codex: 0 },
+    skippedCompressed: 0,
   };
 }
 

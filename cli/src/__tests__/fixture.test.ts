@@ -93,7 +93,7 @@ describe("end-to-end: synthetic fake ~/.claude tree -> exact known finding", () 
       // Denominators always: no bare "NN%" without an adjoining "of <count>".
       assert.match(card, /29% of 5\.8M input tokens served from cache/);
       assert.match(card, /\d+ of \d+ catalog skills/);
-      assert.match(card, /\$0\.000009\/session · \$0\.000018 across 2 scanned sessions/);
+      assert.match(card, /\$0\.000009\/session · \$0\.000018 across 2 scanned Claude sessions/);
       assert.match(card, /fresh-input premium above an all-cache-read floor/);
       assert.match(card, /avoidable share is unknowable from logs/);
       assert.match(card, /1 entries used fast\/batch pricing modes trifola does not yet price/);

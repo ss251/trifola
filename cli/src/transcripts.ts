@@ -16,6 +16,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { normalizeModel, addUsageInPlace, emptyUsage, type UsageTotals } from "./pricing.js";
+import type { CodexScanStats } from "./codex.js";
+
+export type Provider = "claude" | "codex";
+
+export interface ProviderNumbers<T> {
+  claude: T;
+  codex: T;
+}
 
 // MARK: - Per-file accumulator state
 
@@ -24,6 +32,7 @@ interface UsageEntry {
   day: string; // "yyyy-MM-dd" or "" (undated)
   usage: UsageTotals;
   usesUnsupportedPricingMode: boolean;
+  isSidechain: boolean;
 }
 
 interface FileState {
@@ -187,6 +196,7 @@ function processLine(line: string, st: FileState): void {
     day: dayKey,
     usage: { inputTokens, outputTokens, cacheCreateTokens, cacheReadTokens, cacheCreate1hTokens },
     usesUnsupportedPricingMode,
+    isSidechain: rec["isSidechain"] === true,
   });
 }
 
@@ -226,6 +236,18 @@ export interface CorpusStats {
   totalUsage: UsageTotals;
   /** day -> normalized model id -> summed usage — what the pricing catalog prices exactly. */
   usageByDayModel: Map<string, Map<string, UsageTotals>>;
+  /** Provider-specific top-level counts behind the combined card denominator. */
+  sessionsByProvider: ProviderNumbers<number>;
+  /** Provider-specific file counts, including subagent runs. */
+  filesByProvider: ProviderNumbers<number>;
+  /** Provider-specific usage slices for JSON/card dollar breakdowns. */
+  usageByProviderDayModel: ProviderNumbers<Map<string, Map<string, UsageTotals>>>;
+  /** Provider-specific token totals for machine-readable usage breakdowns. */
+  totalUsageByProvider: ProviderNumbers<UsageTotals>;
+  /** Provider-specific deduped billed-usage entry counts. */
+  usageEntriesByProvider: ProviderNumbers<number>;
+  /** Archives honestly omitted because this Node lacks built-in zstd. */
+  skippedCompressed: number;
 }
 
 function newCorpusStats(): CorpusStats {
@@ -237,20 +259,38 @@ function newCorpusStats(): CorpusStats {
     unsupportedPricingModeEntries: 0,
     totalUsage: emptyUsage(),
     usageByDayModel: new Map(),
+    sessionsByProvider: { claude: 0, codex: 0 },
+    filesByProvider: { claude: 0, codex: 0 },
+    usageByProviderDayModel: { claude: new Map(), codex: new Map() },
+    totalUsageByProvider: { claude: emptyUsage(), codex: emptyUsage() },
+    usageEntriesByProvider: { claude: 0, codex: 0 },
+    skippedCompressed: 0,
   };
 }
 
-function mergeFileIntoCorpus(acc: CorpusStats, st: FileState, isSubagent: boolean): void {
+function mergeFileIntoCorpus(
+  acc: CorpusStats,
+  st: FileState,
+  isSubagent: boolean,
+  excludedUsageKeys: Set<string> = new Set(),
+): void {
   acc.fileCount += 1;
-  if (!isSubagent) acc.sessionCount += 1;
+  acc.filesByProvider.claude += 1;
+  if (!isSubagent) {
+    acc.sessionCount += 1;
+    acc.sessionsByProvider.claude += 1;
+  }
 
   for (const [name, n] of st.skillCounts) bump(acc.skillFireCounts, name, n);
   for (const [name, n] of st.commandCounts) bump(acc.skillFireCounts, name, n);
 
-  for (const entry of st.usageByKey.values()) {
+  for (const [key, entry] of st.usageByKey) {
+    if (excludedUsageKeys.has(key)) continue;
     acc.totalDedupedEntries += 1;
+    acc.usageEntriesByProvider.claude += 1;
     if (entry.usesUnsupportedPricingMode) acc.unsupportedPricingModeEntries += 1;
     addUsageInPlace(acc.totalUsage, entry.usage);
+    addUsageInPlace(acc.totalUsageByProvider.claude, entry.usage);
 
     let byModel = acc.usageByDayModel.get(entry.day);
     if (!byModel) {
@@ -262,6 +302,69 @@ function mergeFileIntoCorpus(acc: CorpusStats, st: FileState, isSubagent: boolea
       addUsageInPlace(existing, entry.usage);
     } else {
       byModel.set(entry.model, { ...entry.usage });
+    }
+    let providerModels = acc.usageByProviderDayModel.claude.get(entry.day);
+    if (!providerModels) {
+      providerModels = new Map();
+      acc.usageByProviderDayModel.claude.set(entry.day, providerModels);
+    }
+    const providerExisting = providerModels.get(entry.model);
+    if (providerExisting) addUsageInPlace(providerExisting, entry.usage);
+    else providerModels.set(entry.model, { ...entry.usage });
+  }
+}
+
+/** Merge Codex's provider-native scan into the Claude corpus without allowing
+ * Codex sessions to affect the Claude-only skill census. */
+export function withCodexCorpus(claude: CorpusStats, codex: CodexScanStats): CorpusStats {
+  const result: CorpusStats = {
+    ...claude,
+    skillFireCounts: new Map(claude.skillFireCounts),
+    totalUsage: { ...claude.totalUsage },
+    usageByDayModel: cloneUsageMap(claude.usageByDayModel),
+    sessionsByProvider: { ...claude.sessionsByProvider, codex: codex.sessionCount },
+    filesByProvider: { ...claude.filesByProvider, codex: codex.fileCount },
+    usageByProviderDayModel: {
+      claude: cloneUsageMap(claude.usageByProviderDayModel.claude),
+      codex: cloneUsageMap(codex.usageByDayModel),
+    },
+    totalUsageByProvider: {
+      claude: { ...claude.totalUsageByProvider.claude },
+      codex: { ...codex.totalUsage },
+    },
+    usageEntriesByProvider: {
+      claude: claude.usageEntriesByProvider.claude,
+      codex: codex.totalDedupedEntries,
+    },
+    skippedCompressed: codex.skippedCompressed,
+  };
+  result.sessionCount += codex.sessionCount;
+  result.fileCount += codex.fileCount;
+  result.totalDedupedEntries += codex.totalDedupedEntries;
+  addUsageInPlace(result.totalUsage, codex.totalUsage);
+  mergeUsageMaps(result.usageByDayModel, codex.usageByDayModel);
+  return result;
+}
+
+function cloneUsageMap(source: Map<string, Map<string, UsageTotals>>): Map<string, Map<string, UsageTotals>> {
+  const output = new Map<string, Map<string, UsageTotals>>();
+  for (const [day, models] of source) {
+    output.set(day, new Map([...models].map(([model, usage]) => [model, { ...usage }])));
+  }
+  return output;
+}
+
+function mergeUsageMaps(
+  target: Map<string, Map<string, UsageTotals>>,
+  source: Map<string, Map<string, UsageTotals>>,
+): void {
+  for (const [day, models] of source) {
+    let targetModels = target.get(day);
+    if (!targetModels) target.set(day, targetModels = new Map());
+    for (const [model, usage] of models) {
+      const existing = targetModels.get(model);
+      if (existing) addUsageInPlace(existing, usage);
+      else targetModels.set(model, { ...usage });
     }
   }
 }
@@ -307,6 +410,7 @@ export function scanProjects(
 ): CorpusStats {
   const acc = newCorpusStats();
   const files = walkJsonlFiles(projectsDir);
+  const parsedFiles: Array<{ file: string; state: FileState; subagent: boolean }> = [];
   let filesDone = 0;
   for (const file of files) {
     onProgress?.(filesDone++, files.length);
@@ -316,7 +420,31 @@ export function scanProjects(
     } catch {
       continue; // unreadable/vanished file — not counted, matching Swift's SessionIndex
     }
-    mergeFileIntoCorpus(acc, st, isSubagentPath(file));
+    parsedFiles.push({ file, state: st, subagent: isSubagentPath(file) });
+  }
+
+  // Claude may copy the same stable message.id/requestId usage into multiple
+  // transcripts. Match SessionIndex.reconcileCrossFileUsage: canonicalize to
+  // non-sidechain, then parent transcript, then lexicographic path.
+  const winners = new Map<string, { file: string; rank: [number, number, string] }>();
+  for (const parsed of parsedFiles) {
+    for (const [key, usage] of parsed.state.usageByKey) {
+      if (key.startsWith("#")) continue;
+      const rank: [number, number, string] = [usage.isSidechain ? 1 : 0, parsed.subagent ? 1 : 0, parsed.file];
+      const current = winners.get(key);
+      if (!current || compareRank(rank, current.rank) < 0) winners.set(key, { file: parsed.file, rank });
+    }
+  }
+  for (const parsed of parsedFiles) {
+    const excluded = new Set<string>();
+    for (const key of parsed.state.usageByKey.keys()) {
+      if (!key.startsWith("#") && winners.get(key)?.file !== parsed.file) excluded.add(key);
+    }
+    mergeFileIntoCorpus(acc, parsed.state, parsed.subagent, excluded);
   }
   return acc;
+}
+
+function compareRank(left: [number, number, string], right: [number, number, string]): number {
+  return left[0] - right[0] || left[1] - right[1] || left[2].localeCompare(right[2]);
 }

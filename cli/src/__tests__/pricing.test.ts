@@ -7,6 +7,7 @@ import {
   reSentContextDollarsOfUsage,
   firstTouchDollarsOfUsage,
   cacheHitRateOfUsage,
+  rateFromInputOutput,
   type UsageTotals,
 } from "../pricing.js";
 
@@ -40,6 +41,22 @@ describe("normalizeModel", () => {
 });
 
 describe("resolvedRate — catalog + date-dependent Sonnet 5", () => {
+  test("Codex catalog rows and unknown GPT fallback match the Swift seed", () => {
+    const rows: Array<[string, number, number]> = [
+      ["gpt-5.6-sol", 5, 30], ["gpt-5.6-terra", 2.5, 15], ["gpt-5.6-luna", 1, 6],
+      ["gpt-5.5", 5, 30], ["gpt-5.5-pro", 30, 180], ["gpt-5.4", 2.5, 15],
+      ["gpt-5.4-mini", 0.75, 4.5], ["gpt-5.4-nano", 0.2, 1.25],
+      ["gpt-5.4-pro", 30, 180], ["gpt-5.3-codex", 1.75, 14],
+      ["gpt-5.2-codex", 1.75, 14], ["gpt-5-codex", 1.25, 10],
+    ];
+    for (const [model, input, output] of rows) {
+      assert.equal(resolvedRate(model).input, input, model);
+      assert.equal(resolvedRate(model).output, output, model);
+    }
+    assert.equal(normalizeModel("openai/GPT-5.4"), "gpt-5.4");
+    assert.deepEqual(resolvedRate("gpt-future"), rateFromInputOutput(5, 30));
+  });
+
   test("sonnet 5 is date dependent", () => {
     // Intro era (through 2026-08-31): $2 in / $10 out — NOT $3/$15.
     const intro = resolvedRate("claude-sonnet-5", "2026-07-06");

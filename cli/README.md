@@ -1,12 +1,12 @@
 # trifola
 
-Audit your Claude Code corpus in one line — no install, no account, no upload:
+Audit your Claude Code and Codex corpus in one line — no install, no account, no upload:
 
 ```bash
 npx trifola
 ```
 
-It prints a one-screen, anonymized finding card about *your own* `~/.claude`:
+It prints a one-screen, anonymized finding card about *your own* `~/.claude` and `~/.codex`:
 
 - **Dead skills** — how many catalog skills never fired across your sessions
   (and what their descriptions still cost by riding every prompt).
@@ -25,8 +25,8 @@ npx trifola search "release checklist" --limit 5
 npx trifola search keychain quota --json
 ```
 
-Search is Claude Code-only (the macOS app searches Claude Code and Codex). It reads user prompts
-and assistant prose, excluding tool calls/results, thinking, and system records. Matching words are
+Search covers both Claude Code and Codex. It reads user prompts and assistant prose, excluding tool
+calls/results, thinking, and system records. Matching words are
 marked in text output; `--json` emits newline-delimited result and final status objects, each labeled
 with the serving `engine`.
 
@@ -42,7 +42,7 @@ Search chooses the fastest available local tier:
 
 The CLI index is stored at `$XDG_CACHE_HOME/trifola/search-index.sqlite3` when XDG cache is set,
 `~/Library/Caches/trifola/search-index.sqlite3` on macOS, or `~/.cache/trifola/search-index.sqlite3`
-on other platforms. It is never stored under `~/.claude`. Rebuild it with:
+on other platforms. It is never stored under either provider's config root. Rebuild it with:
 
 ```bash
 npx trifola search --rebuild-index
@@ -61,14 +61,16 @@ Search output contains real local conversation text. Review it before sharing.
 --json       Print the finding as machine-readable JSON.
 --list-dead  Print never-fired skill IDs, one per line, for local pruning.
 search <terms...> [--limit N] [--json] [--rebuild-index]
-             Stream Claude Code conversation-text matches (default limit: 10).
+             Stream Claude Code + Codex conversation-text matches (default limit: 10).
 search --rebuild-index
              Recreate the CLI-owned index without running a query.
 --help, -h   Print usage and exit.
 ```
 
 Set `CLAUDE_CONFIG_DIR` to inspect a Claude Code config directory other than
-`~/.claude`. Runs anywhere Node ≥ 18 does — macOS, Linux, WSL.
+`~/.claude`; set `CODEX_HOME` for a Codex root other than `~/.codex`. Runs anywhere
+Node ≥ 18 does — macOS, Linux, WSL. Node 22.15+ reads `.jsonl.zst` rollouts through
+built-in zstd; older Nodes report how many compressed rollouts they skipped.
 
 ## Privacy
 

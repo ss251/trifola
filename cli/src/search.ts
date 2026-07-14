@@ -1,7 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  codexRolloutIsImported,
+  loadCodexImportManifest,
+  readCodexRollout,
+  parseCodexRollout,
+  walkCodexRollouts,
+} from "./codex.js";
 
-export const SEARCH_SCOPE = "Claude Code conversation text only (user prompts + assistant prose; tool output excluded)";
+export const SEARCH_SCOPE = "Claude Code + Codex conversation text (user prompts + assistant prose; tool output excluded)";
 export const RAW_WARNING = "don't share raw search output without reviewing conversation text";
 export const MAX_ORDERED_TOKENS_PER_DOCUMENT = 20_000;
 
@@ -17,7 +24,7 @@ export interface SearchRequest {
 
 export interface SearchMatch {
   type: "result";
-  provider: "claude";
+  provider: SearchProvider;
   scope: "conversation-text";
   engine: SearchEngine;
   sessionId: string;
@@ -44,6 +51,7 @@ export interface SearchableEvent {
 }
 
 export interface SearchDocumentSeed {
+  provider?: SearchProvider;
   sessionId: string;
   title: string;
   cwd: string;
@@ -51,10 +59,25 @@ export interface SearchDocumentSeed {
 }
 
 export interface SearchDocument extends SearchDocumentSeed {
+  provider: SearchProvider;
   project: string;
   filePath: string;
   events: SearchableEvent[];
   consumedBytes: number;
+}
+
+export type SearchProvider = "claude" | "codex";
+
+export interface SearchRoots {
+  claude: string;
+  codex: string;
+  codexHome: string;
+}
+
+export interface SearchSourceFile {
+  filePath: string;
+  provider: SearchProvider;
+  root: string;
 }
 
 interface FileMatch {
@@ -113,19 +136,33 @@ export function searchClaudeProjects(
   onMatch: (match: SearchMatch) => void,
   onProgress?: (filesDone: number, totalFiles: number, pass: "phrase" | "terms") => void,
 ): SearchSummary {
-  const files = walkJsonlFiles(projectsDir).sort((a, b) => {
-    const aTime = safeMtime(a);
-    const bTime = safeMtime(b);
-    return aTime === bTime ? a.localeCompare(b) : bTime - aTime;
+  return searchCorpora(
+    { claude: projectsDir, codex: path.join(projectsDir, ".codex-disabled"), codexHome: path.dirname(projectsDir) },
+    request,
+    onMatch,
+    onProgress,
+  );
+}
+
+export function searchCorpora(
+  roots: SearchRoots,
+  request: SearchRequest,
+  onMatch: (match: SearchMatch) => void,
+  onProgress?: (filesDone: number, totalFiles: number, pass: "phrase" | "terms") => void,
+): SearchSummary {
+  const files = collectSearchFiles(roots).sort((a, b) => {
+    const aTime = safeMtime(a.filePath);
+    const bTime = safeMtime(b.filePath);
+    return aTime === bTime ? a.filePath.localeCompare(b.filePath) : bTime - aTime;
   });
   if (request.terms.length === 0) return { scannedFiles: files.length, emitted: 0 };
   let emitted = 0;
   let attempts = 0;
   for (const pass of ["phrase", "terms"] as const) {
-    for (const filePath of files) {
+    for (const source of files) {
       onProgress?.(attempts, files.length * 2, pass);
       attempts += 1;
-      const found = scanFile(filePath, projectsDir, request);
+      const found = scanFile(source, request);
       if (!found || found.exactPhrase !== (pass === "phrase")) continue;
       onMatch(found.match);
       emitted += 1;
@@ -161,6 +198,12 @@ export function readSearchDocument(
   projectsDir: string,
   seed?: SearchDocumentSeed,
 ): SearchDocument | null {
+  const provider = seed?.provider ?? "claude";
+  if (provider === "codex") {
+    const read = readCodexRollout(filePath);
+    if (!read.rollout) return null;
+    return codexSearchDocument(read.rollout, filePath, projectsDir, seed);
+  }
   let data: Buffer;
   try {
     data = fs.readFileSync(filePath);
@@ -177,6 +220,9 @@ export function parseSearchBuffer(
   projectsDir: string,
   seed?: SearchDocumentSeed,
 ): SearchDocument {
+  if (seed?.provider === "codex") {
+    return codexSearchDocument(parseCodexRollout(data, path.basename(filePath).replace(/\.jsonl(?:\.zst)?$/, "")), filePath, projectsDir, seed);
+  }
   let sessionId = seed?.sessionId ?? path.basename(filePath, ".jsonl");
   let title = seed?.title ?? "";
   let cwd = seed?.cwd ?? "";
@@ -222,7 +268,11 @@ export function parseSearchBuffer(
   const project = relative.length > 1 ? relative[0]! : path.basename(path.dirname(filePath));
   const fallbackTitle = events.find((event) => event.role === "user")?.text
     .replace(/\s+/g, " ").trim().slice(0, 90) || path.basename(filePath, ".jsonl");
+  if (filePath.split(path.sep).includes("subagents")) {
+    sessionId = `${sessionId}/${path.basename(filePath, ".jsonl")}`;
+  }
   return {
+    provider: "claude",
     sessionId,
     title: title || fallbackTitle,
     project,
@@ -265,7 +315,7 @@ export function searchMatchForDocument(
   const activity = document.lastActivity ?? safeStat(document.filePath)?.mtime.toISOString() ?? null;
   return {
     type: "result",
-    provider: "claude",
+    provider: document.provider,
     scope: "conversation-text",
     engine,
     sessionId: document.sessionId,
@@ -309,11 +359,49 @@ export function containsPhrase(tokens: string[], phrase: string[]): boolean {
   return false;
 }
 
-function scanFile(filePath: string, projectsDir: string, request: SearchRequest): FileMatch | null {
-  const document = readSearchDocument(filePath, projectsDir);
+function scanFile(source: SearchSourceFile, request: SearchRequest): FileMatch | null {
+  const document = source.provider === "codex"
+    ? readSearchDocument(source.filePath, source.root, { provider: "codex", sessionId: "", title: "", cwd: "", lastActivity: null })
+    : readSearchDocument(source.filePath, source.root);
   if (!document) return null;
   const match = searchMatchForDocument(document, request, "scan");
   return match ? { match, exactPhrase: match.exactPhrase } : null;
+}
+
+export function collectSearchFiles(roots: SearchRoots): SearchSourceFile[] {
+  const output: SearchSourceFile[] = walkJsonlFiles(roots.claude).map((filePath) => ({
+    filePath, provider: "claude" as const, root: roots.claude,
+  }));
+  const manifest = loadCodexImportManifest(roots.codexHome);
+  for (const filePath of walkCodexRollouts(roots.codex)) {
+    const read = readCodexRollout(filePath);
+    if (!read.rollout || codexRolloutIsImported(read.rollout, manifest)) continue;
+    output.push({ filePath, provider: "codex", root: roots.codex });
+  }
+  return output;
+}
+
+function codexSearchDocument(
+  rollout: ReturnType<typeof parseCodexRollout>,
+  filePath: string,
+  sessionsDir: string,
+  seed?: SearchDocumentSeed,
+): SearchDocument {
+  const cwd = rollout.cwd || seed?.cwd || "";
+  const project = cwd ? path.basename(cwd) : "—";
+  const fallbackTitle = rollout.events.find((event) => event.role === "user" && !/^\/\S+$/.test(event.text.trim()))?.text
+    .replace(/\s+/g, " ").trim().slice(0, 90) || project || rollout.sessionId;
+  return {
+    provider: "codex",
+    sessionId: rollout.sessionId || seed?.sessionId || path.basename(filePath),
+    title: seed?.title || fallbackTitle,
+    cwd,
+    project,
+    filePath,
+    lastActivity: rollout.lastActivity ?? seed?.lastActivity ?? null,
+    events: rollout.events,
+    consumedBytes: rollout.consumedBytes,
+  };
 }
 
 function searchableEvents(record: any): SearchableEvent[] {
