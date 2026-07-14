@@ -23,8 +23,9 @@ import Foundation
 // - Source-safe: the server never mutates ~/.claude or external systems. The
 //   shared session scanner does maintain an app-local index in Application Support.
 
-/// Injected outcome of the one quota fetch — lets tests and the selfcheck run
-/// the tool without a network (and lets the live path degrade gracefully).
+/// Injected outcome of one provider's quota read — lets tests and the selfcheck
+/// run the tool without network or corpus I/O (and lets each live provider
+/// degrade independently).
 public enum MCPQuotaOutcome: Sendable {
     case snapshot(QuotaSnapshot)
     case unavailable(String)
@@ -37,7 +38,12 @@ public enum MCPQuotaOutcome: Sendable {
 public final class MCPIntrospectionServer {
 
     public static let quotaConsentRequiredMessage =
-        "Claude quota access is off. Enable it in Trifola Settings → Quota."
+        "consent not granted in trifola Settings"
+    public static let codexNoCorpusMessage = "no codex corpus"
+    public static let codexNoRecentRateLimitsMessage = "no recent rate-limit events"
+    public static let claudeEmptySnapshotMessage =
+        "endpoint returned no windows (schema drift?)"
+    public static let codexEmptySnapshotMessage = "rollout carried no quota windows"
 
     // MARK: identity + protocol
 
@@ -54,16 +60,21 @@ public final class MCPIntrospectionServer {
     // MARK: providers
 
     private let sessionsProvider: () -> [SessionSummary]
-    private let quotaProvider: () -> MCPQuotaOutcome
+    private let claudeQuotaProvider: () -> MCPQuotaOutcome
+    private let codexQuotaProvider: () -> MCPQuotaOutcome
     private let now: () -> Date
     private let registeredSessionID: String?
 
     public init(sessions: @escaping () -> [SessionSummary],
                 quota: @escaping () -> MCPQuotaOutcome,
+                codexQuota: @escaping () -> MCPQuotaOutcome = {
+                    .unavailable(MCPIntrospectionServer.codexNoCorpusMessage)
+                },
                 now: @escaping () -> Date = { Date() },
                 registeredSessionID: String? = ProcessInfo.processInfo.environment["CLAUDE_SESSION_ID"]) {
         self.sessionsProvider = sessions
-        self.quotaProvider = quota
+        self.claudeQuotaProvider = quota
+        self.codexQuotaProvider = codexQuota
         self.now = now
         let trimmed = registeredSessionID?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -72,8 +83,9 @@ public final class MCPIntrospectionServer {
 
     /// The live server the `--mcp` flag runs: corpus via the SAME cache-backed
     /// scan the GUI warm-starts from (re-scanned at most every `rescanInterval`
-    /// so a chatty agent doesn't stat thousands of files per tool call), quota
-    /// via the read-only credential + one GET (`ClaudeQuotaFetcher`).
+    /// so a chatty agent doesn't stat thousands of files per tool call), Claude
+    /// quota via the read-only credential + one GET (`ClaudeQuotaFetcher`), and
+    /// Codex quota via the exact rollout reader used by the Quota screen.
     public static func live(
         paths: ClaudePaths = .process,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -98,6 +110,7 @@ public final class MCPIntrospectionServer {
                 return cache
             },
             quota: { blockingQuotaFetch(configDirectory: configRoot) },
+            codexQuota: { blockingCodexQuotaFetch() },
             registeredSessionID: injectedID)
     }
 
@@ -111,6 +124,10 @@ public final class MCPIntrospectionServer {
     /// in hand — past the fetcher's own ~30s network timeout, so a healthy
     /// slow network still succeeds, but a wedged fetch can't hang the server.
     static let quotaFetchTimeout: TimeInterval = 35
+    /// Codex is a local filesystem scan, so it gets a much smaller cap. Keeping
+    /// the two live providers' sequential caps at or below 40 seconds preserves
+    /// the MCP endpoint's pre-Codex worst-case latency budget.
+    static let codexQuotaReadTimeout: TimeInterval = 2
 
     /// The wait cap `blockingQuotaFetch` applies to its semaphore bridge,
     /// pulled out as a small pure/testable seam (plan 09 §4): `true` if the
@@ -151,6 +168,59 @@ public final class MCPIntrospectionServer {
         case .success(let resolved): return .snapshot(resolved.snapshot)
         case .failure(let err): return .unavailable(QuotaStore.describe(err))
         case nil: return .unavailable("fetch did not complete")
+        }
+    }
+
+    /// Consent-gated bridge to the app's Codex quota provider. The consent
+    /// decision happens before `snapshot()` is invoked, so a disabled provider
+    /// cannot enumerate or read rollout files. This remains local-only: the
+    /// shared `CodexQuotaProvider` performs no network request or process spawn.
+    public static func blockingCodexQuotaFetch(
+        provider: any QuotaProvider = CodexQuotaProvider(),
+        consent: Bool? = nil
+    ) -> MCPQuotaOutcome {
+        blockingCodexQuotaFetch(
+            provider: provider,
+            consent: consent,
+            consentProvider: {
+                AppPreferencesStore().load().codexQuotaAccessEnabled
+            })
+    }
+
+    /// Internal seam makes a consent revocation during a suspended read
+    /// deterministic in tests. An explicit consent value is an immutable
+    /// fixture override; the live nil path reads preferences both before and
+    /// after I/O, matching QuotaStore's discard-late-result rule.
+    static func blockingCodexQuotaFetch(
+        provider: any QuotaProvider,
+        consent: Bool?,
+        consentProvider: @escaping @Sendable () -> Bool,
+        timeout: TimeInterval = codexQuotaReadTimeout
+    ) -> MCPQuotaOutcome {
+        func accessAllowed() -> Bool { consent ?? consentProvider() }
+        guard accessAllowed() else {
+            return .unavailable(quotaConsentRequiredMessage)
+        }
+
+        final class Box: @unchecked Sendable {
+            var value: Result<QuotaSnapshot, QuotaProviderFailure>?
+        }
+        let box = Box()
+        let sem = DispatchSemaphore(value: 0)
+        Task.detached {
+            box.value = await provider.snapshot()
+            sem.signal()
+        }
+        let completed = waitBounded(sem, timeout: timeout)
+        guard accessAllowed() else {
+            return .unavailable(quotaConsentRequiredMessage)
+        }
+        guard completed else { return .unavailable("codex quota read timed out") }
+        switch box.value {
+        case .success(let snapshot): return .snapshot(snapshot)
+        case .failure(.noRollouts): return .unavailable(codexNoCorpusMessage)
+        case .failure(.noRateLimits): return .unavailable(codexNoRecentRateLimitsMessage)
+        case nil: return .unavailable("codex quota read did not complete")
         }
     }
 
@@ -212,7 +282,7 @@ public final class MCPIntrospectionServer {
             "instructions": "Forensics over this machine's Claude Code corpus, for agent self-diagnosis mid-run: "
                 + "session_brief, context_tax (next-message warm/cold price + fresh-session advisor), reroutes "
                 + "(silent model flips), cost_today (day spend by model + orchestrator-hog check), quota_windows "
-                + "(real 5h/weekly plan limits). All costs are API-equivalent estimates at catalog rates, not your "
+                + "(real Claude + Codex plan limits, consent-gated per provider). All costs are API-equivalent estimates at catalog rates, not your "
                 + "plan bill. This server never mutates the Claude config root or external systems; it maintains an app-local "
                 + "session index.",
         ]
@@ -477,36 +547,52 @@ public final class MCPIntrospectionServer {
     }
 
     func quotaWindows() -> [String: Any] {
-        switch quotaProvider() {
-        case .unavailable(let reason):
-            return [
-                "available": false,
-                "reason": reason,
-                "note": "plan windows come from Claude Code's OAuth usage endpoint; the credential is read strictly read-only and this tool degrades gracefully without it",
-            ]
-        case .snapshot(let snap):
-            let t = now()
-            return [
-                "available": true,
-                "fetched_at": iso(snap.fetchedAt),
-                "windows": snap.windows.map { w -> [String: Any] in
-                    var d: [String: Any] = [
-                        "title": w.title,
-                        "used_percent": frac(w.usedPercent),
-                    ]
-                    if let r = w.resetsAt {
-                        let runway = max(0, r.timeIntervalSince(t))
-                        d["resets_at"] = iso(r)
-                        d["reset_in_seconds"] = Int(runway)
-                        d["reset_runway"] = fmtAgeShort(runway)
-                    } else {
-                        d["resets_at"] = NSNull()
-                    }
-                    return d
-                },
-                "note": "used_percent is the plan window actually enforced by Anthropic — the one real number in an app of API-equivalent estimates",
-            ]
+        let t = now()
+        func payload(_ provider: Provider, outcome: MCPQuotaOutcome) -> [String: Any] {
+            switch outcome {
+            case .unavailable(let status):
+                return [
+                    "provider": provider.rawValue,
+                    "available": false,
+                    "status": status,
+                    "windows": [[String: Any]](),
+                ]
+            case .snapshot(let snapshot):
+                let available = !snapshot.isEmpty
+                let emptyStatus = provider == .claude
+                    ? Self.claudeEmptySnapshotMessage
+                    : Self.codexEmptySnapshotMessage
+                return [
+                    "provider": provider.rawValue,
+                    "available": available,
+                    "status": available ? "ok" : emptyStatus,
+                    "fetched_at": iso(snapshot.fetchedAt),
+                    "windows": snapshot.windows.map { window -> [String: Any] in
+                        var row: [String: Any] = [
+                            "title": window.title,
+                            "used_fraction": frac(window.usedPercent / 100),
+                            "used_percent": frac(window.usedPercent),
+                        ]
+                        if let resetsAt = window.resetsAt {
+                            let runway = max(0, resetsAt.timeIntervalSince(t))
+                            row["resets_at"] = iso(resetsAt)
+                            row["reset_in_seconds"] = Int(runway)
+                            row["reset_runway"] = fmtAgeShort(runway)
+                        } else {
+                            row["resets_at"] = NSNull()
+                        }
+                        return row
+                    },
+                ]
+            }
         }
+        return [
+            "providers": [
+                Provider.claude.rawValue: payload(.claude, outcome: claudeQuotaProvider()),
+                Provider.codex.rawValue: payload(.codex, outcome: codexQuotaProvider()),
+            ],
+            "note": "Provider quota is consent-gated independently. Claude reads its OAuth usage endpoint; Codex reads local rollout rate-limit events only. A provider is always present, including when consent or data is unavailable.",
+        ]
     }
 
     // MARK: - tool descriptors
@@ -563,7 +649,7 @@ public final class MCPIntrospectionServer {
             [
                 "name": "quota_windows",
                 "title": "Plan quota windows",
-                "description": "The REAL plan rate-limit windows (5-hour session window, weekly all-models, model-scoped weeklies) with percent used and reset runways, read from Claude Code's OAuth usage endpoint (credential read-only). Degrades gracefully to {available:false, reason} when no credentials are present. Takes no arguments.",
+                "description": "Dual-provider REAL plan rate-limit windows from Claude and Codex. Returns {providers:{claude:{provider,available,status,fetched_at?,windows:[{title,used_fraction,used_percent,resets_at,reset_in_seconds?,reset_runway?}]},codex:{...}}}; both provider blocks are always present. Access is consent-gated independently in Trifola Settings before any credential, Keychain, network, or rollout-file touch; unavailable data is reported in that provider's status, never by omission. Claude uses its OAuth usage endpoint; Codex uses local rollout rate-limit events only. Takes no arguments.",
                 "inputSchema": emptySchema,
             ],
         ]
