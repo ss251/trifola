@@ -30,6 +30,13 @@ struct SessionProjectionSnapshot: Sendable, Equatable {
     let generation: Int
 }
 
+struct SearchProjectionSnapshot: Sendable, Equatable {
+    let query: String
+    let results: [SearchResult]
+    let state: SearchIndexState
+    let generation: Int
+}
+
 private struct SessionProjectionCostKey {
     let index: Int
     let cost: Double
@@ -57,6 +64,7 @@ struct DeadlineProjectionSnapshot: Sendable, Equatable {
 final class NavigationSnapshotStore: ObservableObject {
     @Published private(set) var corpus: CorpusProjection?
     @Published private(set) var sessions: SessionProjectionSnapshot?
+    @Published private(set) var search: SearchProjectionSnapshot?
     @Published private(set) var fleet: FleetProjectionSnapshot?
     @Published private(set) var deadlines: DeadlineProjectionSnapshot?
     @Published private(set) var sessionFilter: SessionProjectionFilter
@@ -69,6 +77,8 @@ final class NavigationSnapshotStore: ObservableObject {
         let deadlineRecords: [String: DeadlineRecord]
         let machines: [Machine]
         let liveTerminalSessionIDs: Set<String>
+        let searchIndex: SearchIndex
+        let searchState: SearchIndexState
         let now: Date
     }
 
@@ -78,11 +88,13 @@ final class NavigationSnapshotStore: ObservableObject {
     private var fleetGeneration = 0
     private var deadlineGeneration = 0
     private var sessionTask: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
     private var corpusTask: Task<Void, Never>?
     private var fleetTask: Task<Void, Never>?
     private var deadlineTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var sourceGeneration = 0
+    private var searchGeneration = 0
 
     init(defaults: UserDefaults = .standard,
          initialCorpus: CorpusProjection? = nil) {
@@ -120,6 +132,7 @@ final class NavigationSnapshotStore: ObservableObject {
 
     deinit {
         sessionTask?.cancel()
+        searchTask?.cancel()
         corpusTask?.cancel()
         fleetTask?.cancel()
         deadlineTask?.cancel()
@@ -134,6 +147,8 @@ final class NavigationSnapshotStore: ObservableObject {
         deadlineRecords: [String: DeadlineRecord],
         machines: [Machine],
         liveTerminalSessionIDs: Set<String>,
+        searchIndex: SearchIndex,
+        searchState: SearchIndexState,
         now: Date
     ) {
         sourceGeneration += 1
@@ -145,9 +160,12 @@ final class NavigationSnapshotStore: ObservableObject {
             deadlineRecords: deadlineRecords,
             machines: machines,
             liveTerminalSessionIDs: liveTerminalSessionIDs,
+            searchIndex: searchIndex,
+            searchState: searchState,
             now: now)
         scheduleCorpus()
         scheduleSessions()
+        scheduleSearch()
         scheduleFleet()
         scheduleDeadlines()
     }
@@ -208,6 +226,7 @@ final class NavigationSnapshotStore: ObservableObject {
         sessionFilter = next
         persistSessionFilter(next)
         scheduleSessions()
+        scheduleSearch()
     }
 
     private func persistSessionFilter(_ value: SessionProjectionFilter) {
@@ -295,6 +314,59 @@ final class NavigationSnapshotStore: ObservableObject {
                   let self,
                   self.sessionGeneration == generation else { return }
             self.sessions = result
+        }
+    }
+
+    private func scheduleSearch() {
+        guard let inputs else { return }
+        searchGeneration += 1
+        let generation = searchGeneration
+        let filter = sessionFilter
+        searchTask?.cancel()
+        let query = SearchQuery(filter.query)
+        guard !query.isEmpty else {
+            search = SearchProjectionSnapshot(
+                query: filter.query, results: [], state: inputs.searchState,
+                generation: generation)
+            return
+        }
+        searchTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .userInitiated) {
+                var eligibilityFilter = filter
+                eligibilityFilter.query = ""
+                let eligible = Self.projectSessions(
+                    inputs.sessions,
+                    liveTerminalSessionIDs: inputs.liveTerminalSessionIDs,
+                    filter: eligibilityFilter)
+                let eligibleKeys = Set(eligible.map {
+                    [$0.provider.rawValue, $0.id, $0.filePath]
+                        .joined(separator: "\u{1}")
+                })
+                let candidates = inputs.searchIndex.query(
+                    query, scope: .conversationText, limit: 200,
+                    now: inputs.now).filter {
+                        eligibleKeys.contains([
+                            $0.provider.rawValue, $0.id, $0.filePath
+                        ].joined(separator: "\u{1}"))
+                    }
+                let results = candidates.prefix(20).map {
+                    SearchResult(
+                        candidate: $0,
+                        snippet: SearchSnippetExtractor.snippet(
+                            for: $0, query: query))
+                }
+                return SearchProjectionSnapshot(
+                    query: filter.query,
+                    results: results,
+                    state: inputs.searchState,
+                    generation: generation)
+            }.value
+            guard !Task.isCancelled,
+                  let self,
+                  self.searchGeneration == generation else { return }
+            self.search = result
         }
     }
 

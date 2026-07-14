@@ -256,10 +256,12 @@ function isSubagentPath(filePath) {
  * unreadable files are skipped (never thrown), matching the Swift scan's
  * `try?` culture.
  */
-export function scanProjects(projectsDir) {
+export function scanProjects(projectsDir, onProgress) {
     const acc = newCorpusStats();
     const files = walkJsonlFiles(projectsDir);
+    let filesDone = 0;
     for (const file of files) {
+        onProgress?.(filesDone++, files.length);
         let st;
         try {
             st = processFile(file);

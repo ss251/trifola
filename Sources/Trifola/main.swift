@@ -111,6 +111,14 @@ if let targets = uiHeadlessRenderTargets(
 }
 
 if let targets = uiHeadlessRenderTargets(
+    flag: "--render-search", defaultBase: "/tmp/search", arguments: cliArguments) {
+    MainActor.assumeIsolated {
+        for target in targets { SearchRender.run(to: target.path, dark: target.dark) }
+    }
+    exit(0)
+}
+
+if let targets = uiHeadlessRenderTargets(
     flag: "--render-menubar", defaultBase: "/tmp/menubar", arguments: cliArguments) {
     MainActor.assumeIsolated {
         for target in targets { MenuBarRender.run(to: target.path, dark: target.dark) }

@@ -5,6 +5,15 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Conversation search** — the macOS Sessions field now searches exact words across Claude Code
+  and Codex user prompts plus assistant prose through a separately versioned, incremental local
+  index. Results keep title/path scope distinct from conversation text, reread exact highlighted
+  snippets on demand, blend phrase hits with recency, and explicitly exclude tool output/thinking.
+- **Streaming CLI search** — `npx trifola search <terms...>` scans Claude Code conversation text
+  locally with phrase-first streaming, `--limit N`, and newline-delimited `--json` carrying a raw-
+  output warning. The CLI remains Claude-only; the app covers both providers.
+
 ### Fixed
 - **Cross-surface number honesty** — the app's Overview header now counts top-level sessions
   (matching the npm CLI's denominator) and discloses subagent runs separately

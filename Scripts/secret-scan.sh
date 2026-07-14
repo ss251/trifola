@@ -68,7 +68,7 @@ HOMEPATH_RE='(/Users/|/home/)'
 HOMEPATH_ALLOW='/Users/dev/'
 
 EXCLUDES=(--binary-files=without-match -I
-  --exclude-dir=.git --exclude-dir=.build --exclude-dir=dist --exclude-dir=.swiftpm
+  --exclude=.git --exclude-dir=.git --exclude-dir=.build --exclude-dir=dist --exclude-dir=.swiftpm
   --exclude-dir=node_modules --exclude=secret-scan.sh
   # Local handoff reports are gitignored and never enter the public tree.
   --exclude='REPORT-*.md'

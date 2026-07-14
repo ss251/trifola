@@ -48,6 +48,9 @@ Trifola cloud, no telemetry. Source-auditable.** Event-driven (FSEvents) — no 
 
 ## What it does
 
+- 🔎 **Conversation search** — exact remembered words across Claude Code and Codex user prompts
+  and assistant prose, with truthful snippets reread from disk. Tool calls/results and thinking
+  are excluded; no fuzzy or semantic matching.
 - 🟢 **Attention board** — every session as BLOCKED / WAITING / RUNNING / IDLE, worst-first,
   in a menu-bar glance.
 - 🧾 **Cost-cause audit** — **re-sent context** vs unavoidable first-touch (never summed into one
@@ -97,9 +100,17 @@ anywhere Node does — macOS, Linux, WSL — reads local files only, and uploads
 
 ```bash
 npx trifola
+npx trifola search keychain quota
 ```
 
 (Or straight from the clone, zero dependencies: `node cli/dist/trifola.js`.)
+
+The CLI search is intentionally Claude Code-only. It streams exact phrase matches first, then
+all-term matches, and accepts `--limit N` (default 10) or newline-delimited `--json`. Search covers
+conversation text only: user prompts and assistant prose. Tool calls/results, thinking, and system
+records are excluded. Tokenization uses Unicode word boundaries; unspaced CJK text is generally one
+long token in v1, so remembered substrings inside that run may not match. JSON and text results contain
+real local conversation text—review them before sharing.
 
 > **On signing:** trifola is an indie project without a paid Apple Developer certificate, so
 > pre-built downloads aren't notarized. **Building from source (above) runs with no warnings.**
@@ -165,7 +176,8 @@ workspace in apps without scripting support (Ghostty, multiplexer/workspace apps
 degrades to fronting the app, saying so honestly. Neither touches transcript content.
 
 The npm CLI is narrower: it reads local files only, opens no network connection, and uploads
-nothing. The source is here—please audit it.
+nothing. Its audit card is anonymized, but `search` and `--list-dead` intentionally print raw local
+names/text; review that output before sharing it. The source is here—please audit it.
 
 ## Contributing
 

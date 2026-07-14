@@ -1635,6 +1635,120 @@ enum SessionsRender {
     }
 }
 
+// MARK: - Populated conversation-search render (`--render-search`)
+
+/// The production snippet-row component in an explicit populated search state.
+/// All strings are synthetic; both providers and the exact scope disclosure are
+/// visible without reading a real transcript corpus.
+enum SearchRender {
+    private static let now = SessionsRender.now
+
+    private static func result(
+        id: String, provider: Provider, project: String,
+        age: TimeInterval, role: String, text: String,
+        terms: [String], phrase: Bool
+    ) -> SearchResult {
+        var highlights: [SearchHighlight] = []
+        for term in terms {
+            if let range = text.range(of: term, options: .caseInsensitive) {
+                highlights.append(SearchHighlight(
+                    start: text.distance(from: text.startIndex, to: range.lowerBound),
+                    length: text.distance(from: range.lowerBound, to: range.upperBound)))
+            }
+        }
+        return SearchResult(
+            candidate: SearchCandidate(
+                id: id, provider: provider, project: project,
+                cwd: "/fixture/\(project)",
+                title: "Synthetic search fixture", filePath: "/fixture/\(id).jsonl",
+                lastActivity: now.addingTimeInterval(-age),
+                score: phrase ? 1_080 : 76, exactPhrase: phrase,
+                matchedConversationText: true),
+            snippet: SearchSnippet(
+                text: text, highlights: highlights.sorted { $0.start < $1.start },
+                role: role))
+    }
+
+    private static var results: [SearchResult] {
+        [
+            result(
+                id: "search-claude-1", provider: .claude,
+                project: "desktop-client", age: 8 * 60, role: "You",
+                text: "Check the Keychain quota behavior before the release build.",
+                terms: ["Keychain", "quota"], phrase: true),
+            result(
+                id: "search-codex-2", provider: .codex,
+                project: "account-service", age: 27 * 60, role: "Assistant",
+                text: "The quota guard now reports a bounded Keychain write failure.",
+                terms: ["quota", "Keychain"], phrase: false),
+            result(
+                id: "search-claude-3", provider: .claude,
+                project: "release-tools", age: 3 * 3_600, role: "Assistant",
+                text: "I documented the Keychain storage quota and its retry path.",
+                terms: ["Keychain", "quota"], phrase: false),
+        ]
+    }
+
+    @MainActor
+    static func run(to path: String, dark: Bool) {
+        let content = VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: Theme.blockGap) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Sessions")
+                        .font(Theme.Typography.screenTitle)
+                        .foregroundStyle(Theme.ink)
+                    Text("Search titles, paths, and conversation text · user and assistant prose only")
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(Theme.muted)
+                }
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(Theme.Typography.metadataMedium)
+                        .foregroundStyle(Theme.muted)
+                    Text("keychain quota")
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(Theme.ink)
+                    Spacer()
+                }
+                .padding(.horizontal, Theme.intraCell)
+                .padding(.vertical, Theme.rhythm)
+                .background {
+                    RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                        .fill(Theme.codeFill)
+                    RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                        .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
+                }
+                Text("0 title/path matches")
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(Theme.gutter)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: Theme.micro) {
+                Text("In conversation text")
+                    .font(Theme.Typography.bodyMedium)
+                    .foregroundStyle(Theme.ink)
+                Text("User prompts and assistant prose · tool output excluded")
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.muted)
+                    .padding(.bottom, Theme.rhythm)
+                ForEach(Array(results.enumerated()), id: \.element.id) { index, result in
+                    SearchResultRow(
+                        result: result, isSelected: index == 0,
+                        now: now, onSelect: {})
+                }
+            }
+            .padding(Theme.gutter)
+        }
+        .frame(width: 620, height: 560, alignment: .topLeading)
+        .background(Theme.surfaceWindow)
+        writePNG(content, to: path, dark: dark,
+                 width: 620 + Theme.renderInset * 2)
+    }
+}
+
 // MARK: - Menu-bar popover headless render (`--render-menubar`)
 
 /// A deterministic MenuBarModel fed into the same MenuBarPanel used by the live

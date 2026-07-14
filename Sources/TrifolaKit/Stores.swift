@@ -843,6 +843,13 @@ public struct SessionScanProgress: Sendable, Equatable {
         scanned: 0, totalEstimate: 0, isInProgress: false)
 }
 
+public enum SearchIndexState: Sendable, Equatable {
+    case preparing
+    case rebuilding(previousVersion: Int)
+    case updating
+    case ready
+}
+
 public struct SessionIndex: Sendable {
     struct Entry: Sendable {
         var size: UInt64
@@ -1148,6 +1155,8 @@ public final class SessionStore: ObservableObject {
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var scanProgress: SessionScanProgress = .idle
     @Published public private(set) var scanPresentation: SessionScanPresentationState = .coldScanning
+    @Published public private(set) var searchState: SearchIndexState = .preparing
+    public private(set) var searchIndex = SearchIndex()
     /// Monotonic stamp, bumped on every real `sessions` assignment — lets
     /// derived-value caches (the attention-board memo) detect change with one
     /// Int compare instead of an array walk. Not @Published: it rides the
@@ -1157,6 +1166,7 @@ public final class SessionStore: ObservableObject {
     private var index = SessionIndex()
     private var refreshQueued = false
     private var triedCache = false
+    private var triedSearchCache = false
     /// Monotonic refresh generation — stale progress snapshots are dropped.
     private var refreshGen = 0
     /// Entry count of the largest snapshot applied in the current generation.
@@ -1221,6 +1231,25 @@ public final class SessionStore: ObservableObject {
             }
         }
 
+        if !triedSearchCache {
+            triedSearchCache = true
+            let cacheURL = paths.searchIndexCacheURL
+            let loaded = await Task.detached(priority: .userInitiated) {
+                SearchIndex.load(from: cacheURL)
+            }.value
+            switch loaded {
+            case .ready(let cached):
+                searchIndex = cached
+                searchState = .updating
+            case .versionMismatch(let found):
+                searchState = .rebuilding(previousVersion: found)
+            case .missing, .corrupt:
+                searchState = .preparing
+            }
+        } else if searchState == .ready {
+            searchState = .updating
+        }
+
         let localSources = sources
         let snapshot = index
         let latestProgress = Locked(scanProgress)
@@ -1257,6 +1286,18 @@ public final class SessionStore: ObservableObject {
         if sessions != named {
             sessions = named
             revision += 1
+        }
+
+        let previousSearch = searchIndex
+        let searchUpdate = await Task.detached(priority: .userInitiated) {
+            SearchIndex.update(previousSearch, sessions: named)
+        }.value
+        searchIndex = searchUpdate.index
+        searchState = .ready
+        let searchCacheURL = paths.searchIndexCacheURL
+        let searchSnapshot = searchUpdate.index
+        Task.detached(priority: .utility) {
+            try? searchSnapshot.save(to: searchCacheURL)
         }
         lastRefresh = Date()
         let completed = latestProgress.withLock { $0 }

@@ -150,6 +150,15 @@ Uploads nothing.
 
 Usage:
   npx trifola [options]
+  npx trifola search <terms...> [--limit N] [--json]
+
+Search:
+  Searches Claude Code conversation text only: user prompts + assistant prose.
+  Tool calls/results and thinking are excluded. Exact words only; no fuzzy
+  matching. Results stream in phrase-first, then recency order.
+  --limit N    Maximum results (default: 10).
+  --json       Stream newline-delimited result/status JSON. Contains raw local
+               conversation text — don't share without reviewing it.
 
 Options:
   --json       Print machine-readable JSON instead of the text card.

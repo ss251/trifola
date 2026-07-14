@@ -240,6 +240,7 @@ public struct ClaudePaths: Sendable, Equatable {
     public let root: URL
     public let source: ClaudeConfigLocationSource
     public let sessionIndexCacheURL: URL
+    public let searchIndexCacheURL: URL
 
     public var projects: URL { root.appendingPathComponent("projects", isDirectory: true) }
     public var sessions: URL { root.appendingPathComponent("sessions", isDirectory: true) }
@@ -262,11 +263,14 @@ public struct ClaudePaths: Sendable, Equatable {
     }
 
     public init(root: URL, source: ClaudeConfigLocationSource,
-                sessionIndexCacheURL: URL? = nil) {
+                sessionIndexCacheURL: URL? = nil,
+                searchIndexCacheURL: URL? = nil) {
         self.root = root.standardizedFileURL
         self.source = source
         self.sessionIndexCacheURL = sessionIndexCacheURL
             ?? Self.cacheURL(for: self.root, source: source)
+        self.searchIndexCacheURL = searchIndexCacheURL
+            ?? Self.searchCacheURL(for: self.sessionIndexCacheURL)
     }
 
     public static let process = resolve()
@@ -286,8 +290,14 @@ public struct ClaudePaths: Sendable, Equatable {
                 let path = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 return path.isEmpty ? nil : URL(fileURLWithPath: path)
             }
+        let explicitSearchCache = environment["TRIFOLA_SEARCH_INDEX_CACHE"]
+            .flatMap { value -> URL? in
+                let path = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return path.isEmpty ? nil : URL(fileURLWithPath: path)
+            }
         return ClaudePaths(root: root, source: source,
-                           sessionIndexCacheURL: explicitCache)
+                           sessionIndexCacheURL: explicitCache,
+                           searchIndexCacheURL: explicitSearchCache)
     }
 
     private static func cacheURL(
@@ -307,6 +317,15 @@ public struct ClaudePaths: Sendable, Equatable {
         }
         return base.appendingPathComponent(
             "session-index-\(String(hash, radix: 16)).json")
+    }
+
+    private static func searchCacheURL(for sessionCache: URL) -> URL {
+        let name = sessionCache.lastPathComponent
+        let searchName = name.hasPrefix("session-index")
+            ? "search-index" + String(name.dropFirst("session-index".count))
+            : "search-index.json"
+        return sessionCache.deletingLastPathComponent()
+            .appendingPathComponent(String(searchName))
     }
 }
 

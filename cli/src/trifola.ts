@@ -19,10 +19,72 @@ import { buildFinding } from "./ledger.js";
 import { renderCard, renderJSON, HELP_TEXT } from "./card.js";
 import { spin } from "./spinner.js";
 import { fmtCount } from "./format.js";
+import {
+  parseSearchArgs,
+  searchClaudeProjects,
+  markedSnippet,
+  relativeAge,
+  SEARCH_SCOPE,
+  RAW_WARNING,
+  type SearchMatch,
+} from "./search.js";
+
+function runSearch(argv: string[]): void {
+  const request = parseSearchArgs(argv);
+  const claudeDir = resolveClaudeDir();
+  const spinner = spin("searching Claude Code conversation text…");
+  if (!request.json) {
+    process.stdout.write(`trifola search — ${SEARCH_SCOPE}\n`);
+  }
+  const emit = (match: SearchMatch): void => {
+    if (request.json) {
+      process.stdout.write(JSON.stringify(match) + "\n");
+      return;
+    }
+    process.stdout.write(
+      `${match.title} · ${match.project} · ${relativeAge(match.lastActivity)}\n` +
+        `  ${match.role === "user" ? "You" : "Assistant"}: ${markedSnippet(match)}\n`,
+    );
+  };
+  const summary = searchClaudeProjects(
+    projectsDirOf(claudeDir),
+    request,
+    emit,
+    (done, total, pass) => {
+      spinner.update(
+        `${pass === "phrase" ? "phrase" : "term"} pass · ${fmtCount(done + 1)} of ${fmtCount(total)} file reads · nothing leaves this machine`,
+      );
+    },
+  );
+  spinner.done();
+  if (request.json) {
+    process.stdout.write(
+      JSON.stringify({
+        type: "status",
+        status: summary.scannedFiles === 0 ? "empty-corpus" : summary.emitted === 0 ? "no-matches" : "complete",
+        provider: "claude",
+        scope: "conversation-text",
+        scannedFiles: summary.scannedFiles,
+        emitted: summary.emitted,
+        warning: RAW_WARNING,
+      }) + "\n",
+    );
+  } else if (summary.scannedFiles === 0) {
+    process.stdout.write("No Claude Code session transcripts found under this config directory.\n");
+  } else if (summary.emitted === 0) {
+    process.stdout.write("No matches in Claude Code conversation text.\n");
+  }
+  if (!request.json) process.stdout.write(`Warning: ${RAW_WARNING}.\n`);
+}
 
 function run(argv: string[]): void {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(HELP_TEXT + "\n");
+    return;
+  }
+
+  if (argv[0] === "search") {
+    runSearch(argv.slice(1));
     return;
   }
 

@@ -28,6 +28,7 @@ export function buildFinding(catalog, corpus) {
     const catalogCount = catalog.length;
     const deadPromptTaxTokens = dead.reduce((sum, sk) => sum + estimateDescriptionTokens(sk.description), 0);
     const sessionCount = corpus.sessionCount;
+    const subagentRunCount = corpus.fileCount - corpus.sessionCount;
     const taxUsdPerSession = (deadPromptTaxTokens / 1_000_000) * (SONNET_TIER_INPUT_RATE * CACHE_READ_MULTIPLIER);
     const taxUsd = taxUsdPerSession * sessionCount;
     let usageValueUsd = 0;
@@ -48,6 +49,7 @@ export function buildFinding(catalog, corpus) {
         deadCount,
         catalogCount,
         sessionCount,
+        subagentRunCount,
         taxUsd,
         taxUsdPerSession,
         usageValueUsd,

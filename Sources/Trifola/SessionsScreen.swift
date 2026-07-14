@@ -123,7 +123,7 @@ struct SessionsScreen: View {
                         .font(Theme.Typography.screenTitle)
                         .tracking(-0.55)
                         .foregroundStyle(Theme.ink)
-                    Text("Search projects and task handles · costs are API-rate estimates, not bills")
+                    Text("Search titles, paths, and conversation text · user and assistant prose only")
                         .font(Theme.Typography.body)
                         .foregroundStyle(Theme.muted)
                         .lineLimit(2)
@@ -141,11 +141,19 @@ struct SessionsScreen: View {
                         Image(systemName: "magnifyingglass")
                             .font(Theme.Typography.metadataMedium)
                             .foregroundStyle(Theme.muted)
-                        TextField("Search project, task, path or id…",
+                        TextField("Search title, path or conversation text…",
                                   text: queryBinding)
                             .textFieldStyle(.plain)
                             .font(Theme.Typography.body)
                             .foregroundStyle(Theme.ink)
+                            .onSubmit {
+                                if let result = navigationSnapshots.search?.results.first,
+                                   navigationSnapshots.search?.query == query {
+                                    services.selectedSessionID = result.id
+                                } else if let first = filtered.first {
+                                    services.selectedSessionID = first.id
+                                }
+                            }
                     }
                     .padding(.horizontal, Theme.intraCell)
                     .padding(.vertical, Theme.rhythm)
@@ -199,7 +207,9 @@ struct SessionsScreen: View {
                     }
 
                     HStack {
-                        Text("\(filtered.count) session\(filtered.count == 1 ? "" : "s")")
+                        Text(query.isEmpty
+                             ? "\(filtered.count) session\(filtered.count == 1 ? "" : "s")"
+                             : "\(filtered.count) title/path match\(filtered.count == 1 ? "" : "es")")
                             .font(Theme.Typography.metadata)
                             .foregroundStyle(Theme.muted)
                         Spacer()
@@ -264,6 +274,9 @@ struct SessionsScreen: View {
                                 .foregroundStyle(Theme.muted)
                                 .padding(.vertical, Theme.codePadding)
                         }
+                        if !query.isEmpty {
+                            conversationSearchSection(now: now)
+                        }
                     }
                     .padding(.horizontal, Theme.codePadding)
                     .padding(.top, Theme.intraCell)
@@ -300,6 +313,75 @@ struct SessionsScreen: View {
         }
     }
 
+    @ViewBuilder
+    private func conversationSearchSection(now: Date) -> some View {
+        Divider()
+            .padding(.vertical, Theme.intraCell)
+
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("In conversation text")
+                    .font(Theme.Typography.bodyMedium)
+                    .foregroundStyle(Theme.ink)
+                Text("User prompts and assistant prose · tool output excluded")
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.muted)
+            }
+            Spacer()
+            if services.sessions.searchState == .updating {
+                ProgressView().controlSize(.mini)
+                    .help("Updating conversation search from changed sessions")
+            }
+        }
+        .padding(.horizontal, Theme.intraCell)
+
+        let normalized = SearchQuery(query)
+        if normalized.isEmpty {
+            Text("Enter at least one word. Search uses exact word boundaries; no fuzzy matching.")
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.muted)
+                .padding(.horizontal, Theme.intraCell)
+                .padding(.vertical, Theme.rhythm)
+        } else if let snapshot = navigationSnapshots.search,
+                  snapshot.query == query {
+            if snapshot.results.isEmpty {
+                if services.sessions.searchState == .preparing {
+                    searchProgress("Preparing conversation search…")
+                } else if case .rebuilding = services.sessions.searchState {
+                    searchProgress("Rebuilding conversation search after an index update…")
+                } else {
+                    Text("No matches in conversation text.")
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(Theme.muted)
+                        .padding(.horizontal, Theme.intraCell)
+                        .padding(.vertical, Theme.rhythm)
+                }
+            } else {
+                ForEach(snapshot.results) { result in
+                    SearchResultRow(
+                        result: result,
+                        isSelected: services.selectedSessionID == result.id,
+                        now: now,
+                        onSelect: { services.selectedSessionID = result.id })
+                        .id("search:\(result.candidate.provider.rawValue):\(result.id)")
+                }
+            }
+        } else {
+            searchProgress("Searching conversation text…")
+        }
+    }
+
+    private func searchProgress(_ label: String) -> some View {
+        HStack(spacing: Theme.rhythm) {
+            ProgressView().controlSize(.mini)
+            Text(label)
+                .font(Theme.Typography.metadata)
+                .foregroundStyle(Theme.muted)
+        }
+        .padding(.horizontal, Theme.intraCell)
+        .padding(.vertical, Theme.rhythm)
+    }
+
     private func clearStaleRestorationIfIndexReady() {
         guard services.sessions.scanPresentation == .liveRefreshing,
               !services.sessions.scanProgress.isInProgress else { return }
@@ -327,6 +409,108 @@ struct SessionsScreen: View {
                 detail: "Select any session on the left to see its live transcript, token economics and hand-off controls.")
                 .motionRowTransition()
         }
+    }
+}
+
+struct SearchResultRow: View {
+    let result: SearchResult
+    let isSelected: Bool
+    let now: Date
+    let onSelect: () -> Void
+
+    private var primary: Color { isSelected ? Theme.selectionText : Theme.ink }
+    private var secondary: Color {
+        isSelected ? Theme.selectionText.opacity(0.8) : Theme.muted
+    }
+
+    var body: some View {
+        TapButton(action: onSelect) {
+            HStack(alignment: .top, spacing: Theme.intraCell) {
+                Circle()
+                    .fill(result.candidate.provider == .codex
+                          ? Theme.codexModel : ModelTier.opus.color)
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 5)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: Theme.micro) {
+                    HStack(spacing: Theme.micro) {
+                        Text(result.candidate.project)
+                            .font(Theme.Typography.bodyMedium)
+                            .foregroundStyle(primary)
+                            .lineLimit(1)
+                        Text("· \(result.candidate.provider.label)")
+                            .font(Theme.Typography.metadata)
+                            .foregroundStyle(secondary)
+                        Spacer()
+                        Text(result.candidate.lastActivity.map {
+                            fmtAgeShort(max(0, now.timeIntervalSince($0)))
+                        } ?? "—")
+                            .font(Theme.Typography.metadata)
+                            .monospacedDigit()
+                            .foregroundStyle(secondary)
+                    }
+                    if let snippet = result.snippet {
+                        (Text("\(snippet.role): ")
+                            .font(Theme.Typography.metadataMedium)
+                         + highlightedText(snippet))
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(primary)
+                            .lineLimit(3)
+                    } else {
+                        Text("Matching conversation text is no longer readable; open the session to inspect it.")
+                            .font(Theme.Typography.body)
+                            .foregroundStyle(secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+            .padding(.horizontal, Theme.intraCell)
+            .padding(.vertical, Theme.rhythm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                    .fill(Theme.selectionBG)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(result.candidate.provider.label) conversation match in \(result.candidate.project)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func highlightedText(_ snippet: SearchSnippet) -> Text {
+        var output = Text("")
+        var cursor = 0
+        for highlight in snippet.highlights where highlight.start >= cursor {
+            if highlight.start > cursor {
+                output = output + Text(slice(
+                    snippet.text, start: cursor,
+                    length: highlight.start - cursor))
+            }
+            output = output + Text(slice(
+                snippet.text, start: highlight.start,
+                length: highlight.length))
+                .bold()
+                .foregroundColor(isSelected ? Theme.selectionText : Theme.accent)
+            cursor = highlight.start + highlight.length
+        }
+        if cursor < snippet.text.count {
+            output = output + Text(slice(
+                snippet.text, start: cursor,
+                length: snippet.text.count - cursor))
+        }
+        return output
+    }
+
+    private func slice(_ text: String, start: Int, length: Int) -> String {
+        let lower = text.index(text.startIndex,
+                               offsetBy: min(max(0, start), text.count))
+        let upper = text.index(
+            lower,
+            offsetBy: min(max(0, length), text.distance(from: lower, to: text.endIndex)))
+        return String(text[lower..<upper])
     }
 }
 

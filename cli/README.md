@@ -17,11 +17,30 @@ It prints a one-screen, anonymized finding card about *your own* `~/.claude`:
 All dollar figures are **API-equivalent estimates at catalog rates — not your
 plan bill** — and the card says so on-screen.
 
+## Conversation search
+
+```bash
+npx trifola search keychain quota
+npx trifola search "release checklist" --limit 5
+npx trifola search keychain quota --json
+```
+
+Search is Claude Code-only (the macOS app searches Claude Code and Codex). It reads user prompts
+and assistant prose, excluding tool calls/results, thinking, and system records. Results stream as
+files are parsed: exact phrases first, then all-term matches, newest first within each rank. Matching
+words are marked in text output; `--json` emits newline-delimited result and final status objects.
+
+Search is exact-word only—no fuzzy or semantic matching. Unicode letters/numbers form words;
+unspaced CJK text is generally one long token in v1, so a substring inside that run may not match.
+Search output contains real local conversation text. Review it before sharing.
+
 ## Options
 
 ```
 --json       Print the finding as machine-readable JSON.
 --list-dead  Print never-fired skill IDs, one per line, for local pruning.
+search <terms...> [--limit N] [--json]
+             Stream Claude Code conversation-text matches (default limit: 10).
 --help, -h   Print usage and exit.
 ```
 
@@ -33,7 +52,8 @@ Set `CLAUDE_CONFIG_DIR` to inspect a Claude Code config directory other than
 The CLI reads local files only. It opens no network connections, uploads
 nothing, has no account, and sends no telemetry. The finding card is
 anonymized (counts and dollars, never skill or project names); `--list-dead`
-*does* print real local skill names, so review that output before sharing it.
+and `search` print real local names/conversation text, so review that output
+before sharing it.
 
 ## The full product
 

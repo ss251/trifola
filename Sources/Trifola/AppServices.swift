@@ -500,6 +500,8 @@ final class AppServices: ObservableObject {
             deadlineRecords: deadlines.records,
             machines: sessions.fleetMachines,
             liveTerminalSessionIDs: liveTerminalSessionIDs,
+            searchIndex: sessions.searchIndex,
+            searchState: sessions.searchState,
             now: now)
     }
 

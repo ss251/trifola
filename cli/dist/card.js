@@ -7,36 +7,45 @@
 //  - Estimates are labeled "API-equivalent" — never implied to be the actual bill.
 //  - The word "leak" never appears in printed/JSON output copy.
 import { fmtUSD, fmtTinyUSD, fmtPct, fmtCount, fmtTokens } from "./format.js";
+import { styled, teal, cream, bold, dim } from "./style.js";
+import { renderMark } from "./mark.js";
 const RULE = "─".repeat(58);
 export function renderCard(finding) {
     const lines = [];
-    lines.push("trifola — claude code corpus finding");
-    lines.push(RULE);
+    if (styled) {
+        lines.push("");
+        lines.push(renderMark("  "));
+        lines.push("");
+    }
+    lines.push(bold("trifola") + dim(" — claude code corpus finding"));
+    lines.push(dim(RULE));
     if (finding.catalogCount === 0 && finding.sessionCount === 0) {
         lines.push("");
         lines.push("No Claude Code skills or session transcripts found under this config");
         lines.push("directory — the figures below are honestly zero, not an error.");
     }
     lines.push("");
-    lines.push("DEAD SKILLS");
-    lines.push(`  ${fmtCount(finding.deadCount)} of ${fmtCount(finding.catalogCount)} catalog skills never fired, ` +
-        `across ${fmtCount(finding.sessionCount)} sessions.`);
-    lines.push("  (explicit Skill-tool + slash-command invocations only — skills auto-");
-    lines.push('  loaded as context aren\'t tracked, so this likely OVERSTATES "dead".)');
+    lines.push(bold(cream("DEAD SKILLS")));
+    lines.push(`  ${teal(bold(`${fmtCount(finding.deadCount)} of ${fmtCount(finding.catalogCount)}`))} catalog skills never fired, ` +
+        `across ${fmtCount(finding.sessionCount)} sessions${finding.subagentRunCount > 0
+            ? ` (+${fmtCount(finding.subagentRunCount)} subagent run${finding.subagentRunCount === 1 ? "" : "s"})`
+            : ""}.`);
+    lines.push(dim("  (explicit Skill-tool + slash-command invocations only — skills auto-"));
+    lines.push(dim('  loaded as context aren\'t tracked, so this likely OVERSTATES "dead".)'));
     lines.push("");
-    lines.push("EST. USAGE VALUE");
-    lines.push(`  ${fmtUSD(finding.usageValueUsd)} API-equivalent across the scanned corpus`);
+    lines.push(bold(cream("EST. USAGE VALUE")));
+    lines.push(`  ${teal(bold(fmtUSD(finding.usageValueUsd)))} API-equivalent across the scanned corpus`);
     lines.push("");
-    lines.push("PROMPT TAX");
-    lines.push(`  ~${fmtTinyUSD(finding.taxUsdPerSession)}/session · ${fmtTinyUSD(finding.taxUsd)} across ` +
+    lines.push(bold(cream("PROMPT TAX")));
+    lines.push(`  ~${teal(bold(fmtTinyUSD(finding.taxUsdPerSession)))}/session · ${teal(bold(fmtTinyUSD(finding.taxUsd)))} across ` +
         `${fmtCount(finding.sessionCount)} scanned sessions`);
-    lines.push("  the dead skills' descriptions still ride every session's prompt —");
-    lines.push("  priced at the cache-read rate (input × 0.10 of a mid-tier model),");
-    lines.push("  not your raw input bill.");
+    lines.push(dim("  the dead skills' descriptions still ride every session's prompt —"));
+    lines.push(dim("  priced at the cache-read rate (input × 0.10 of a mid-tier model),"));
+    lines.push(dim("  not your raw input bill."));
     lines.push("");
-    lines.push("RE-SENT CONTEXT");
-    lines.push(`  ~${fmtUSD(finding.freshInputPremiumUsd)} fresh-input premium above an all-cache-read floor`);
-    lines.push("  the avoidable share is unknowable from logs (API-equivalent, not your bill)");
+    lines.push(bold(cream("RE-SENT CONTEXT")));
+    lines.push(`  ~${teal(bold(fmtUSD(finding.freshInputPremiumUsd)))} fresh-input premium above an all-cache-read floor`);
+    lines.push(dim("  the avoidable share is unknowable from logs (API-equivalent, not your bill)"));
     lines.push(`  first-touch (unavoidable cache build, shown separately, never summed): ${fmtUSD(finding.firstTouchUsd)}`);
     lines.push(`  ${fmtPct(finding.cacheHitRatePct / 100)} of ${fmtTokens(finding.totalInputTokens)} input tokens served from cache`);
     if (finding.unsupportedPricingModeEntries > 0) {
@@ -44,10 +53,11 @@ export function renderCard(finding) {
             "trifola does not yet price — totals may be off for those entries");
     }
     lines.push("");
-    lines.push(RULE);
+    lines.push(dim(RULE));
     lines.push(`one power user's corpus — ${fmtCount(finding.catalogCount)} skills, ${fmtCount(finding.sessionCount)} sessions — run it on yours:`);
-    lines.push("  npx trifola");
-    lines.push("reads local disk only, uploads nothing.");
+    lines.push("  " + teal(bold("npx trifola")));
+    lines.push(dim("reads local disk only, uploads nothing."));
+    lines.push(dim("Claude Code only \u2014 the macOS app also reads Codex."));
     return lines.join("\n");
 }
 /** Round a dollar figure to 6 decimal places — enough precision even for tiny
@@ -62,6 +72,7 @@ export function renderJSON(finding) {
             dead: finding.deadCount,
             catalog: finding.catalogCount,
             sessions: finding.sessionCount,
+            subagentRuns: finding.subagentRunCount,
             note: "counts explicit Skill-tool + slash-command invocations only; skills auto-loaded as context aren't tracked, so this likely overstates \"dead\"",
         },
         usageValue: { usd: round6(finding.usageValueUsd), label: "API-equivalent" },
@@ -97,6 +108,15 @@ Uploads nothing.
 
 Usage:
   npx trifola [options]
+  npx trifola search <terms...> [--limit N] [--json]
+
+Search:
+  Searches Claude Code conversation text only: user prompts + assistant prose.
+  Tool calls/results and thinking are excluded. Exact words only; no fuzzy
+  matching. Results stream in phrase-first, then recency order.
+  --limit N    Maximum results (default: 10).
+  --json       Stream newline-delimited result/status JSON. Contains raw local
+               conversation text — don't share without reviewing it.
 
 Options:
   --json       Print machine-readable JSON instead of the text card.
