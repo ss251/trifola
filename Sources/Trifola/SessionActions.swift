@@ -108,6 +108,7 @@ struct SessionActions: View {
     var compact = false
 
     @State private var feedback: String? = nil
+    @State private var feedbackDismissTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -137,18 +138,20 @@ struct SessionActions: View {
         .overlay(alignment: .top) {
             if let feedback {
                 Toast(text: feedback)
-                    .id(feedback)
                     .offset(y: -44)
                     .allowsHitTesting(false)
             }
         }
         .motion(Theme.Motion.move, value: feedback)
+        .onDisappear { feedbackDismissTask?.cancel() }
     }
 
     private func flash(_ text: String) {
         feedback = text
-        Task {
+        feedbackDismissTask?.cancel()
+        feedbackDismissTask = Task {
             try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
             feedback = nil
         }
     }

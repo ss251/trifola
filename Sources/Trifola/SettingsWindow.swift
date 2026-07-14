@@ -301,6 +301,13 @@ private struct AttentionSettings: View {
                     _ = notifier.openSystemNotificationSettings()
                 }
                 .help("Open macOS Notifications settings for Trifola")
+            } else if notifier.authorizationStatus == .unavailable
+                        || notifier.authorizationNote?.localizedCaseInsensitiveContains(
+                            "could not") == true {
+                TapButton("Retry permission check") {
+                    notifier.refreshAuthorizationStatus()
+                }
+                .help("Ask macOS for the current notification permission again")
             }
             Text("Notifications are opt-in. The attention strip and menu-bar signal remain visible either way.")
                 .font(.footnote).foregroundStyle(.secondary)

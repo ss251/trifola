@@ -841,6 +841,14 @@ public struct SessionScanProgress: Sendable, Equatable {
 
     public static let idle = SessionScanProgress(
         scanned: 0, totalEstimate: 0, isInProgress: false)
+
+    /// Canonical provisional copy shared by every surface. Keeping the wording
+    /// in Kit makes "no settled zeros while loading" unit-testable instead of a
+    /// collection of view-local string branches.
+    public var readingSentence: String {
+        guard totalEstimate > 0 else { return "Reading your sessions…" }
+        return "Reading your sessions — \(scanned.formatted()) of ~\(totalEstimate.formatted())…"
+    }
 }
 
 public enum SearchIndexState: Sendable, Equatable {
@@ -876,6 +884,46 @@ public struct SessionIndex: Sendable {
         var summary: SessionSummary
     }
     var entries: [String: Entry] = [:]   // absolute path → entry
+
+    /// Evidence from the most recent cross-file usage reconciliation. A warm
+    /// append should name only the paths and message keys whose canonical
+    /// winner could have changed; a cold/cache load intentionally reports a
+    /// full rebuild once.
+    public struct ReconcileWork: Sendable, Equatable {
+        public let changedPaths: Set<String>
+        public let affectedKeys: Int
+        public let rematerializedPaths: Set<String>
+        public let fullRebuild: Bool
+
+        public init(changedPaths: Set<String> = [], affectedKeys: Int = 0,
+                    rematerializedPaths: Set<String> = [],
+                    fullRebuild: Bool = false) {
+            self.changedPaths = changedPaths
+            self.affectedKeys = affectedKeys
+            self.rematerializedPaths = rematerializedPaths
+            self.fullRebuild = fullRebuild
+        }
+    }
+
+    private struct ReconcileCandidate: Sendable {
+        let rawKey: String
+        let isSidechain: Bool
+    }
+
+    /// Reference storage is intentional: SessionIndex is copied into the
+    /// detached scanner on every refresh. Value-typed dictionaries would COW
+    /// the entire 7k-session reconcile graph on the first one-file append.
+    /// Refreshes are serialized by SessionStore, so this state has one writer.
+    private final class ReconcileState: @unchecked Sendable {
+        var initialized = false
+        var candidatesByPath: [String: [String: ReconcileCandidate]] = [:]
+        var pathsByKey: [String: Set<String>] = [:]
+        var winnerByKey: [String: String] = [:]
+        var exclusionsByPath: [String: Set<String>] = [:]
+    }
+
+    private var reconciliation = ReconcileState()
+    public private(set) var lastReconcileWork = ReconcileWork()
     public init() {}
 
     public var summaries: [SessionSummary] { entries.values.map(\.summary) }
@@ -905,6 +953,19 @@ public struct SessionIndex: Sendable {
         update(previous, sources: [.claude(root: dir)], onProgress: onProgress)
     }
 
+    /// FSEvents fast path: touch only the concrete transcript paths delivered
+    /// by the file-level watcher. Cold/manual refreshes still use the complete
+    /// enumerating overload; a live append never stats the other 7k files.
+    public static func update(
+        _ previous: SessionIndex,
+        dir: URL,
+        changedPaths: Set<String>,
+        onProgress: (@Sendable (SessionIndex, SessionScanProgress) -> Void)? = nil
+    ) -> SessionIndex {
+        update(previous, sources: [.claude(root: dir)],
+               changedPaths: changedPaths, onProgress: onProgress)
+    }
+
     /// Rescan one provider source while preserving the legacy one-directory API
     /// above for fixtures and callers that intentionally scan Claude only.
     public static func update(
@@ -913,6 +974,77 @@ public struct SessionIndex: Sendable {
         onProgress: (@Sendable (SessionIndex, SessionScanProgress) -> Void)? = nil
     ) -> SessionIndex {
         update(previous, sources: [source], onProgress: onProgress)
+    }
+
+    /// Provider-aware changed-file fast path used by the live watcher.
+    public static func update(
+        _ previous: SessionIndex,
+        sources: [SessionSource],
+        changedPaths requestedPaths: Set<String>,
+        onProgress: (@Sendable (SessionIndex, SessionScanProgress) -> Void)? = nil
+    ) -> SessionIndex {
+        let fm = FileManager.default
+        let prepared = sources.map(PreparedSessionSource.init)
+        var result = previous
+        var work: [WorkItem] = []
+        var actualChanges: Set<String> = []
+
+        for requested in requestedPaths {
+            let path = URL(fileURLWithPath: requested).standardizedFileURL.path
+            let match = prepared.first { preparedSource in
+                let root = preparedSource.source.root.standardizedFileURL.path
+                let prefix = root.hasSuffix("/") ? root : root + "/"
+                guard path.hasPrefix(prefix) else { return false }
+                return preparedSource.source.accepts(String(path.dropFirst(prefix.count)))
+            }
+            guard let preparedSource = match else {
+                if result.entries.removeValue(forKey: path) != nil {
+                    actualChanges.insert(path)
+                }
+                continue
+            }
+
+            let source = preparedSource.source
+            let root = source.root.standardizedFileURL.path
+            let prefix = root.hasSuffix("/") ? root : root + "/"
+            let relative = String(path.dropFirst(prefix.count))
+            guard let attributes = try? fm.attributesOfItem(atPath: path),
+                  source.provider != .codex
+                    || isSafeRegularFile(URL(fileURLWithPath: path), beneath: source.root) else {
+                if result.entries.removeValue(forKey: path) != nil {
+                    actualChanges.insert(path)
+                }
+                continue
+            }
+            let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            let mtime = (attributes[.modificationDate] as? Date) ?? .distantPast
+            let old = previous.entries[path]
+            let sameSource = old?.provider == source.provider
+                && old?.machineID == source.machineID
+            if let old, sameSource, old.size == size, old.mtime == mtime,
+               !isExcludedImport(old.acc, by: preparedSource.imports) {
+                continue
+            }
+            result.entries[path] = nil
+            actualChanges.insert(path)
+            work.append(WorkItem(path: path, rel: relative, size: size,
+                                 mtime: mtime, old: sameSource ? old : nil,
+                                 source: preparedSource))
+        }
+
+        let estimate = max(previous.entries.count,
+                           result.entries.count + work.count)
+        onProgress?(result, SessionScanProgress(
+            scanned: result.entries.count, totalEstimate: estimate,
+            isInProgress: true))
+        for item in work {
+            if let entry = parseOne(item) { result.entries[item.path] = entry }
+        }
+        result.reconcileCrossFileUsage(changedPaths: actualChanges)
+        onProgress?(result, SessionScanProgress(
+            scanned: result.entries.count, totalEstimate: result.entries.count,
+            isInProgress: false))
+        return result
     }
 
     /// Rescan all declared sources as one index. Each source is enumerated only
@@ -934,7 +1066,8 @@ public struct SessionIndex: Sendable {
         }
 
         // Pass 1 — stat everything; unchanged files carry over for free.
-        var reused = SessionIndex()
+        var reused = previous
+        reused.entries = [:]
         var work: [WorkItem] = []
         for preparedSource in prepared {
             let source = preparedSource.source
@@ -975,12 +1108,15 @@ public struct SessionIndex: Sendable {
             }
         }
         let total = reused.entries.count + work.count
+        let presentPaths = Set(reused.entries.keys).union(work.map(\.path))
+        let changedPaths = Set(work.map(\.path))
+            .union(Set(previous.entries.keys).subtracting(presentPaths))
         onProgress?(reused, SessionScanProgress(scanned: reused.entries.count,
                                                 totalEstimate: total,
                                                 isInProgress: true))
         if work.isEmpty {
             var result = reused
-            result.reconcileCrossFileUsage()
+            result.reconcileCrossFileUsage(changedPaths: changedPaths)
             onProgress?(result, SessionScanProgress(scanned: total,
                                                     totalEstimate: total,
                                                     isInProgress: false))
@@ -1007,7 +1143,7 @@ public struct SessionIndex: Sendable {
             }
         }
         var result = state.withLock { $0.merged }
-        result.reconcileCrossFileUsage()
+        result.reconcileCrossFileUsage(changedPaths: changedPaths)
         onProgress?(result, SessionScanProgress(scanned: total,
                                                 totalEstimate: total,
                                                 isInProgress: false))
@@ -1044,50 +1180,106 @@ public struct SessionIndex: Sendable {
     /// choice: non-sidechain, then parent transcript, then lexicographic path.
     /// Accumulators retain every raw row for correct incremental appends; only
     /// materialized summaries exclude non-canonical copies.
-    mutating func reconcileCrossFileUsage() {
-        struct Candidate {
-            let path: String
-            let isSidechain: Bool
-
-            var rank: (Int, Int, String) {
-                (isSidechain ? 1 : 0,
-                 path.contains("/subagents/") ? 1 : 0,
-                 path)
-            }
+    mutating func reconcileCrossFileUsage(changedPaths requestedPaths: Set<String>? = nil) {
+        let fullRebuild = !reconciliation.initialized || requestedPaths == nil
+        let changedPaths = fullRebuild ? Set(entries.keys) : (requestedPaths ?? [])
+        if fullRebuild {
+            reconciliation.candidatesByPath = [:]
+            reconciliation.pathsByKey = [:]
+            reconciliation.winnerByKey = [:]
+            reconciliation.exclusionsByPath = [:]
         }
 
-        var winners: [String: Candidate] = [:]
-        for path in entries.keys.sorted() {
-            guard let entry = entries[path] else { continue }
-            guard let usageByKey = entry.acc.claudeUsageByKey else { continue }
-            for (key, usage) in usageByKey where !key.hasPrefix("#") {
-                let namespacedKey = "\(entry.provider.rawValue)\u{1}\(entry.machineID)\u{1}\(key)"
-                let candidate = Candidate(path: path, isSidechain: usage.isSidechain)
-                if let current = winners[namespacedKey] {
-                    if candidate.rank < current.rank { winners[namespacedKey] = candidate }
-                } else {
-                    winners[namespacedKey] = candidate
+        var affectedKeys: Set<String> = []
+        let pathsToRefresh = fullRebuild
+            ? Set(entries.keys).union(reconciliation.candidatesByPath.keys)
+            : changedPaths
+        for path in pathsToRefresh {
+            if let old = reconciliation.candidatesByPath.removeValue(forKey: path) {
+                for key in old.keys {
+                    affectedKeys.insert(key)
+                    reconciliation.pathsByKey[key]?.remove(path)
+                    if reconciliation.pathsByKey[key]?.isEmpty == true {
+                        reconciliation.pathsByKey[key] = nil
+                    }
                 }
             }
-        }
-
-        var exclusions: [String: Set<String>] = [:]
-        for (path, entry) in entries {
-            guard let usageByKey = entry.acc.claudeUsageByKey else { continue }
-            for key in usageByKey.keys where !key.hasPrefix("#") {
-                let namespacedKey = "\(entry.provider.rawValue)\u{1}\(entry.machineID)\u{1}\(key)"
-                if winners[namespacedKey]?.path != path {
-                    exclusions[path, default: []].insert(key)
-                }
+            guard let entry = entries[path],
+                  let usageByKey = entry.acc.claudeUsageByKey else { continue }
+            var candidates: [String: ReconcileCandidate] = [:]
+            for (rawKey, usage) in usageByKey where !rawKey.hasPrefix("#") {
+                let key = Self.reconcileKey(entry: entry, rawKey: rawKey)
+                candidates[key] = ReconcileCandidate(
+                    rawKey: rawKey, isSidechain: usage.isSidechain)
+                reconciliation.pathsByKey[key, default: []].insert(path)
+                affectedKeys.insert(key)
+            }
+            if !candidates.isEmpty {
+                reconciliation.candidatesByPath[path] = candidates
             }
         }
-        for path in entries.keys {
+
+        var rematerialized = fullRebuild ? Set(entries.keys) : changedPaths
+        for key in affectedKeys {
+            let previousWinner = reconciliation.winnerByKey[key]
+            let winner = reconciliation.pathsByKey[key]?.compactMap { path -> String? in
+                reconciliation.candidatesByPath[path]?[key] == nil ? nil : path
+            }.min { lhs, rhs in
+                Self.reconcileRank(
+                    path: lhs,
+                    isSidechain: reconciliation.candidatesByPath[lhs]?[key]?.isSidechain ?? true)
+                < Self.reconcileRank(
+                    path: rhs,
+                    isSidechain: reconciliation.candidatesByPath[rhs]?[key]?.isSidechain ?? true)
+            }
+            reconciliation.winnerByKey[key] = winner
+            if winner == nil { reconciliation.winnerByKey[key] = nil }
+            // A changed path always needs a fresh summary, but unchanged
+            // duplicate candidates do not. Their exclusion stays identical
+            // unless the canonical winner actually moves. Even then, only the
+            // old and new winners flip inclusion; all other losers remain
+            // excluded. Avoiding the former all-candidates union is the key to
+            // keeping live append cost independent of duplicate-history fanout.
+            if previousWinner != winner {
+                if let previousWinner { rematerialized.insert(previousWinner) }
+                if let winner { rematerialized.insert(winner) }
+            }
+        }
+
+        rematerialized = rematerialized.intersection(entries.keys)
+        for path in changedPaths where entries[path] == nil {
+            reconciliation.exclusionsByPath[path] = nil
+        }
+        for path in rematerialized {
             guard var entry = entries[path] else { continue }
+            var exclusions: Set<String> = []
+            for (key, candidate) in reconciliation.candidatesByPath[path] ?? [:]
+                where reconciliation.winnerByKey[key] != path {
+                exclusions.insert(candidate.rawKey)
+            }
+            reconciliation.exclusionsByPath[path] = exclusions
             entry.summary = entry.acc.summary(
                 filePath: path, machineID: entry.machineID,
-                excludingClaudeUsageKeys: exclusions[path] ?? [])
+                excludingClaudeUsageKeys: exclusions)
             entries[path] = entry
         }
+        reconciliation.initialized = true
+        lastReconcileWork = ReconcileWork(
+            changedPaths: changedPaths,
+            affectedKeys: affectedKeys.count,
+            rematerializedPaths: rematerialized,
+            fullRebuild: fullRebuild)
+    }
+
+    private static func reconcileKey(entry: Entry, rawKey: String) -> String {
+        "\(entry.provider.rawValue)\u{1}\(entry.machineID)\u{1}\(rawKey)"
+    }
+
+    private static func reconcileRank(path: String, isSidechain: Bool)
+        -> (Int, Int, String) {
+        (isSidechain ? 1 : 0,
+         path.contains("/subagents/") ? 1 : 0,
+         path)
     }
 
     /// Parse a single changed/new file: incremental tail-read when it only grew,
@@ -1182,6 +1374,8 @@ public final class SessionStore: ObservableObject {
 
     private var index = SessionIndex()
     private var refreshQueued = false
+    private var refreshQueuedPaths: Set<String> = []
+    private var refreshQueuedNeedsFullScan = false
     private var triedCache = false
     private var triedSearchCache = false
     private var searchTask: Task<Void, Never>?
@@ -1228,8 +1422,16 @@ public final class SessionStore: ObservableObject {
     ///  1. warm-start: hydrate instantly from the on-disk index cache (once),
     ///  2. progressive: publish partial results while the parallel scan runs,
     ///  3. final: publish the complete index and persist it for the next launch.
-    public func refreshNow() async {
-        if isRefreshing { refreshQueued = true; return }
+    public func refreshNow(changedPaths: Set<String>? = nil) async {
+        if isRefreshing {
+            refreshQueued = true
+            if let changedPaths {
+                refreshQueuedPaths.formUnion(changedPaths)
+            } else {
+                refreshQueuedNeedsFullScan = true
+            }
+            return
+        }
         isRefreshing = true
         appliedScanCount = 0
         scanPresentation = SessionScanPresentationReducer.reduce(
@@ -1293,12 +1495,20 @@ public final class SessionStore: ObservableObject {
         let snapshot = index
         let latestProgress = Locked(scanProgress)
         let result = await Task.detached(priority: .userInitiated) { [weak self] in
-            SessionIndex.update(snapshot, sources: localSources) { [weak self] partial, progress in
+            let publish: @Sendable (SessionIndex, SessionScanProgress) -> Void = {
+                [weak self] partial, progress in
                 latestProgress.withLock { $0 = progress }
                 Task { @MainActor [weak self] in
                     self?.apply(partial, progress: progress, gen: gen)
                 }
             }
+            if let changedPaths {
+                return SessionIndex.update(
+                    snapshot, sources: localSources,
+                    changedPaths: changedPaths, onProgress: publish)
+            }
+            return SessionIndex.update(
+                snapshot, sources: localSources, onProgress: publish)
         }.value
 
         index = result
@@ -1339,7 +1549,13 @@ public final class SessionStore: ObservableObject {
         isRefreshing = false
         let cacheURL = paths.sessionIndexCacheURL
         Task.detached(priority: .utility) { Self.saveIndexCache(result, to: cacheURL) }
-        if refreshQueued { refreshQueued = false; await refreshNow() }
+        if refreshQueued {
+            let nextPaths = refreshQueuedNeedsFullScan ? nil : refreshQueuedPaths
+            refreshQueued = false
+            refreshQueuedNeedsFullScan = false
+            refreshQueuedPaths = []
+            await refreshNow(changedPaths: nextPaths)
+        }
     }
 
     private func scheduleSearchUpdate(_ summaries: [SessionSummary]) {
@@ -1661,22 +1877,45 @@ public final class SessionStore: ObservableObject {
     // gpt-unattributed → Codex tier). Cached entries hold that slice
     // misattributed to "Other" (~604M cached tokens on a real corpus) and must
     // replay once.
-    private nonisolated static let cacheVersion = 21
+    private nonisolated static let legacyCacheVersion = 21
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Trifola/session-index.json")
+            .appendingPathComponent("Trifola/session-index.sqlite3")
     }
 
     public nonisolated static func loadIndexCache(
         from url: URL = defaultCacheURL,
         timeZone: TimeZone = .current
     ) -> SessionIndex? {
+        switch SessionIndexDatabase.load(from: url, timeZone: timeZone) {
+        case .ready(let index):
+            return index
+        case .rebuild(let reason):
+            FileHandle.standardError.write(Data("[session-index] rebuilding: \(reason)\n".utf8))
+            SessionIndexDatabase.removeDatabase(at: url)
+            return nil
+        case .missing:
+            break
+        }
+
+        let legacyURL = SessionIndexDatabase.legacyJSONURL(for: url)
+        guard let legacy = loadLegacyIndexCache(from: legacyURL, timeZone: timeZone),
+              saveIndexCache(legacy, to: url, timeZone: timeZone) != nil else {
+            return nil
+        }
+        try? FileManager.default.removeItem(at: legacyURL)
+        return legacy
+    }
+
+    private nonisolated static func loadLegacyIndexCache(
+        from url: URL,
+        timeZone: TimeZone
+    ) -> SessionIndex? {
         guard let data = try? Data(contentsOf: url),
               let file = try? JSONDecoder().decode(CacheFile.self, from: data),
-              file.version == cacheVersion,
-              file.timeZoneIdentifier == timeZone.identifier,
-              !file.entries.isEmpty else { return nil }
+              file.version == legacyCacheVersion,
+              file.timeZoneIdentifier == timeZone.identifier else { return nil }
         var idx = SessionIndex()
         for e in file.entries {
             idx.entries[e.path] = SessionIndex.Entry(
@@ -1689,21 +1928,13 @@ public final class SessionStore: ObservableObject {
         return idx
     }
 
+    @discardableResult
     public nonisolated static func saveIndexCache(
         _ index: SessionIndex,
         to url: URL = defaultCacheURL,
         timeZone: TimeZone = .current
-    ) {
-        let file = CacheFile(version: cacheVersion, timeZoneIdentifier: timeZone.identifier,
-                             entries: index.entries.map {
-            CacheEntry(path: $0.key, size: $0.value.size, mtime: $0.value.mtime,
-                       acc: $0.value.acc, provider: $0.value.provider,
-                       machineID: $0.value.machineID)
-        })
-        guard let data = try? JSONEncoder().encode(file) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
-        try? data.write(to: url, options: .atomic)
+    ) -> SessionIndexPersistenceReport? {
+        SessionIndexDatabase.save(index, to: url, timeZone: timeZone)
     }
 
     public var totalUsage: SessionUsage { sessions.reduce(SessionUsage()) { $0 + $1.usage } }

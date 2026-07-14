@@ -256,6 +256,7 @@ struct SidebarSnapshot {
     let pendingLessonCount: Int
     let todayCost: Double
     let monthProjection: Double
+    var scanReadingText: String? = nil
     let updatedText: String
     let refreshText: String?
     let account: String
@@ -353,11 +354,14 @@ private struct Sidebar: View {
         return SidebarNavigationRail(snapshot: SidebarSnapshot(
             // Replaced by SidebarNavigationRail's isolated navigation read.
             selected: .overview,
-            worstState: navigationSnapshots.fleet?.attention.worst,
+            worstState: services.sessions.scanPresentation.isProvisional
+                ? .running : navigationSnapshots.fleet?.attention.worst,
             liveCount: corpus?.activeSessions.count ?? 0,
             pendingLessonCount: services.pendingLessonCount,
             todayCost: corpus?.burnGovernor.today.cost ?? 0,
             monthProjection: corpus?.burnGovernor.monthProjection ?? 0,
+            scanReadingText: services.sessions.scanPresentation.isProvisional
+                ? progress.readingSentence : nil,
             updatedText: "updated \(fmtAgo(services.sessions.lastRefresh))",
             refreshText: refreshText,
             account: NSUserName(),
@@ -460,16 +464,20 @@ private struct SidebarFooter: View {
             // (VISION 2.5): today's API-equiv burn + the recent-run-rate month pace.
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Image(systemName: "chart.line.uptrend.xyaxis")
+                    Image(systemName: snapshot.scanReadingText == nil
+                          ? "chart.line.uptrend.xyaxis" : "hourglass")
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(Theme.muted)
-                    let burnLine = "today \(fmtUSD(snapshot.todayCost)) · ≈\(fmtUSD(snapshot.monthProjection))/mo"
+                    let burnLine = snapshot.scanReadingText
+                        ?? "today \(fmtUSD(snapshot.todayCost)) · ≈\(fmtUSD(snapshot.monthProjection))/mo"
                     Text(burnLine)
                         .font(.footnote)
                         .foregroundStyle(Theme.muted)
                         .liveNumericTransition(value: burnLine)
                 }
-                Text("public API rates — not your bill")
+                Text(snapshot.scanReadingText == nil
+                     ? "public API rates — not your bill"
+                     : "Costs and activity appear when this pass settles")
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
             }

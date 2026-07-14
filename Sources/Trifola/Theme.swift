@@ -59,6 +59,12 @@ enum Theme {
     static let cardFill = Color(nsColor: .dyn(
         light: NSColor.white.withAlphaComponent(0.52),
         dark: NSColor.white.withAlphaComponent(0.045)))
+    static let cardSolidFill = Color(nsColor: .dyn(
+        light: NSColor(srgbRed: 250 / 255, green: 249 / 255, blue: 247 / 255, alpha: 1),
+        dark: NSColor(srgbRed: 38 / 255, green: 38 / 255, blue: 36 / 255, alpha: 1)))
+    static let cardHighContrastFill = Color(nsColor: .dyn(
+        light: .white,
+        dark: NSColor(srgbRed: 12 / 255, green: 12 / 255, blue: 12 / 255, alpha: 1)))
     static let cardStroke = Color(nsColor: .dyn(
         light: NSColor.black.withAlphaComponent(0.095),
         dark: NSColor.white.withAlphaComponent(0.085)))
@@ -277,12 +283,32 @@ private struct DoorLightReduceMotionOverrideKey: EnvironmentKey {
     static let defaultValue: Bool? = nil
 }
 
+private struct DoorLightReduceTransparencyOverrideKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
+}
+
+private struct DoorLightIncreaseContrastOverrideKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
+}
+
 extension EnvironmentValues {
     /// Render-only override; production always falls through to the system's
     /// accessibilityReduceMotion value.
     var doorLightReduceMotionOverride: Bool? {
         get { self[DoorLightReduceMotionOverrideKey.self] }
         set { self[DoorLightReduceMotionOverrideKey.self] = newValue }
+    }
+
+    /// Render-only perceptual-accessibility overrides. Production falls
+    /// through to the corresponding system environment values.
+    var doorLightReduceTransparencyOverride: Bool? {
+        get { self[DoorLightReduceTransparencyOverrideKey.self] }
+        set { self[DoorLightReduceTransparencyOverrideKey.self] = newValue }
+    }
+
+    var doorLightIncreaseContrastOverride: Bool? {
+        get { self[DoorLightIncreaseContrastOverrideKey.self] }
+        set { self[DoorLightIncreaseContrastOverrideKey.self] = newValue }
     }
 }
 
@@ -419,7 +445,7 @@ private struct ToastTransition: ViewModifier {
             .animation(Theme.motion(Theme.Motion.move, reduceMotion: reduceMotion))
         let removal = (reduceMotion
             ? AnyTransition.opacity
-            : AnyTransition.opacity.combined(with: .offset(y: 8)))
+            : AnyTransition.opacity.combined(with: .offset(y: 12)))
             .animation(Theme.motion(Theme.Motion.exit, reduceMotion: reduceMotion))
         content.transition(.asymmetric(insertion: insertion, removal: removal))
     }

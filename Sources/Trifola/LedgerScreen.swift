@@ -14,6 +14,7 @@ import TrifolaKit
 struct LedgerScreen: View {
     @EnvironmentObject var services: AppServices
     @State private var feedback: String? = nil
+    @State private var feedbackDismissTask: Task<Void, Never>?
     @State private var showHistory = false
 
     private var store: LedgerStore { services.ledger }
@@ -21,31 +22,38 @@ struct LedgerScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Dreaming Ledger",
-            subtitle: "Deterministic proposals from audit evidence · copy only, never writes your configuration",
+            subtitle: services.sessions.scanPresentation.isProvisional
+                ? services.sessions.scanProgress.readingSentence
+                : "Deterministic proposals from audit evidence · copy only, never writes your configuration",
             epithet: "findings become fixes",
             trailing: { dreamButton }
         ) {
-            LedgerContent(
-                dream: store.lastDream,
-                pending: store.pending,
-                history: store.history,
-                showHistory: $showHistory,
-                onCopy: copy,
-                onReveal: reveal,
-                onInspect: inspect,
-                onKeep: { store.keep($0) },
-                onDismiss: { store.dismiss($0) },
-                onDistill: runDistillation
-            )
+            if services.sessions.scanPresentation.isProvisional {
+                SessionReadingState(progress: services.sessions.scanProgress)
+                    .frame(minHeight: 420)
+            } else {
+                LedgerContent(
+                    dream: store.lastDream,
+                    pending: store.pending,
+                    history: store.history,
+                    showHistory: $showHistory,
+                    onCopy: copy,
+                    onReveal: reveal,
+                    onInspect: inspect,
+                    onKeep: { store.keep($0) },
+                    onDismiss: { store.dismiss($0) },
+                    onDistill: runDistillation
+                )
+            }
         }
         .overlay(alignment: .top) {
             if let feedback {
                 Toast(text: feedback)
-                    .id(feedback)
                     .padding(.top, Theme.intraCell)
             }
         }
         .motion(Theme.Motion.move, value: feedback)
+        .onDisappear { feedbackDismissTask?.cancel() }
     }
 
     private var dreamButton: some View {
@@ -84,7 +92,12 @@ struct LedgerScreen: View {
 
     private func flash(_ text: String) {
         feedback = text
-        Task { try? await Task.sleep(for: .seconds(2.5)); feedback = nil }
+        feedbackDismissTask?.cancel()
+        feedbackDismissTask = Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            feedback = nil
+        }
     }
 }
 

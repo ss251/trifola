@@ -112,7 +112,14 @@ struct FleetScreen: View {
 
     var body: some View {
         Group {
-            if let snapshot = navigationSnapshots.fleet {
+            if services.sessions.scanPresentation.isProvisional {
+                ScreenScaffold(
+                    title: "Fleet Board",
+                    subtitle: services.sessions.scanProgress.readingSentence) {
+                    SessionReadingState(progress: services.sessions.scanProgress)
+                        .frame(minHeight: 460)
+                }
+            } else if let snapshot = navigationSnapshots.fleet {
                 fleetContent(snapshot)
             } else {
                 ScreenScaffold(

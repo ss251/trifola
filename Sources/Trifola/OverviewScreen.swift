@@ -141,9 +141,7 @@ struct OverviewScreen: View {
     }
 
     private var scanProgressSentence: String {
-        let progress = store.scanProgress
-        guard progress.totalEstimate > 0 else { return "Scanning transcripts…" }
-        return "Scanning — \(fmtGrouped(progress.scanned)) of ~\(fmtGrouped(progress.totalEstimate)) transcripts…"
+        store.scanProgress.readingSentence
     }
 
     private var inlineRefreshSentence: String {
@@ -184,7 +182,10 @@ struct OverviewScreen: View {
                 : "Rescan sessions, skills, and audit evidence")
             .help(isRefreshing ? "Refreshing data…" : "Refresh data · \(AppCommandMap.refresh.glyph)")
         } content: {
-            if let corpus = navigationSnapshots.corpus {
+            if store.scanPresentation.isProvisional {
+                SessionReadingState(progress: store.scanProgress)
+                    .frame(minHeight: 420)
+            } else if let corpus = navigationSnapshots.corpus {
                 verdictLine(
                     governor: corpus.burnGovernor,
                     board: navigationSnapshots.fleet?.attention)

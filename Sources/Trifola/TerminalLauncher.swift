@@ -15,7 +15,7 @@ enum TerminalLauncher {
         openMainWindow: @escaping @MainActor () -> Void,
         selectSession: @escaping @MainActor (String) -> Void,
         revealTranscript: @escaping @MainActor (String, TerminalLaunchOutcome) -> Void,
-        confirmLaunch: @escaping @MainActor (String) -> Void,
+        confirmLaunch: @escaping @MainActor (TerminalLaunchOutcome) -> Void,
         onFinished: @escaping @MainActor () -> Void = {}
     ) -> Task<Void, Never> {
         let flow = TerminalLaunchFlow(
@@ -55,9 +55,10 @@ enum TerminalLauncher {
                 Self.diagnostic("result=cancelled-after-flow")
                 return
             }
-            if let message = outcome.successMessage {
-                Self.diagnostic("result=confirmation message=\(message)")
-                confirmLaunch(message)
+            if let feedback = outcome.feedback,
+               outcome.successMessage != nil {
+                Self.diagnostic("result=confirmation message=\(feedback.message)")
+                confirmLaunch(outcome)
             } else {
                 Self.diagnostic("result=no-confirmation")
             }

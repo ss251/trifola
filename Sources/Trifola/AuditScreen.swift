@@ -13,41 +13,48 @@ struct AuditScreen: View {
     var body: some View {
         ScreenScaffold(
             title: "Audit",
-            subtitle: "Ranked cost causes from recorded usage · public API-rate estimates, never your bill",
+            subtitle: services.sessions.scanPresentation.isProvisional
+                ? services.sessions.scanProgress.readingSentence
+                : "Ranked cost causes from recorded usage · public API-rate estimates, never your bill",
             epithet: "evidence, not nags"
         ) {
-            AuditContent(
-                report: services.auditReport.report,
-                onInspect: { id in
-                    if let s = services.sessions.sessions.first(where: { $0.id == id }) {
-                        services.inspect(s)
+            if services.sessions.scanPresentation.isProvisional {
+                SessionReadingState(progress: services.sessions.scanProgress)
+                    .frame(minHeight: 420)
+            } else {
+                AuditContent(
+                    report: services.auditReport.report,
+                    onInspect: { id in
+                        if let s = services.sessions.sessions.first(where: { $0.id == id }) {
+                            services.inspect(s)
+                        }
+                    },
+                    onReveal: { path in
+                        guard !path.isEmpty else { return }
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    },
+                    skillPaths: services.skills.allSkills.reduce(into: [:]) { paths, skill in
+                        paths[skill.id] = skill.path
+                        paths[skill.name] = skill.path
+                        paths[skill.qualifiedID] = skill.path
+                    },
+                    // "Show the math" (W3): each finding's receipt — same slices,
+                    // same rates, same formula as the number on the row.
+                    leakReceipt: { finding in
+                        guard let s = services.sessions.sessions.first(where: { $0.id == finding.id }) else { return nil }
+                        let r = CostProvenance.sessionReceipt(s, metric: .cacheLeak)
+                        return CostReceipt(
+                            scope: r.scope, metric: r.metric, legs: r.legs, total: r.total,
+                            pricingSource: r.pricingSource, dedupNote: r.dedupNote,
+                            bucketingNote: r.bucketingNote,
+                            footnotes: r.footnotes + [String(format: "cache setup (5m ×1.25 · 1h ×2) = $%.2f — necessary cache-build work, not included in the fresh-vs-warm difference", s.firstTouchDollars)])
+                    },
+                    mismatchReceipt: { candidate in
+                        guard let s = services.sessions.sessions.first(where: { $0.id == candidate.id }) else { return nil }
+                        return CostProvenance.mismatchReceipt(s)
                     }
-                },
-                onReveal: { path in
-                    guard !path.isEmpty else { return }
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                },
-                skillPaths: services.skills.allSkills.reduce(into: [:]) { paths, skill in
-                    paths[skill.id] = skill.path
-                    paths[skill.name] = skill.path
-                    paths[skill.qualifiedID] = skill.path
-                },
-                // "Show the math" (W3): each finding's receipt — same slices,
-                // same rates, same formula as the number on the row.
-                leakReceipt: { finding in
-                    guard let s = services.sessions.sessions.first(where: { $0.id == finding.id }) else { return nil }
-                    let r = CostProvenance.sessionReceipt(s, metric: .cacheLeak)
-                    return CostReceipt(
-                        scope: r.scope, metric: r.metric, legs: r.legs, total: r.total,
-                        pricingSource: r.pricingSource, dedupNote: r.dedupNote,
-                        bucketingNote: r.bucketingNote,
-                        footnotes: r.footnotes + [String(format: "cache setup (5m ×1.25 · 1h ×2) = $%.2f — necessary cache-build work, not included in the fresh-vs-warm difference", s.firstTouchDollars)])
-                },
-                mismatchReceipt: { candidate in
-                    guard let s = services.sessions.sessions.first(where: { $0.id == candidate.id }) else { return nil }
-                    return CostProvenance.mismatchReceipt(s)
-                }
-            )
+                )
+            }
         }
     }
 }

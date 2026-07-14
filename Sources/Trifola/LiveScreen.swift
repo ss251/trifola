@@ -27,12 +27,19 @@ struct LiveScreen: View {
         let pool = navigationSnapshots.corpus?.activeSessions ?? []
         let live = makeLive(pool: pool)
         let poolIDs = pool.map(\.id)
+        let provisional = services.sessions.scanPresentation.isProvisional
         ScreenScaffold(
             title: "Live Now",
-            subtitle: live.isEmpty
+            subtitle: provisional
+                ? services.sessions.scanProgress.readingSentence
+                : live.isEmpty
                 ? "No transcript has moved in the last 15 minutes"
                 : "\(live.count) active session\(live.count == 1 ? "" : "s") · transcript tails update in place · dollar values are API-rate estimates, not your bill") {
-            if live.isEmpty {
+            if provisional {
+                SessionReadingState(progress: services.sessions.scanProgress)
+                    .frame(minHeight: 460)
+                    .motionRowTransition()
+            } else if live.isEmpty {
                 EmptyState(
                     icon: "moon.stars",
                     title: "The fleet is quiet",
@@ -91,6 +98,8 @@ struct LiveScreen: View {
 private struct LiveTile: View {
     @EnvironmentObject var services: AppServices
     @EnvironmentObject var navigation: AppNavigation
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
     let session: SessionSummary
     let attentionState: AttentionState
 
@@ -140,9 +149,13 @@ private struct LiveTile: View {
         }
         .background {
             RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .fill(Theme.cardFill)
+                .fill(accessibilityContrast == .increased
+                      ? Theme.cardHighContrastFill
+                      : (reduceTransparency ? Theme.cardSolidFill : Theme.cardFill))
             RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.cardStroke, lineWidth: 1)
+                .strokeBorder(accessibilityContrast == .increased
+                              ? Theme.ink : Theme.cardStroke,
+                              lineWidth: accessibilityContrast == .increased ? 2 : 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .contextMenu {

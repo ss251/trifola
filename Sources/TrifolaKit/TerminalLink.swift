@@ -599,6 +599,49 @@ public struct TerminalAutomationError: Sendable, Equatable {
     }
 }
 
+public enum FeedbackSemantics: String, Sendable, Equatable {
+    case success
+    case information
+    case failure
+
+    /// SF Symbol semantics are data, not a view-local guess, so tests can prove
+    /// a fallback never borrows the success checkmark.
+    public var systemImage: String {
+        switch self {
+        case .success: "checkmark.circle.fill"
+        case .information: "info.circle.fill"
+        case .failure: "exclamationmark.triangle.fill"
+        }
+    }
+}
+
+public enum TerminalFeedbackAction: String, Sendable, Equatable {
+    case openAccessibilitySettings
+    case openAutomationSettings
+    case copyResumeCommand
+
+    public var label: String {
+        switch self {
+        case .openAccessibilitySettings: "Open Accessibility Settings"
+        case .openAutomationSettings: "Open Automation Settings"
+        case .copyResumeCommand: "Copy resume command"
+        }
+    }
+}
+
+public struct TerminalLaunchFeedback: Sendable, Equatable {
+    public let message: String
+    public let semantics: FeedbackSemantics
+    public let action: TerminalFeedbackAction?
+
+    public init(message: String, semantics: FeedbackSemantics,
+                action: TerminalFeedbackAction? = nil) {
+        self.message = message
+        self.semantics = semantics
+        self.action = action
+    }
+}
+
 /// The complete user-facing result of an Open session attempt. These cases are
 /// intentionally exhaustive: no AppleScript or resolution failure is reduced to
 /// a boolean and silently discarded.
@@ -644,38 +687,90 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
         }
     }
 
+    /// One honest, actionable presentation contract for every visible outcome.
+    /// Successful exact jumps earn a checkmark; limitations are informational;
+    /// failures use a warning glyph. Any unresolved limitation carries its
+    /// remedy in the same toast.
+    public var feedback: TerminalLaunchFeedback? {
+        switch self {
+        case .exact(let target):
+            let message = target.match == .cwd
+                ? "Jumped to \(target.ownerApplication?.displayName ?? "your terminal") using a working-directory match"
+                : "Jumped to your session in \(target.ownerApplication?.displayName ?? "your terminal")"
+            return TerminalLaunchFeedback(message: message, semantics: .success)
+        case .axTargeted(let target, let matchedTitle):
+            return TerminalLaunchFeedback(
+                message: "Jumped to '\(matchedTitle)' in \(target.ownerApplication?.displayName ?? "your terminal")",
+                semantics: .success)
+        case .axDenied(let target):
+            return TerminalLaunchFeedback(
+                message: "Jumped to \(target.ownerApplication?.displayName ?? "your terminal") — grant Accessibility to land on the exact workspace tab",
+                semantics: .information,
+                action: .openAccessibilitySettings)
+        case .automationDeferred(let target):
+            return TerminalLaunchFeedback(
+                message: "Brought \(target.ownerApplication?.displayName ?? "your terminal") forward — copy the resume command to land on the exact session",
+                semantics: .information,
+                action: .copyResumeCommand)
+        case .axNoConfidentMatch(let target):
+            return TerminalLaunchFeedback(
+                message: "Brought \(target.ownerApplication?.displayName ?? "your terminal") forward — copy the resume command to land on the exact session",
+                semantics: .information,
+                action: .copyResumeCommand)
+        case .axFailed(let target, let reason):
+            return TerminalLaunchFeedback(
+                message: "Workspace targeting failed in \(target.ownerApplication?.displayName ?? "your terminal"): \(reason) — copy the resume command to continue",
+                semantics: .failure,
+                action: .copyResumeCommand)
+        case .axSettingsOpened:
+            return TerminalLaunchFeedback(
+                message: "Opened Accessibility Settings — grant Trifola access, then try Open session again",
+                semantics: .information)
+        case .axSettingsOpenFailed(let target):
+            return TerminalLaunchFeedback(
+                message: "Could not open Accessibility Settings for \(target.ownerApplication?.displayName ?? "your terminal") — copy the resume command to continue",
+                semantics: .failure,
+                action: .copyResumeCommand)
+        case .ownerActivated(let target):
+            return TerminalLaunchFeedback(
+                message: "Brought \(target.ownerApplication?.displayName ?? "your terminal") to the front — copy the resume command to land on the exact session",
+                semantics: .information,
+                action: .copyResumeCommand)
+        case .permissionDenied:
+            return TerminalLaunchFeedback(
+                message: "Terminal automation was denied — grant it in Privacy & Security to open the exact session",
+                semantics: .failure,
+                action: .openAutomationSettings)
+        case .notLive:
+            return TerminalLaunchFeedback(
+                message: "No live terminal was found — copy the resume command to reopen this session",
+                semantics: .information,
+                action: .copyResumeCommand)
+        case .ambiguous:
+            return TerminalLaunchFeedback(
+                message: "Multiple live terminals matched — copy the resume command to choose this session exactly",
+                semantics: .information,
+                action: .copyResumeCommand)
+        case .failed(let failure):
+            return TerminalLaunchFeedback(
+                message: "\(failure.fallbackMessage) — copy the resume command to continue",
+                semantics: .failure,
+                action: .copyResumeCommand)
+        case .cancelled:
+            return nil
+        }
+    }
+
     /// Confirmation shown when a launch SUCCEEDS. Without it, activating a
     /// terminal that is already frontmost (e.g. Ghostty, which has no scriptable
     /// tab for trifola to jump to) produces no visible change — the click reads
     /// as "nothing happened." This makes every successful open acknowledge.
     public var successMessage: String? {
         switch self {
-        case .exact(let target):
-            if target.match == .cwd {
-                "Jumped to \(target.ownerApplication?.displayName ?? "your terminal") using a working-directory match (no registry entry)"
-            } else {
-                "Jumped to your session in \(target.ownerApplication?.displayName ?? "your terminal")"
-            }
-        case .automationDeferred(let target):
-            "Automation setup deferred until a later app session — brought \(target.ownerApplication?.displayName ?? "your terminal") to the front instead"
-        case .axTargeted(let target, let matchedTitle):
-            "Jumped to '\(matchedTitle)' in \(target.ownerApplication?.displayName ?? "your terminal")"
-        case .axDenied(let target):
-            "Grant Accessibility to jump to the exact workspace — fronting \(target.ownerApplication?.displayName ?? "your terminal") instead"
-        case .axNoConfidentMatch(let target):
-            "No confident workspace match in \(target.ownerApplication?.displayName ?? "your terminal") — brought it to the front instead"
-        case .axFailed(let target, let reason):
-            "Workspace targeting failed in \(target.ownerApplication?.displayName ?? "your terminal"): \(reason) — brought it to the front instead"
-        case .axSettingsOpened:
-            "Opened Accessibility settings — grant Trifola access, then try Open session again"
-        case .axSettingsOpenFailed(let target):
-            "Could not open Accessibility settings — fronting \(target.ownerApplication?.displayName ?? "your terminal") instead"
-        case .ownerActivated(let target):
-            if target.match == .cwd {
-                "Brought \(target.ownerApplication?.displayName ?? "your terminal") to the front using a working-directory match (no registry entry)"
-            } else {
-                "Brought \(target.ownerApplication?.displayName ?? "your terminal") to the front"
-            }
+        case .exact, .automationDeferred, .axTargeted, .axDenied,
+             .axNoConfidentMatch, .axFailed, .axSettingsOpened,
+             .axSettingsOpenFailed, .ownerActivated:
+            feedback?.message
         case .cancelled, .permissionDenied, .notLive, .ambiguous, .failed:
             nil
         }

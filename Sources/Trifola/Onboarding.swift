@@ -81,10 +81,12 @@ struct OnboardingOverlay: View {
     var continueAction: () -> Void = {}
     var deferAction: (() -> Void)?
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
 
     var body: some View {
         ZStack {
-            Theme.ink.opacity(reduceTransparency ? 0.24 : 0.14)
+            Theme.ink.opacity(accessibilityContrast == .increased
+                              ? 0.34 : (reduceTransparency ? 0.24 : 0.14))
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
 
@@ -93,6 +95,9 @@ struct OnboardingOverlay: View {
                 .padding(Theme.gutter)
         }
         .accessibilityElement(children: .contain)
+        .onExitCommand {
+            if let deferAction { deferAction() } else { continueAction() }
+        }
     }
 
     private var panel: some View {
@@ -132,9 +137,12 @@ struct OnboardingOverlay: View {
         .padding(Theme.gutter)
         .background {
             RoundedRectangle(cornerRadius: Theme.radiusOverlay, style: .continuous)
-                .fill(Theme.surfaceWindow)
+                .fill(accessibilityContrast == .increased
+                      ? Theme.cardHighContrastFill : Theme.surfaceWindow)
             RoundedRectangle(cornerRadius: Theme.radiusOverlay, style: .continuous)
-                .strokeBorder(Theme.cardStroke, lineWidth: 1)
+                .strokeBorder(accessibilityContrast == .increased
+                              ? Theme.ink : Theme.cardStroke,
+                              lineWidth: accessibilityContrast == .increased ? 2 : 1)
         }
         .shadow(color: Color.black.opacity(0.18), radius: 28, y: 14)
     }
@@ -184,6 +192,7 @@ private struct OnboardingMessage: View {
     let symbol: String
     let title: String
     let detail: String
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.sectionGap) {
@@ -191,7 +200,14 @@ private struct OnboardingMessage: View {
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(Theme.accent)
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(Theme.accent.opacity(0.10)))
+                .background(Circle().fill(
+                    accessibilityContrast == .increased
+                        ? Theme.cardHighContrastFill : Theme.accent.opacity(0.10)))
+                .overlay {
+                    if accessibilityContrast == .increased {
+                        Circle().strokeBorder(Theme.ink, lineWidth: 1)
+                    }
+                }
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)

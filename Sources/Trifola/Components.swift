@@ -10,17 +10,53 @@ struct Card<Content: View>: View {
     var padding: CGFloat = Theme.cardPadding
     var fixedHeight: CGFloat? = nil
     @ViewBuilder let content: () -> Content
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
+    @Environment(\.doorLightReduceTransparencyOverride) private var transparencyOverride
+    @Environment(\.doorLightIncreaseContrastOverride) private var contrastOverride
 
     var body: some View {
+        let transparencyReduced = transparencyOverride ?? reduceTransparency
+        let contrastIncreased = contrastOverride ?? (accessibilityContrast == .increased)
         content()
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: fixedHeight, alignment: .top)
             .background {
                 RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                    .fill(Theme.cardFill)
+                    .fill(contrastIncreased
+                          ? Theme.cardHighContrastFill
+                          : (transparencyReduced ? Theme.cardSolidFill : Theme.cardFill))
                 RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                    .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
+                    .strokeBorder(contrastIncreased
+                                  ? Theme.ink : Theme.cardStroke,
+                                  lineWidth: contrastIncreased
+                                    ? 2 : Theme.hairlineWidth)
+            }
+    }
+}
+
+/// Shared quiet capsule ground with explicit perceptual-accessibility modes.
+/// Chips stay translucent in the normal palette, become opaque when Reduce
+/// Transparency is enabled, and gain a near-solid fill plus a 2pt boundary
+/// under Increase Contrast.
+struct AdaptiveCapsuleSurface: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
+    @Environment(\.doorLightReduceTransparencyOverride) private var transparencyOverride
+    @Environment(\.doorLightIncreaseContrastOverride) private var contrastOverride
+
+    var body: some View {
+        let transparencyReduced = transparencyOverride ?? reduceTransparency
+        let contrastIncreased = contrastOverride ?? (accessibilityContrast == .increased)
+        Capsule()
+            .fill(contrastIncreased
+                  ? Theme.cardHighContrastFill
+                  : (transparencyReduced ? Theme.cardSolidFill : Theme.cardFill))
+            .overlay {
+                Capsule().strokeBorder(
+                    contrastIncreased ? Theme.ink : Theme.cardStroke,
+                    lineWidth: contrastIncreased ? 2 : 1)
             }
     }
 }
@@ -1621,14 +1657,13 @@ struct FilterChip: View {
                 .padding(.horizontal, Theme.codePadding)
                 .padding(.vertical, Theme.micro)
                 .frame(minHeight: Theme.Layout.compactHitHeight)
-                .background {
-                    if isOn {
-                        Capsule().fill(Theme.selectionBG)
-                    } else {
-                        Capsule().fill(Theme.cardFill)
-                        Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)
-                    }
+            .background {
+                if isOn {
+                    Capsule().fill(Theme.selectionBG)
+                } else {
+                        AdaptiveCapsuleSurface()
                 }
+            }
         }
         .accessibilityAddTraits(isOn ? .isSelected : [])
         .accessibilityValue(isOn ? "Selected" : "Not selected")
@@ -1833,16 +1868,26 @@ struct MutedDisclosurePill: View {
 struct CalloutPanel<Content: View>: View {
     let tone: Color
     @ViewBuilder let content: () -> Content
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
+    @Environment(\.doorLightReduceTransparencyOverride) private var transparencyOverride
+    @Environment(\.doorLightIncreaseContrastOverride) private var contrastOverride
 
     var body: some View {
+        let transparencyReduced = transparencyOverride ?? reduceTransparency
+        let contrastIncreased = contrastOverride ?? (accessibilityContrast == .increased)
         content()
             .padding(Theme.cardPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                    .fill(Theme.cardFill)
+                    .fill(contrastIncreased
+                          ? Theme.cardHighContrastFill
+                          : (transparencyReduced ? Theme.cardSolidFill : Theme.cardFill))
                 RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
+                    .strokeBorder(contrastIncreased
+                                  ? Theme.ink : Theme.cardStroke,
+                                  lineWidth: contrastIncreased ? 2 : 1)
             }
     }
 }
@@ -1917,6 +1962,32 @@ struct EmptyState: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(Theme.gutter)
+    }
+}
+
+/// The only cold/provisional session-scan presentation. It deliberately owns
+/// no numeric metrics, quiet verdict, or empty-corpus claim.
+struct SessionReadingState: View {
+    let progress: SessionScanProgress
+    var detail = "Costs, activity, and fleet state will appear when this pass settles."
+
+    var body: some View {
+        VStack(spacing: Theme.sectionGap) {
+            SeatMark(state: .running, size: 14,
+                     firstAppearanceDraw: false)
+            Text(progress.readingSentence)
+                .font(Theme.Typography.section)
+                .foregroundStyle(Theme.ink)
+            Text(detail)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Theme.muted)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(Theme.gutter)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(progress.readingSentence) \(detail)")
     }
 }
 
@@ -2079,16 +2150,32 @@ extension ScreenScaffold where Trailing == EmptyView {
 
 struct Toast: View {
     let text: String
+    var semantics: FeedbackSemantics = .success
     /// Optional inline action ("Open Settings…") — used when the toast names a
     /// problem the user can fix right now. Text-only toasts stay hit-inert.
     var actionLabel: String? = nil
     var action: (() -> Void)? = nil
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
+    @Environment(\.doorLightReduceTransparencyOverride) private var transparencyOverride
+    @Environment(\.doorLightIncreaseContrastOverride) private var contrastOverride
+
+    private var iconColor: Color {
+        switch semantics {
+        case .success: Theme.green
+        case .information: Theme.muted
+        case .failure: Theme.red
+        }
+    }
 
     var body: some View {
+        let transparencyReduced = transparencyOverride ?? reduceTransparency
+        let contrastIncreased = contrastOverride ?? (accessibilityContrast == .increased)
         HStack(spacing: 6) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: semantics.systemImage)
                 .font(.footnote.weight(.medium))
-                .foregroundStyle(Theme.green)
+                .foregroundStyle(iconColor)
+                .accessibilityHidden(true)
             Text(text)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(Theme.ink)
@@ -2100,12 +2187,23 @@ struct Toast: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, 2)
+                .accessibilityLabel(actionLabel)
+                .accessibilityHint("Resolve this message")
             }
         }
         .padding(.horizontal, Theme.sectionGap)
         .padding(.vertical, Theme.toastVerticalInset)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+        .background {
+            if transparencyReduced || contrastIncreased {
+                Capsule().fill(contrastIncreased
+                               ? Theme.cardHighContrastFill : Theme.surfaceWindow)
+            } else {
+                Capsule().fill(.regularMaterial)
+            }
+        }
+        .overlay(Capsule().strokeBorder(
+            contrastIncreased ? Theme.ink : Theme.hairline,
+            lineWidth: contrastIncreased ? 2 : 1))
         .toastTransition()
     }
 }

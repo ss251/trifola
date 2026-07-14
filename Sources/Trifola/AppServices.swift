@@ -74,11 +74,7 @@ enum NavOrigin {
 struct TerminalTranscriptReveal: Equatable {
     let sessionID: String
     let generation: Int
-    let message: String
-    /// True only for an Accessibility-denied outcome: the toast then carries a
-    /// button that opens the exact Settings pane, so a suppressed one-time
-    /// explainer can never strand the user with an unactionable sentence.
-    var opensAccessibilitySettings: Bool = false
+    let feedback: TerminalLaunchFeedback
 }
 
 /// Owns the stores, the FSEvents wiring and the navigation state. One instance
@@ -194,8 +190,12 @@ final class AppServices: ObservableObject {
     private var watcher: FSEventsWatcher?
     private var ticker: Task<Void, Never>?
     private var sessionsDebounce: Task<Void, Never>?
+    private var pendingDebouncedSessionPaths: Set<String> = []
+    private var pendingDebouncedSettings = false
     private var refreshTask: Task<Void, Never>?
     private var refreshQueued = false
+    private var refreshQueuedSessionPaths: Set<String> = []
+    private var refreshQueuedNeedsFullSessionScan = false
     private var refreshQueuedOpenAction = false
     private var terminalLaunchTask: Task<Void, Never>?
     /// The session whose terminal launch is in flight. Drives the button's
@@ -391,22 +391,22 @@ final class AppServices: ObservableObject {
             watchPaths.append(codexPaths.root.path)
         }
         let watcher = FSEventsWatcher(paths: watchPaths) { [weak self] paths in
-            var sessionsDirty = false, settingsDirty = false
+            var sessionPaths: Set<String> = [], settingsDirty = false
             for p in paths {
                 let standardized = URL(fileURLWithPath: p).standardizedFileURL.path
                 if standardized.hasPrefix(projectsPrefix) && standardized.hasSuffix(".jsonl") {
-                    sessionsDirty = true
+                    sessionPaths.insert(standardized)
                 } else if standardized.hasPrefix(codexPrefix)
                             && (standardized.hasSuffix(".jsonl") || standardized.hasSuffix(".jsonl.zst")) {
-                    sessionsDirty = true
+                    sessionPaths.insert(standardized)
                 } else if standardized == settingsPath {
                     settingsDirty = true
                 }
             }
-            guard sessionsDirty || settingsDirty else { return }
-            let s = sessionsDirty, g = settingsDirty
+            guard !sessionPaths.isEmpty || settingsDirty else { return }
+            let changed = sessionPaths, settings = settingsDirty
             Task { @MainActor [weak self] in
-                self?.handleChanges(sessions: s, settings: g)
+                self?.handleChanges(sessionPaths: changed, settings: settings)
             }
         }
         self.watcher = watcher
@@ -576,21 +576,34 @@ final class AppServices: ObservableObject {
                          now: now ?? self.now, arrival: fleet.arrival).board
     }
 
-    func refreshAll(refreshSelectedOpenAction: Bool = false) {
+    func refreshAll(changedSessionPaths: Set<String>? = nil,
+                    refreshSelectedOpenAction: Bool = false) {
         refreshQueuedOpenAction = refreshQueuedOpenAction || refreshSelectedOpenAction
         guard refreshTask == nil else {
             refreshQueued = true
+            if let changedSessionPaths {
+                refreshQueuedSessionPaths.formUnion(changedSessionPaths)
+            } else {
+                refreshQueuedNeedsFullSessionScan = true
+            }
             return
         }
         let wantsOpenAction = refreshQueuedOpenAction
         refreshQueuedOpenAction = false
         refreshTask = Task { [weak self] in
             guard let self else { return }
-            await self.performRefreshAll(refreshSelectedOpenAction: wantsOpenAction)
+            await self.performRefreshAll(
+                changedSessionPaths: changedSessionPaths,
+                refreshSelectedOpenAction: wantsOpenAction)
             self.refreshTask = nil
             if self.refreshQueued {
+                let nextPaths = self.refreshQueuedNeedsFullSessionScan
+                    ? nil : self.refreshQueuedSessionPaths
                 self.refreshQueued = false
+                self.refreshQueuedNeedsFullSessionScan = false
+                self.refreshQueuedSessionPaths = []
                 self.refreshAll(
+                    changedSessionPaths: nextPaths,
                     refreshSelectedOpenAction: self.refreshQueuedOpenAction)
             }
         }
@@ -598,8 +611,11 @@ final class AppServices: ObservableObject {
 
     var isRefreshCascadeRunning: Bool { refreshTask != nil }
 
-    private func performRefreshAll(refreshSelectedOpenAction: Bool) async {
-        await Perf.span("await:sessions.refreshNow") { await sessions.refreshNow() }
+    private func performRefreshAll(changedSessionPaths: Set<String>?,
+                                   refreshSelectedOpenAction: Bool) async {
+        await Perf.span("await:sessions.refreshNow") {
+            await sessions.refreshNow(changedPaths: changedSessionPaths)
+        }
         await refreshLiveTerminalSnapshot()
         // Sessions can hydrate immediately from the parsed cache; do not make
         // its first visit wait for audit/ledger/deadline refresh work.
@@ -677,8 +693,10 @@ final class AppServices: ObservableObject {
         }
     }
 
-    private func handleChanges(sessions sessionsDirty: Bool, settings settingsDirty: Bool) {
-        if sessionsDirty || settingsDirty {
+    private func handleChanges(sessionPaths: Set<String>, settings settingsDirty: Bool) {
+        pendingDebouncedSessionPaths.formUnion(sessionPaths)
+        pendingDebouncedSettings = pendingDebouncedSettings || settingsDirty
+        if !sessionPaths.isEmpty || settingsDirty {
             guard sessionsDebounce == nil else { return }
             sessionsDebounce = Task { [weak self] in
                 // 5s, not 1.2s: under heavy multi-agent activity ~/.claude/projects
@@ -688,8 +706,12 @@ final class AppServices: ObservableObject {
                 // back-to-back → permanent 100% CPU. A 5s floor guarantees idle time.
                 try? await Task.sleep(for: .seconds(5))
                 guard let self, !Task.isCancelled else { return }
+                let changed = self.pendingDebouncedSessionPaths
+                let settingsChanged = self.pendingDebouncedSettings
+                self.pendingDebouncedSessionPaths = []
+                self.pendingDebouncedSettings = false
                 self.sessionsDebounce = nil
-                self.refreshAll()
+                self.refreshAll(changedSessionPaths: settingsChanged ? nil : changed)
             }
         }
     }
@@ -768,6 +790,28 @@ final class AppServices: ObservableObject {
         var updated = preferences.value
         updated.hasOpenedAccessibilitySettings = true
         preferences.value = updated
+    }
+
+    func performTerminalFeedbackAction(_ action: TerminalFeedbackAction,
+                                       sessionID: String) {
+        switch action {
+        case .openAccessibilitySettings:
+            openAccessibilitySettingsFromToast()
+        case .openAutomationSettings:
+            guard let url = URL(string:
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") else {
+                return
+            }
+            NSWorkspace.shared.open(url)
+        case .copyResumeCommand:
+            guard let session = sessions.sessions.first(where: { $0.id == sessionID }) else {
+                return
+            }
+            let command = SessionResume.command(
+                sessionID: session.id, cwd: session.cwd)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(command, forType: .string)
+        }
     }
 
     func sessionOpenAction(for session: SessionSummary) -> SessionOpenActionPresentation {
@@ -855,7 +899,9 @@ final class AppServices: ObservableObject {
         if launchingSessionID == session.id {
             publishTranscriptReveal(
                 sessionID: session.id,
-                message: "Opening session — still working…")
+                feedback: TerminalLaunchFeedback(
+                    message: "Opening session — still working…",
+                    semantics: .information))
             return
         }
         terminalLaunchTask?.cancel()
@@ -886,19 +932,19 @@ final class AppServices: ObservableObject {
                 // one-time explainer can be suppressed (its "seen" flag
                 // persists), and a bare sentence stranded the user with no
                 // way to grant. The button opens the exact Settings pane.
-                var opensAccessibility = false
-                if case .axDenied = outcome { opensAccessibility = true }
                 self?.publishTranscriptReveal(
                     sessionID: id,
-                    message: outcome.fallbackMessage
-                        ?? "No live terminal found — showing transcript",
-                    opensAccessibilitySettings: opensAccessibility
+                    feedback: outcome.feedback ?? TerminalLaunchFeedback(
+                        message: "Showing the local transcript",
+                        semantics: .information)
                 )
             },
-            confirmLaunch: { [weak self] message in
+            confirmLaunch: { [weak self] outcome in
                 // A successful open acknowledges in-app so it never reads as a
                 // no-op — the same session-scoped banner the fallback uses.
-                self?.publishTranscriptReveal(sessionID: session.id, message: message)
+                guard let feedback = outcome.feedback else { return }
+                self?.publishTranscriptReveal(
+                    sessionID: session.id, feedback: feedback)
             },
             onFinished: { [weak self] in
                 guard let self, self.launchingSessionID == session.id else { return }
@@ -918,23 +964,24 @@ final class AppServices: ObservableObject {
         inspect(session)
         publishTranscriptReveal(
             sessionID: session.id,
-            message: message ?? "No live terminal found — showing transcript"
+            feedback: TerminalLaunchFeedback(
+                message: message ?? "Showing the local transcript",
+                semantics: .information)
         )
     }
 
-    private func publishTranscriptReveal(sessionID: String, message: String,
-                                         opensAccessibilitySettings: Bool = false) {
+    private func publishTranscriptReveal(sessionID: String,
+                                         feedback: TerminalLaunchFeedback) {
         terminalRevealGeneration += 1
         let generation = terminalRevealGeneration
         terminalTranscriptReveal = TerminalTranscriptReveal(
             sessionID: sessionID,
             generation: generation,
-            message: message,
-            opensAccessibilitySettings: opensAccessibilitySettings
+            feedback: feedback
         )
         Task { [weak self] in
             // An actionable toast needs time to be acted on.
-            try? await Task.sleep(for: .seconds(opensAccessibilitySettings ? 8 : 2.5))
+            try? await Task.sleep(for: .seconds(feedback.action == nil ? 2.5 : 8))
             guard let self,
                   self.terminalTranscriptReveal?.generation == generation else { return }
             self.terminalTranscriptReveal = nil

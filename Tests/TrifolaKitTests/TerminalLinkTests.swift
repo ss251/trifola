@@ -546,34 +546,34 @@ struct TerminalLaunchOutcomeCopyTests {
         #expect(TerminalLaunchOutcome.exact(launchTarget(application: .iTerm2)).successMessage
                 == "Jumped to your session in iTerm")
         #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(application: .ghostty)).successMessage
-                == "Brought Ghostty to the front")
+                == "Brought Ghostty to the front — copy the resume command to land on the exact session")
         #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(application: .other(name: "Warp"))).successMessage
-                == "Brought Warp to the front")
+                == "Brought Warp to the front — copy the resume command to land on the exact session")
         #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(application: nil)).successMessage
-                == "Brought your terminal to the front")
+                == "Brought your terminal to the front — copy the resume command to land on the exact session")
         #expect(TerminalLaunchOutcome.automationDeferred(
             launchTarget(application: .terminal)).successMessage
-                == "Automation setup deferred until a later app session — brought Terminal to the front instead")
+                == "Brought Terminal forward — copy the resume command to land on the exact session")
         #expect(TerminalLaunchOutcome.axTargeted(
             launchTarget(application: .other(name: "WorkspaceTerm")),
             matchedTitle: "portfolio").successMessage
                 == "Jumped to 'portfolio' in WorkspaceTerm")
         #expect(TerminalLaunchOutcome.axDenied(
             launchTarget(application: .other(name: "WorkspaceTerm"))).successMessage
-                == "Grant Accessibility to jump to the exact workspace — fronting WorkspaceTerm instead")
+                == "Jumped to WorkspaceTerm — grant Accessibility to land on the exact workspace tab")
         #expect(TerminalLaunchOutcome.axNoConfidentMatch(
             launchTarget(application: .ghostty)).successMessage
-                == "No confident workspace match in Ghostty — brought it to the front instead")
+                == "Brought Ghostty forward — copy the resume command to land on the exact session")
         #expect(TerminalLaunchOutcome.axFailed(
             launchTarget(application: .other(name: "Warp")), reason: "AX timeout")
             .successMessage
-                == "Workspace targeting failed in Warp: AX timeout — brought it to the front instead")
+                == "Workspace targeting failed in Warp: AX timeout — copy the resume command to continue")
         #expect(TerminalLaunchOutcome.axSettingsOpened(
             launchTarget(application: .other(name: "WorkspaceTerm"))).successMessage
-                == "Opened Accessibility settings — grant Trifola access, then try Open session again")
+                == "Opened Accessibility Settings — grant Trifola access, then try Open session again")
         #expect(TerminalLaunchOutcome.axSettingsOpenFailed(
             launchTarget(application: .other(name: "WorkspaceTerm"))).successMessage
-                == "Could not open Accessibility settings — fronting WorkspaceTerm instead")
+                == "Could not open Accessibility Settings for WorkspaceTerm — copy the resume command to continue")
         // Every fallback path stays silent on success so the toast never lies.
         #expect(TerminalLaunchOutcome.notLive.successMessage == nil)
         #expect(TerminalLaunchOutcome.ambiguous.successMessage == nil)
@@ -584,10 +584,33 @@ struct TerminalLaunchOutcomeCopyTests {
         #expect(TerminalLaunchOutcome.cancelled.fallbackMessage == nil)
         #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(
             application: .ghostty, match: .cwd)).successMessage
-                == "Brought Ghostty to the front using a working-directory match (no registry entry)")
+                == "Brought Ghostty to the front — copy the resume command to land on the exact session")
         #expect(TerminalLaunchOutcome.permissionDenied(
             TerminalAutomationError(number: -1743, message: "denied", dictionary: [:]))
             .fallbackMessage?.contains("System Settings → Privacy & Security → Automation") == true)
+    }
+
+    @Test("toast semantics keep checks for success and attach remedies to limitations")
+    func feedbackSemanticsAndActions() {
+        let exact = TerminalLaunchOutcome.exact(
+            launchTarget(application: .iTerm2)).feedback
+        #expect(exact?.semantics == .success)
+        #expect(exact?.semantics.systemImage == "checkmark.circle.fill")
+        #expect(exact?.action == nil)
+
+        let denied = TerminalLaunchOutcome.axDenied(
+            launchTarget(application: .other(name: "WorkspaceTerm"))).feedback
+        #expect(denied?.semantics == .information)
+        #expect(denied?.semantics.systemImage == "info.circle.fill")
+        #expect(denied?.action == .openAccessibilitySettings)
+        #expect(denied?.action?.label == "Open Accessibility Settings")
+        #expect(denied?.message
+            == "Jumped to WorkspaceTerm — grant Accessibility to land on the exact workspace tab")
+
+        let failed = TerminalLaunchOutcome.failed(.noTerminalOwner).feedback
+        #expect(failed?.semantics == .failure)
+        #expect(failed?.semantics.systemImage == "exclamationmark.triangle.fill")
+        #expect(failed?.action == .copyResumeCommand)
     }
 
     @Test("every completed user-visible outcome has exactly one message")
@@ -773,7 +796,7 @@ struct TerminalLaunchFlowTests {
         #expect(owner.applications == [.ghostty])
         #expect(windows.events.isEmpty)
         #expect(outcome.successMessage
-            == "No confident workspace match in Ghostty — brought it to the front instead")
+            == "Brought Ghostty forward — copy the resume command to land on the exact session")
     }
 
     @Test("an unknown macOS terminal uses AX then activates its owner PID")
@@ -803,7 +826,7 @@ struct TerminalLaunchFlowTests {
         #expect(owner.applications == [.other(name: "ExampleTerm")])
         #expect(windows.events.isEmpty)
         #expect(outcome.successMessage
-            == "No confident workspace match in ExampleTerm — brought it to the front instead")
+            == "Brought ExampleTerm forward — copy the resume command to land on the exact session")
     }
 
     @Test("AX match activates the owner and returns the matched workspace title")
@@ -934,7 +957,7 @@ struct TerminalLaunchFlowTests {
         #expect(outcome == .axSettingsOpenFailed(target))
         #expect(owner.processIDs == [900])
         #expect(outcome.successMessage
-            == "Could not open Accessibility settings — fronting WorkspaceTerm instead")
+            == "Could not open Accessibility Settings for WorkspaceTerm — copy the resume command to continue")
         #expect(windows.events.isEmpty)
     }
 

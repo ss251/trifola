@@ -90,10 +90,12 @@ public struct MenuBarModel: Equatable, Sendable {
     public var hogLine: String?
     /// The hottest plan-quota window strictly over the threshold, nil when calm.
     public var quotaLine: String?
+    public var isReading: Bool
 
     public init(glyph: MenuBarGlyphState, title: String?, fleetLine: String,
                 blocked: [AttentionRow], waiting: [AttentionRow],
-                jeopardy: JeopardyLine?, hogLine: String? = nil, quotaLine: String? = nil) {
+                jeopardy: JeopardyLine?, hogLine: String? = nil,
+                quotaLine: String? = nil, isReading: Bool = false) {
         self.glyph = glyph
         self.title = title
         self.fleetLine = fleetLine
@@ -102,6 +104,7 @@ public struct MenuBarModel: Equatable, Sendable {
         self.jeopardy = jeopardy
         self.hogLine = hogLine
         self.quotaLine = quotaLine
+        self.isReading = isReading
     }
 }
 
@@ -110,6 +113,14 @@ public enum MenuBarReducer {
     /// rule (`isContextHeavy`, `OrchestratorHog.shareThreshold`): exactly at
     /// the bar is at the bar, not over it.
     public static let quotaHotPercent = 80.0
+
+    public static func readingModel(progress: SessionScanProgress) -> MenuBarModel {
+        MenuBarModel(
+            glyph: .running, title: nil,
+            fleetLine: progress.readingSentence,
+            blocked: [], waiting: [], jeopardy: nil,
+            isReading: true)
+    }
 
     /// The glyph, from the board alone. Matches the shipped mapping: needsYou
     /// when blocked OR waiting, running when work streams, quiet otherwise.

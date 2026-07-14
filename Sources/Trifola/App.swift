@@ -278,12 +278,16 @@ struct MenuBarLabel: View {
         let dayKey = CostProvenance.dayKey(for: services.now)
         let hog = OrchestratorHog.alert(sessions: services.sessions.sessions, day: dayKey)
         let today = services.sessions.sessions.reduce(0) { $0 + $1.cost(onDay: dayKey) }
+        let provisional = services.sessions.scanPresentation.isProvisional
+        let glyph: MenuBarGlyphState = provisional
+            ? .running : MenuBarReducer.glyph(board: board)
+        let title = provisional ? nil : MenuBarReducer.titleText(
+            board: board, hogFiring: hog != nil, todayCost: today)
         HStack(spacing: 3) {
             Image(nsImage: AppBrand.markImage(size: 18,
-                                              state: markState(MenuBarReducer.glyph(board: board)),
+                                              state: markState(glyph),
                                               template: true))
-            if let title = MenuBarReducer.titleText(board: board, hogFiring: hog != nil,
-                                                    todayCost: today) {
+            if let title {
                 Text(title)
                     .liveNumericTransition(value: title)
             }
@@ -316,13 +320,15 @@ struct MenuBarContent: View {
         let sessions = services.sessions.sessions
         let rawBoard = services.attentionBoard(now: now)
         let suppression = services.attentionSuppression(now: now)
-        let mb = MenuBarReducer.model(
-            board: suppression.alertingBoard,
-            cards: services.deadlineCards(now: now),
-            todayCost: sessions.reduce(0) { $0 + $1.cost(onDay: dayKey) },
-            hog: OrchestratorHog.alert(sessions: sessions, day: dayKey),
-            quota: services.quota.snapshot,
-            now: now)
+        let mb = services.sessions.scanPresentation.isProvisional
+            ? MenuBarReducer.readingModel(progress: services.sessions.scanProgress)
+            : MenuBarReducer.model(
+                board: suppression.alertingBoard,
+                cards: services.deadlineCards(now: now),
+                todayCost: sessions.reduce(0) { $0 + $1.cost(onDay: dayKey) },
+                hog: OrchestratorHog.alert(sessions: sessions, day: dayKey),
+                quota: services.quota.snapshot,
+                now: now)
         let rawMB = MenuBarReducer.model(
             board: rawBoard, cards: [], todayCost: 0, now: now)
         let suppressedIDs = Set(suppression.suppressedRows.map(\.id))
@@ -481,6 +487,7 @@ struct MenuBarPanel: View {
     }
 
     private var statusHeadline: String {
+        if model.isReading { return "Reading sessions" }
         let needsYou = model.blocked.count + model.waiting.count
         if needsYou == 1 { return "1 session needs you" }
         if needsYou > 1 { return "\(needsYou) sessions need you" }

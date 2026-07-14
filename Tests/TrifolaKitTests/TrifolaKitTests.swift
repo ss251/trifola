@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import TrifolaKit
 
@@ -713,6 +714,25 @@ struct IndexTests {
         }
     }
 
+    @Test func provisionalCopyNeverClaimsQuietEmptyOrZero() {
+        for progress in [
+            SessionScanProgress(scanned: 0, totalEstimate: 0, isInProgress: true),
+            SessionScanProgress(scanned: 17, totalEstimate: 7_041, isInProgress: true),
+        ] {
+            let copy = progress.readingSentence.lowercased()
+            #expect(copy.hasPrefix("reading your sessions"))
+            #expect(!copy.contains("fleet is quiet"))
+            #expect(!copy.contains("floor is empty"))
+            #expect(!copy.contains("$0"))
+            #expect(!copy.contains("nothing needs"))
+
+            let menu = MenuBarReducer.readingModel(progress: progress)
+            #expect(menu.isReading)
+            #expect(menu.fleetLine == progress.readingSentence)
+            #expect(menu.title == nil)
+        }
+    }
+
     @Test func settledAggregateStaysMountedAcrossFiveMinutesOfRescans() {
         var state = SessionScanPresentationReducer.reduce(
             .coldScanning, event: .aggregateAvailable)
@@ -838,7 +858,8 @@ struct IndexTests {
         try fh.write(contentsOf: Data((asst2 + "\n").utf8))
         try fh.close()
 
-        let second = SessionIndex.update(first, dir: dir)
+        let second = SessionIndex.update(
+            first, dir: dir, changedPaths: [file.path])
         let s = second.summaries[0]
         #expect(s.messageCount == 3)
         #expect(s.usage.cacheReadTokens == 7000)
@@ -848,6 +869,141 @@ struct IndexTests {
         var cold = SessionAccumulator(defaultID: "sess")
         cold.ingest(try Data(contentsOf: file))
         #expect(cold.summary(filePath: file.path).usage == s.usage)
+    }
+
+    @Test func changedFileSetDrivesIncrementalReconcileWork() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let changed = dir.appendingPathComponent("changed.jsonl")
+        let untouched = dir.appendingPathComponent("untouched.jsonl")
+        let keyed1 = #"{"type":"assistant","requestId":"request-1","timestamp":"2026-01-01T10:00:05.000Z","message":{"id":"message-1","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":50}}}"#
+        let keyed2 = #"{"type":"assistant","requestId":"request-2","timestamp":"2026-01-01T10:00:09.000Z","message":{"id":"message-2","model":"claude-sonnet-5","usage":{"input_tokens":200,"output_tokens":80}}}"#
+        try (userLine + "\n" + keyed1 + "\n").write(
+            to: changed, atomically: true, encoding: .utf8)
+        try (userLine + "\n").write(
+            to: untouched, atomically: true, encoding: .utf8)
+
+        let first = SessionIndex.update(SessionIndex(), dir: dir)
+        #expect(first.lastReconcileWork.fullRebuild)
+        #expect(first.lastReconcileWork.rematerializedPaths.count == 2)
+
+        let handle = try FileHandle(forWritingTo: changed)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((keyed2 + "\n").utf8))
+        try handle.close()
+        let second = SessionIndex.update(
+            first, dir: dir, changedPaths: [changed.path])
+
+        #expect(!second.lastReconcileWork.fullRebuild)
+        #expect(second.lastReconcileWork.changedPaths == [changed.path])
+        #expect(second.lastReconcileWork.affectedKeys > 0)
+        #expect(second.lastReconcileWork.rematerializedPaths == [changed.path])
+        #expect(!second.lastReconcileWork.rematerializedPaths.contains(untouched.path))
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment[
+        "TRIFOLA_RUN_CHURN_FIXTURE"] == "1"))
+    func sixtySecondLiveAppendChurnBudget() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var files: [URL] = []
+        files.reserveCapacity(7_000)
+        for number in 0..<7_000 {
+            let file = dir.appendingPathComponent("session-\(number).jsonl")
+            let line = #"{"type":"user","cwd":"/tmp/project-#(number)","sessionId":"session-#(number)","timestamp":"2026-01-01T10:00:00.000Z","message":{"content":"fixture"}}"#
+            try (line + "\n").write(to: file, atomically: true, encoding: .utf8)
+            files.append(file)
+        }
+        var index = SessionIndex.update(SessionIndex(), dir: dir)
+        let wallStart = Date()
+        let cpuStart = Double(clock()) / Double(CLOCKS_PER_SEC)
+        for burst in 0..<30 {
+            let file = files[burst % files.count]
+            let line = #"{"type":"assistant","requestId":"request-#(burst)","timestamp":"2026-01-01T10:00:05.000Z","message":{"id":"message-#(burst)","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":50}}}"#
+            let handle = try FileHandle(forWritingTo: file)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data((line + "\n").utf8))
+            try handle.close()
+            index = SessionIndex.update(
+                index, dir: dir, changedPaths: [file.path])
+            #expect(index.lastReconcileWork.changedPaths == [file.path])
+            #expect(index.lastReconcileWork.rematerializedPaths == [file.path])
+            Thread.sleep(forTimeInterval: 2)
+        }
+        let wall = Date().timeIntervalSince(wallStart)
+        let cpu = Double(clock()) / Double(CLOCKS_PER_SEC) - cpuStart
+        let percent = cpu / wall * 100
+        print(String(format:
+            "RECONCILE_CHURN sessions=7000 bursts=30 wall=%.2fs cpu=%.2fs cpu_pct=%.2f",
+            wall, cpu, percent))
+        #expect(wall >= 60)
+        #expect(percent < 15)
+    }
+
+    @Test func sqliteSessionIndexWritesOnlyChangedRows() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let firstFile = dir.appendingPathComponent("first.jsonl")
+        let secondFile = dir.appendingPathComponent("second.jsonl")
+        try (userLine + "\n" + asst1 + "\n").write(
+            to: firstFile, atomically: true, encoding: .utf8)
+        try (userLine + "\n").write(
+            to: secondFile, atomically: true, encoding: .utf8)
+        let cache = dir.appendingPathComponent("session-index.json")
+
+        let initial = SessionIndex.update(SessionIndex(), dir: dir)
+        let firstSave = try #require(SessionStore.saveIndexCache(initial, to: cache))
+        #expect(firstSave.inserted == 2)
+        #expect(firstSave.updated == 0)
+        #expect(firstSave.reused == 0)
+        #expect(firstSave.payloadBytesWritten > 0)
+        #expect(FileManager.default.fileExists(atPath:
+            cache.deletingPathExtension().appendingPathExtension("sqlite3").path))
+
+        let noChange = try #require(SessionStore.saveIndexCache(initial, to: cache))
+        #expect(noChange.reused == 2)
+        #expect(noChange.payloadBytesWritten == 0)
+
+        let handle = try FileHandle(forWritingTo: firstFile)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((asst2 + "\n").utf8))
+        try handle.close()
+        let updated = SessionIndex.update(initial, dir: dir)
+        let delta = try #require(SessionStore.saveIndexCache(updated, to: cache))
+        #expect(delta.updated == 1)
+        #expect(delta.reused == 1)
+        #expect(delta.payloadBytesWritten > 0)
+        #expect(SessionStore.loadIndexCache(from: cache)?.summaries.count == 2)
+    }
+
+    @Test func legacySessionIndexIsDeletedOnlyAfterSQLiteMigrationSucceeds() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let legacy = dir.appendingPathComponent("session-index.json")
+        let database = dir.appendingPathComponent("session-index.sqlite3")
+        let zone = TimeZone(identifier: "UTC")!
+        let payload = #"{"version":21,"timeZoneIdentifier":"\#(zone.identifier)","entries":[]}"#
+        try Data(payload.utf8)
+            .write(to: legacy, options: .atomic)
+
+        let migrated = SessionStore.loadIndexCache(
+            from: legacy, timeZone: zone)
+
+        #expect(migrated != nil)
+        #expect(FileManager.default.fileExists(atPath: database.path))
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+    }
+
+    @Test func corruptSQLiteTriggersRebuildAndRemovesDatabase() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let requested = dir.appendingPathComponent("session-index.json")
+        let database = dir.appendingPathComponent("session-index.sqlite3")
+        try Data("not a sqlite database".utf8).write(to: database)
+
+        #expect(SessionStore.loadIndexCache(
+            from: requested, timeZone: TimeZone(identifier: "UTC")!) == nil)
+        #expect(!FileManager.default.fileExists(atPath: database.path))
     }
 
     @Test func unchangedFileIsReused() throws {

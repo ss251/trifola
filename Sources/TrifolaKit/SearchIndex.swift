@@ -914,13 +914,13 @@ private struct PreparedChange {
     let replaceConversation: Bool
 }
 
-private enum SQLiteFailure: Error {
+enum SQLiteFailure: Error {
     case message(String)
 }
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-private final class SQLiteConnection {
+final class SQLiteConnection {
     private var database: OpaquePointer?
 
     init(url: URL, readOnly: Bool) throws {
@@ -982,7 +982,7 @@ private final class SQLiteConnection {
     }
 }
 
-private final class SQLiteStatement {
+final class SQLiteStatement {
     private let statement: OpaquePointer
     private let database: OpaquePointer?
 
@@ -1012,6 +1012,14 @@ private final class SQLiteStatement {
         guard sqlite3_bind_double(statement, index, value) == SQLITE_OK else { throw error() }
     }
 
+    func bind(_ value: Data, at index: Int32) throws {
+        let result = value.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(statement, index, bytes.baseAddress,
+                              Int32(bytes.count), sqliteTransient)
+        }
+        guard result == SQLITE_OK else { throw error() }
+    }
+
     func bindNull(at index: Int32) throws {
         guard sqlite3_bind_null(statement, index) == SQLITE_OK else { throw error() }
     }
@@ -1034,6 +1042,14 @@ private final class SQLiteStatement {
 
     func double(_ column: Int32) -> Double {
         sqlite3_column_double(statement, column)
+    }
+
+    func data(_ column: Int32) -> Data {
+        guard let bytes = sqlite3_column_blob(statement, column) else {
+            return Data()
+        }
+        return Data(bytes: bytes,
+                    count: Int(sqlite3_column_bytes(statement, column)))
     }
 
     func isNull(_ column: Int32) -> Bool {

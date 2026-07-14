@@ -24,6 +24,9 @@ enum UXEvidenceRender {
             renderAccessibilitySpotcheck(
                 dark: dark,
                 to: root.appendingPathComponent("accessibility-\(theme).png"))
+            renderProvisionalState(
+                dark: dark,
+                to: root.appendingPathComponent("provisional-\(theme).png"))
         }
     }
 
@@ -64,15 +67,41 @@ enum UXEvidenceRender {
 
     private static func renderAccessibilitySpotcheck(dark: Bool, to url: URL) {
         let content = AccessibilityAcceptanceCard()
-            .frame(width: 1_080, height: 360)
+            .frame(width: 1_080, height: 440)
+            .background(Theme.surfaceWindow)
+            .environment(\.colorScheme, dark ? .dark : .light)
+            .environment(\.doorLightReduceMotionOverride, true)
+            .environment(\.doorLightReduceTransparencyOverride, true)
+            .environment(\.doorLightIncreaseContrastOverride, true)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = 2
+        var rendered: NSImage?
+        let appearance = NSAppearance(named: dark ? .accessibilityHighContrastDarkAqua
+                                                  : .accessibilityHighContrastAqua)!
+        appearance.performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
+        guard let image = rendered,
+              let data = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: data),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: url, options: .atomic)
+    }
+
+    private static func renderProvisionalState(dark: Bool, to url: URL) {
+        let content = ScreenScaffold(
+            title: "Live Now",
+            subtitle: "Reading your sessions — 417 of ~7,041…",
+            scrolls: false) {
+                SessionReadingState(progress: SessionScanProgress(
+                    scanned: 417, totalEstimate: 7_041, isInProgress: true))
+            }
+            .frame(width: 1_080, height: 520)
             .background(Theme.surfaceWindow)
             .environment(\.colorScheme, dark ? .dark : .light)
             .environment(\.doorLightReduceMotionOverride, true)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 2
         var rendered: NSImage?
-        let appearance = NSAppearance(named: dark ? .accessibilityHighContrastDarkAqua
-                                                  : .accessibilityHighContrastAqua)!
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
         appearance.performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
         guard let image = rendered,
               let data = image.tiffRepresentation,
@@ -118,6 +147,13 @@ private struct AccessibilityAcceptanceCard: View {
                         }
                     }
                 }
+            }
+            HStack(spacing: Theme.sectionGap) {
+                Toast(text: "Session opened", semantics: .success)
+                Toast(text: "Exact tab unavailable", semantics: .information,
+                      actionLabel: "Open Settings", action: {})
+                Toast(text: "Workspace targeting failed", semantics: .failure,
+                      actionLabel: "Copy resume", action: {})
             }
             Text("High Contrast keeps semantic boundaries and disabled states distinct. Production material accents switch to opaque fills under Reduce Transparency. Motion modifiers read the system Reduce Motion environment; this still forces the Door Light's reduced path.")
                 .font(Theme.Typography.metadataMedium)

@@ -92,7 +92,15 @@ struct SpendScreen: View {
 
     var body: some View {
         Group {
-            if let corpus = navigationSnapshots.corpus {
+            if store.scanPresentation.isProvisional {
+                ScreenScaffold(
+                    title: "Spend & Routing",
+                    subtitle: store.scanProgress.readingSentence,
+                    scrolls: scrolls) {
+                    SessionReadingState(progress: store.scanProgress)
+                        .frame(minHeight: 420)
+                }
+            } else if let corpus = navigationSnapshots.corpus {
                 spendContent(corpus)
             } else {
                 ScreenScaffold(

@@ -263,6 +263,7 @@ public struct ClaudePaths: Sendable, Equatable {
     public let root: URL
     public let source: ClaudeConfigLocationSource
     public let sessionIndexCacheURL: URL
+    public let legacySessionIndexCacheURL: URL
     public let searchIndexCacheURL: URL
     public let legacySearchIndexCacheURL: URL
 
@@ -291,8 +292,17 @@ public struct ClaudePaths: Sendable, Equatable {
                 searchIndexCacheURL: URL? = nil) {
         self.root = root.standardizedFileURL
         self.source = source
-        self.sessionIndexCacheURL = sessionIndexCacheURL
+        let requestedSession = sessionIndexCacheURL
             ?? Self.cacheURL(for: self.root, source: source)
+        if requestedSession.pathExtension.lowercased() == "json" {
+            self.sessionIndexCacheURL = requestedSession
+                .deletingPathExtension().appendingPathExtension("sqlite3")
+            self.legacySessionIndexCacheURL = requestedSession
+        } else {
+            self.sessionIndexCacheURL = requestedSession
+            self.legacySessionIndexCacheURL = requestedSession
+                .deletingPathExtension().appendingPathExtension("json")
+        }
         if let searchIndexCacheURL,
            searchIndexCacheURL.pathExtension.lowercased() == "json" {
             self.searchIndexCacheURL = searchIndexCacheURL
@@ -341,7 +351,7 @@ public struct ClaudePaths: Sendable, Equatable {
             for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Trifola", isDirectory: true)
         guard source == .environmentOverride else {
-            return base.appendingPathComponent("session-index.json")
+            return base.appendingPathComponent("session-index.sqlite3")
         }
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in root.standardizedFileURL.path.utf8 {
@@ -349,7 +359,7 @@ public struct ClaudePaths: Sendable, Equatable {
             hash &*= 1_099_511_628_211
         }
         return base.appendingPathComponent(
-            "session-index-\(String(hash, radix: 16)).json")
+            "session-index-\(String(hash, radix: 16)).sqlite3")
     }
 
     private static func searchDatabaseURL(for sessionCache: URL) -> URL {
@@ -363,12 +373,13 @@ public struct ClaudePaths: Sendable, Equatable {
     }
 
     private static func legacySearchCacheURL(for sessionCache: URL) -> URL {
-        let name = sessionCache.lastPathComponent
+        let name = (sessionCache.lastPathComponent as NSString).deletingPathExtension
         let searchName = name.hasPrefix("session-index")
             ? "search-index" + String(name.dropFirst("session-index".count))
             : "search-index.json"
         return sessionCache.deletingLastPathComponent()
-            .appendingPathComponent(String(searchName))
+            .appendingPathComponent(
+                (searchName as NSString).deletingPathExtension + ".json")
     }
 }
 

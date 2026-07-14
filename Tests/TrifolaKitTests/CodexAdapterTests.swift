@@ -366,7 +366,7 @@ struct CodexAdapterTests {
         #expect(CodexImportManifest.load(from: link) == CodexImportManifest())
     }
 
-    @Test func codexCacheRoundTripUsesVersion21AndRejectsVersion20() throws {
+    @Test func codexCacheRoundTripUsesSQLiteAndRejectsLegacyVersion20() throws {
         let root = try codexTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let sessions = root.appendingPathComponent("sessions", isDirectory: true)
@@ -382,18 +382,20 @@ struct CodexAdapterTests {
         let cache = root.appendingPathComponent("index.json")
         SessionStore.saveIndexCache(index, to: cache)
 
-        let cacheObject = try #require(
-            JSONSerialization.jsonObject(with: Data(contentsOf: cache))
-                as? [String: Any])
-        #expect((cacheObject["version"] as? NSNumber)?.intValue == 21)
+        let database = cache.deletingPathExtension()
+            .appendingPathExtension("sqlite3")
+        #expect(FileManager.default.fileExists(atPath: database.path))
+        #expect(try Data(contentsOf: database).starts(with: Data("SQLite format 3".utf8)))
         let loaded = try #require(SessionStore.loadIndexCache(from: cache))
         #expect(loaded.summaries.first?.provider == .codex)
         #expect(loaded.summaries.first?.id == "cache")
         #expect(loaded.summaries.first?.tier == .codex)
 
-        var staleObject = cacheObject
-        staleObject["version"] = 20
-        try JSONSerialization.data(withJSONObject: staleObject)
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(
+                at: URL(fileURLWithPath: database.path + suffix))
+        }
+        try Data(#"{"version":20,"timeZoneIdentifier":"UTC","entries":[]}"#.utf8)
             .write(to: cache, options: .atomic)
         #expect(SessionStore.loadIndexCache(from: cache) == nil)
     }

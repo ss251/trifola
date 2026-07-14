@@ -218,7 +218,8 @@ struct ClaudeConfigLocationTests {
         #expect(paths.agents.path == "/tmp/team-claude/agents")
         #expect(paths.skills.path == "/tmp/team-claude/skills")
         #expect(paths.pluginCache.path == "/tmp/team-claude/plugins/cache")
-        #expect(paths.sessionIndexCacheURL.path == "/tmp/team-index.json")
+        #expect(paths.sessionIndexCacheURL.path == "/tmp/team-index.sqlite3")
+        #expect(paths.legacySessionIndexCacheURL.path == "/tmp/team-index.json")
         #expect(paths.searchIndexCacheURL.path == "/tmp/search-index.sqlite3")
         #expect(paths.legacySearchIndexCacheURL.path == "/tmp/search-index.json")
     }
@@ -247,7 +248,9 @@ struct ClaudeConfigLocationTests {
             .deletingLastPathComponent()
         let executable = repository.appendingPathComponent(".build/debug/Trifola")
         #expect(FileManager.default.isExecutableFile(atPath: executable.path))
-        let cache = fixture.appendingPathComponent("override-index.json")
+        // The session index migrated to SQLite: the requested cache path's
+        // extension is rewritten to .sqlite3 (SessionIndexStorage).
+        let cache = fixture.appendingPathComponent("override-index.sqlite3")
         let process = Process()
         process.executableURL = executable
         process.arguments = ["--spend-by-model", "2026-01-01"]

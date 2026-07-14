@@ -835,18 +835,18 @@ private struct SessionInspector: View {
                 // Actionable toasts must be hit-testable — the whole point of
                 // the button is that the user can act on the denial.
                 Toast(
-                    text: request.message,
-                    actionLabel: request.opensAccessibilitySettings
-                        ? "Open Settings…" : nil,
-                    action: request.opensAccessibilitySettings
-                        ? { services.openAccessibilitySettingsFromToast() } : nil
+                    text: request.feedback.message,
+                    semantics: request.feedback.semantics,
+                    actionLabel: request.feedback.action?.label,
+                    action: request.feedback.action.map { action in
+                        { services.performTerminalFeedbackAction(
+                            action, sessionID: request.sessionID) }
+                    }
                 )
-                .id(request.generation)
                 .padding(.top, Theme.sectionGap)
-                .allowsHitTesting(request.opensAccessibilitySettings)
+                .allowsHitTesting(request.feedback.action != nil)
             }
         }
-        .motion(Theme.Motion.move, value: services.terminalTranscriptReveal?.generation)
         .task(id: session.id) {
             services.prepareSessionOpenAction(for: session)
         }

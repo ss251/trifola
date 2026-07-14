@@ -157,8 +157,14 @@ final class LaunchStore: ObservableObject {
 
 struct LaunchScreen: View {
     @EnvironmentObject var services: AppServices
+    private struct LaunchToastState: Equatable {
+        let text: String
+        var semantics: FeedbackSemantics = .success
+        var retriesSkillHint = false
+    }
     @State private var draft = Recipe.blank()
-    @State private var feedback: String? = nil
+    @State private var feedback: LaunchToastState? = nil
+    @State private var feedbackDismissTask: Task<Void, Never>?
     @State private var editingID: String? = nil    // non-nil = editing a saved recipe
 
     private var store: LaunchStore { services.launch }
@@ -181,15 +187,26 @@ struct LaunchScreen: View {
         }
         .overlay(alignment: .top) {
             if let feedback {
-                Toast(text: feedback)
-                    .id(feedback)
+                launchToast(feedback)
                     .padding(.top, Theme.intraCell)
             }
         }
         .motion(Theme.Motion.move, value: feedback)
         .task { await services.skills.refreshIfStale() }
+        .onDisappear { feedbackDismissTask?.cancel() }
         .onAppear(perform: consumeSeed)
         .onChange(of: services.pendingSkillSeed) { _, _ in consumeSeed() }
+    }
+
+    @ViewBuilder
+    private func launchToast(_ feedback: LaunchToastState) -> some View {
+        if feedback.retriesSkillHint {
+            Toast(text: feedback.text, semantics: feedback.semantics,
+                  actionLabel: "Retry skill hint",
+                  action: { store.retryPersistence() })
+        } else {
+            Toast(text: feedback.text, semantics: feedback.semantics)
+        }
     }
 
     // A skill's Launch button seeded us — fold it into the draft.
@@ -358,7 +375,11 @@ struct LaunchScreen: View {
                 ForEach(store.recipes) { r in
                     RecipeCardView(recipe: r,
                                    onLaunch: { launchSaved(r) },
-                                   onEdit: { draft = r; editingID = r.id; flash("Editing “\(r.name)”") },
+                                   onEdit: {
+                                       draft = r
+                                       editingID = r.id
+                                       flash("Editing “\(r.name)”", semantics: .information)
+                                   },
                                    onDuplicate: {
                                        if let copy = store.duplicate(r) {
                                            draft = copy
@@ -377,13 +398,13 @@ struct LaunchScreen: View {
     private func launch() {
         let cmd = store.compose(draft)
         store.copyToClipboard(cmd.shellCommand)
-        flash(store.persistenceError == nil ? "Command copied" : "Command copied without skill hint")
+        copiedCommandFeedback()
     }
 
     private func launchSaved(_ r: Recipe) {
         let cmd = store.compose(r)
         store.copyToClipboard(cmd.shellCommand)
-        flash(store.persistenceError == nil ? "Command copied" : "Command copied without skill hint")
+        copiedCommandFeedback()
     }
 
     private func save() {
@@ -396,9 +417,27 @@ struct LaunchScreen: View {
         flash(isNew ? "Recipe saved" : "Recipe updated")
     }
 
-    private func flash(_ text: String) {
-        feedback = text
-        Task { try? await Task.sleep(for: .seconds(2.5)); feedback = nil }
+    private func copiedCommandFeedback() {
+        if store.persistenceError == nil {
+            flash("Command copied")
+        } else {
+            flash("Command copied — retry to add the saved skill hint",
+                  semantics: .information, retriesSkillHint: true)
+        }
+    }
+
+    private func flash(_ text: String,
+                       semantics: FeedbackSemantics = .success,
+                       retriesSkillHint: Bool = false) {
+        feedback = LaunchToastState(
+            text: text, semantics: semantics,
+            retriesSkillHint: retriesSkillHint)
+        feedbackDismissTask?.cancel()
+        feedbackDismissTask = Task {
+            try? await Task.sleep(for: .seconds(retriesSkillHint ? 8 : 2.5))
+            guard !Task.isCancelled else { return }
+            feedback = nil
+        }
     }
 
     private func chooseDir(_ done: @escaping (String) -> Void) {
