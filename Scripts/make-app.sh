@@ -178,8 +178,20 @@ PLIST
 
 printf 'APPL????' > "$BUNDLE/Contents/PkgInfo"
 
-echo "==> Ad-hoc signing (free; not notarization)…"
-/usr/bin/codesign --force --sign - "$BUNDLE"
+# Prefer a real signing identity when the build machine has one: TCC ties
+# Accessibility/Automation grants to the code-signing identity, and ad-hoc
+# signatures change on EVERY rebuild — orphaning the user's grants each time
+# ("Accessibility shows granted but the app says Not granted"). A stable
+# Apple Development identity keeps grants across rebuilds. Ad-hoc remains the
+# fallback so clones without certificates still build.
+SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null   | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')
+if [ -n "$SIGN_IDENTITY" ]; then
+  echo "==> Signing with stable identity: $SIGN_IDENTITY"
+  /usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$BUNDLE"
+else
+  echo "==> Ad-hoc signing (free; not notarization)…"
+  /usr/bin/codesign --force --sign - "$BUNDLE"
+fi
 
 echo "==> Validating signature, plist, version and icon…"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$BUNDLE"
