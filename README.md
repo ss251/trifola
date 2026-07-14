@@ -14,6 +14,7 @@ you — across every machine.
 ![Platform: macOS 15+](https://img.shields.io/badge/macOS-15%2B-black)
 ![Swift 6](https://img.shields.io/badge/Swift-6-orange)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-0-brightgreen)
+[![npm](https://img.shields.io/npm/v/trifola?label=npm%20CLI)](https://www.npmjs.com/package/trifola)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/fleet-dark.png">

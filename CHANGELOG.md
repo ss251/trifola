@@ -5,6 +5,17 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-14
+
+### Added
+- **Tiered CLI search index** — `trifola search` now picks the fastest local engine and labels
+  it on every run (`engine` in `--json`): the app's index queried read-only on macOS, the CLI's
+  own `node:sqlite` FTS5 index elsewhere (Node 22.5+; built lazily behind the first search's
+  streamed results, then delta-updated per run), or the honest streaming scan on older Node.
+  Zero new dependencies; the bare `npx trifola` audit never creates an index.
+- Search performance benchmark harness (`--benchmark-search`) and `docs/BENCHMARKS.md` with
+  measured, reproducible numbers.
+
 ### Fixed
 - **Conversation-search indexing no longer rewrites the whole cache** — the v1 app encoded and
   atomically replaced a 98.5 MB `search-index.json` after every live transcript change, which
@@ -13,6 +24,14 @@ All notable changes to trifola are documented here. The format follows
   append-only sessions parse and persist only their new JSONL suffix, rewrites replace only that
   session, first-run work commits in queryable 200-session batches with an honest partial-progress
   label, and the obsolete JSON cache is removed after a successful migration.
+- **Search snippets are served from the index** — query-time re-parsing of source files made a
+  15 ms query take 15 s against multi-hundred-MB live transcripts; the stored rows are the
+  parsed truth and now provide snippets directly (file reread kept only as a fallback).
+- **Typing in Sessions never blanks or flickers** — pending now strictly means "the answer on
+  screen is for a different question": same-query refreshes from live index updates recompute
+  silently and swap atomically; a partially built index can no longer claim "No matches"; a
+  transiently failing terminal-registry probe keeps the last good live set instead of flapping
+  every projection; the duplicate Codex filter chip is gone.
 
 ## [0.3.0] - 2026-07-14
 
@@ -113,6 +132,7 @@ Initial public tree.
 - **Headless `--render-*` harness** — a synthetic-fixture screenshot factory (also the CI-vs-version and demo surface).
 - **Personal-PII CI lint** — fails the build on configured personal identifiers or private paths.
 
-[Unreleased]: https://github.com/ss251/trifola/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ss251/trifola/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ss251/trifola/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ss251/trifola/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ss251/trifola/releases/tag/v0.2.0
