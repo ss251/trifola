@@ -1,6 +1,6 @@
 {
   "name": "trifola",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "Finding generator for your Claude Code corpus — dead skills, prompt tax, and re-sent context, priced at API-equivalent rates. Reads ~/.claude locally; uploads nothing.",
   "type": "module",
   "bin": {
