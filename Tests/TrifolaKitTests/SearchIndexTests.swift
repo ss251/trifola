@@ -141,6 +141,38 @@ struct SearchIndexTests {
         }
     }
 
+    @Test("a poisoned fingerprint (parsed_offset=0, size>0) heals on the next update")
+    func poisonedFingerprintHeals() throws {
+        try withTempDirectory { root in
+            let file = root.appendingPathComponent("session.jsonl")
+            try write([
+                #"{"type":"user","message":{"content":"poisoned lantern content"}}"#,
+            ], to: file)
+            let session = summary(id: "poisoned", file: file)
+            let built = SearchIndex.update(try index(in: root), sessions: [session])
+            #expect(built.succeeded, Comment(rawValue: built.failureReason ?? "unknown"))
+
+            // Simulate the historical read-failure poison: fingerprint claims the
+            // file at full size while zero bytes were parsed and no rows exist.
+            var raw: OpaquePointer?
+            #expect(sqlite3_open(built.index.databaseURL.path, &raw) == SQLITE_OK)
+            defer { sqlite3_close(raw) }
+            #expect(sqlite3_exec(raw, """
+                DELETE FROM search_rows WHERE document_key IN
+                    (SELECT key FROM documents WHERE session_id = 'poisoned');
+                UPDATE documents SET parsed_offset = 0 WHERE session_id = 'poisoned';
+                """, nil, nil, nil) == SQLITE_OK)
+            #expect(built.index.query(SearchQuery("poisoned lantern"),
+                                      scope: .conversationText).isEmpty)
+
+            let healed = SearchIndex.update(built.index, sessions: [session])
+            #expect(healed.succeeded,
+                    Comment(rawValue: healed.failureReason ?? "unknown"))
+            #expect(healed.index.query(SearchQuery("poisoned lantern"),
+                                       scope: .conversationText).map(\.id) == ["poisoned"])
+        }
+    }
+
     @Test("exact phrase outranks bag of words and recency breaks equal hits")
     func ranking() throws {
         try withTempDirectory { root in

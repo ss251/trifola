@@ -403,6 +403,7 @@ public struct SearchIndex: Sendable {
         let connection = try SQLiteConnection(url: index.databaseURL, readOnly: false)
         try connection.execute(
             "PRAGMA wal_autocheckpoint=\(max(0, automaticCheckpointPages))")
+        try healPoisonedDocuments(connection: connection)
         let old = try loadDocuments(connection)
         let currentKeys = Set(sessions.map(documentKey))
         let removed = Set(old.keys).subtracting(currentKeys)
@@ -473,7 +474,7 @@ public struct SearchIndex: Sendable {
             removedDocuments: removed.count, sourceBytesRead: bytesRead)
     }
 
-    private static func prepare(_ work: IndexWork) -> PreparedChange {
+    private static func prepare(_ work: IndexWork) -> PreparedChange? {
         let metadata = SearchText.tokens(in: [
             work.summary.displayTitle, work.summary.project, work.summary.cwd,
         ].joined(separator: " "))
@@ -536,7 +537,12 @@ public struct SearchIndex: Sendable {
                 readSource: true, replaceConversation: true)
         }
 
-        let data = read(at: url, offset: 0) ?? Data()
+        // A read FAILURE is not an empty file. Stamping a fingerprint after
+        // reading zero of the file's bytes poisons the delta ladder: the size/
+        // mtime check then skips the file forever with no rows indexed (found
+        // live: 1,022 documents with parsed_offset=0 and file_size>0 after
+        // kill-under-load runs). Skip this pass; the next scan retries.
+        guard let data = read(at: url, offset: 0) else { return nil }
         let parsed = SearchText.events(
             in: data, provider: work.summary.provider,
             includeValidFinalLine: true)
@@ -639,6 +645,15 @@ public struct SearchIndex: Sendable {
         try statement.bind(scope, at: 2)
         try statement.bind(content, at: 3)
         try statement.run()
+    }
+
+    /// One-time heal for fingerprints stamped without parsing (parsed_offset=0
+    /// on a non-empty file): delete them so the next scan re-indexes those
+    /// sessions. Missing documents are the delta ladder's own "new file" case.
+    fileprivate static func healPoisonedDocuments(connection: SQLiteConnection) throws {
+        try connection.execute("""
+            DELETE FROM documents WHERE parsed_offset = 0 AND file_size > 0
+            """)
     }
 
     private static func prepareDatabase(at url: URL) throws {
