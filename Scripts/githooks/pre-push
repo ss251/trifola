@@ -1,0 +1,35 @@
+#!/bin/bash
+# trifola pre-push gate — the gate is a script, not a discipline.
+# Blocks every push unless build, tests, CLI tests, and the identifier scan
+# all pass with bare exit codes. No pipes, no chains that can swallow a failure.
+#
+# Emergency bypass (loud, deliberate): TRIFOLA_SKIP_GATE=1 git push …
+set -u
+
+if [ "${TRIFOLA_SKIP_GATE:-0}" = "1" ]; then
+  echo "pre-push gate: SKIPPED via TRIFOLA_SKIP_GATE=1 — you own what lands." >&2
+  exit 0
+fi
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root" || exit 1
+
+fail() { echo "pre-push gate: BLOCKED — $1 failed (exit $2). Fix it or bypass loudly." >&2; exit 1; }
+
+echo "pre-push gate: swift test (builds debug)…" >&2
+swift test > /tmp/trifola-prepush-swift.log 2>&1
+rc=$?
+[ $rc -eq 0 ] || { tail -5 /tmp/trifola-prepush-swift.log >&2; fail "swift test" $rc; }
+
+echo "pre-push gate: cli tests…" >&2
+( cd cli && npm test > /tmp/trifola-prepush-cli.log 2>&1 )
+rc=$?
+[ $rc -eq 0 ] || { tail -5 /tmp/trifola-prepush-cli.log >&2; fail "cli npm test" $rc; }
+
+echo "pre-push gate: secret scan…" >&2
+bash Scripts/secret-scan.sh > /tmp/trifola-prepush-scan.log 2>&1
+rc=$?
+[ $rc -eq 0 ] || { tail -10 /tmp/trifola-prepush-scan.log >&2; fail "secret-scan" $rc; }
+
+echo "pre-push gate: green — push allowed." >&2
+exit 0
