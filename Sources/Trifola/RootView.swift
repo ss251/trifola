@@ -42,6 +42,7 @@ struct RootView: View {
             .frame(minWidth: Theme.Layout.minimumWindowWidth,
                    minHeight: Theme.Layout.minimumWindowHeight)
             .overlay { CommandPaletteHost() }
+            .overlay { OnboardingPresentationHost() }
             .background(WorkspaceAccessPromptHost())
             .background(RootLifecycle())
         }

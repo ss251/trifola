@@ -39,7 +39,7 @@ final class AccessibilityWorkspaceTargeter: WorkspaceTargeting {
                 return .settingsOpened
             case .settingsOpenFailed:
                 return .settingsOpenFailed
-            case .notNow:
+            case .notNow, .deferred:
                 return .permissionDenied(.accessibility)
             case .cancelled:
                 // TerminalLaunchFlow checks cancellation immediately after this

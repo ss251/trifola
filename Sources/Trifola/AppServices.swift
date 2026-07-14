@@ -128,7 +128,9 @@ final class AppServices: ObservableObject {
     /// Optional Accessibility trust UX for exact terminal-workspace jumps. This
     /// stays on its own observable so a rare prompt/status refresh never becomes
     /// another high-frequency AppServices publication source.
-    let workspaceAccess = WorkspaceAccessCoordinator()
+    let permissionFlowGate: PermissionFlowSessionGate
+    let workspaceAccess: WorkspaceAccessCoordinator
+    let automationAccess: AutomationAccessCoordinator
     /// Persistent snooze/mute agency plus the visual blocked→running closure beat.
     let agency = AgencyController()
     /// PLAN QUOTA (W7): the REAL rate-limit windows (5h · weekly · model-scoped)
@@ -209,6 +211,12 @@ final class AppServices: ObservableObject {
 
     init(claudePaths: ClaudePaths = .process,
          codexPaths: CodexPaths = .process) {
+        let permissionFlowGate = PermissionFlowSessionGate()
+        self.permissionFlowGate = permissionFlowGate
+        self.workspaceAccess = WorkspaceAccessCoordinator(
+            sessionGate: permissionFlowGate)
+        self.automationAccess = AutomationAccessCoordinator(
+            sessionGate: permissionFlowGate)
         self.claudePaths = claudePaths
         self.codexPaths = codexPaths
         self.sessions = SessionStore(paths: claudePaths, codexPaths: codexPaths)
@@ -756,7 +764,10 @@ final class AppServices: ObservableObject {
 
     /// The actionable denial toast's one action: open the exact Settings pane.
     func openAccessibilitySettingsFromToast() {
-        workspaceAccess.openAccessibilitySettings()
+        guard workspaceAccess.openAccessibilitySettings() else { return }
+        var updated = preferences.value
+        updated.hasOpenedAccessibilitySettings = true
+        preferences.value = updated
     }
 
     func sessionOpenAction(for session: SessionSummary) -> SessionOpenActionPresentation {
@@ -793,9 +804,34 @@ final class AppServices: ObservableObject {
            action == .settingsOpened || action == .notNow {
             var updated = preferences.value
             updated.hasSeenAccessibilityWorkspaceExplainer = true
+            if action == .settingsOpened {
+                updated.hasOpenedAccessibilitySettings = true
+            }
             preferences.value = updated
         }
         return action
+    }
+
+    func completeFirstLaunchWelcome() {
+        guard !preferences.value.hasCompletedFirstLaunchWelcome else { return }
+        var updated = preferences.value
+        updated.hasCompletedFirstLaunchWelcome = true
+        preferences.value = updated
+    }
+
+    func prepareTerminalAutomation(
+        application: TerminalApplication
+    ) async -> TerminalAutomationPreparation {
+        let alreadySeen = preferences.value.hasSeenTerminalAutomationPrimer
+        let preparation = await automationAccess.prepare(
+            terminalName: application.displayName,
+            hasSeenPrimer: alreadySeen)
+        if !alreadySeen, preparation == .proceed {
+            var updated = preferences.value
+            updated.hasSeenTerminalAutomationPrimer = true
+            preferences.value = updated
+        }
+        return preparation
     }
 
     func openTerminal(_ session: SessionSummary,
@@ -833,6 +869,11 @@ final class AppServices: ObservableObject {
                 guard let self else { return .cancelled }
                 return await self.requestWorkspaceAccessExplanation(
                     terminalName: terminalName)
+            },
+            automationPermissionHandler: { [weak self] application in
+                guard let self else { return .cancelled }
+                return await self.prepareTerminalAutomation(
+                    application: application)
             },
             openMainWindow: openMainWindow,
             selectSession: { [weak self] id in

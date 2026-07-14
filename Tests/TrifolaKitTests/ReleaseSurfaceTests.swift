@@ -45,6 +45,7 @@ struct ReleaseSurfaceTests {
                 "--benchmark-nav-json",
                 "--probe-ax",
                 "--render-icon",
+                "--render-onboarding",
                 "--render-strengthen",
             ]).isEmpty)
         #expect(TrifolaCommandLine.unknownHeadlessFlags(
@@ -57,6 +58,7 @@ struct ReleaseSurfaceTests {
         #expect(TrifolaCommandLine.usage.contains("--render-icon <iconset-dir>"))
         #expect(TrifolaCommandLine.usage.contains("--render-logo <output-dir>"))
         #expect(TrifolaCommandLine.usage.contains("--render-strengthen <dir>"))
+        #expect(TrifolaCommandLine.usage.contains("onboarding"))
     }
 
     @Test("brand renderer declares Apple's full iconset")

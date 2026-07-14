@@ -1248,6 +1248,59 @@ private func writePNG<V: View>(_ content: V, to path: String, dark: Bool, width:
     print("RENDER: \(path)")
 }
 
+// MARK: - First-run onboarding headless render (`--render-onboarding`)
+
+/// Both branded first-run beats over the real seeded Fleet Board. The board
+/// remains legible behind each panel, proving that onboarding introduces trust
+/// without replacing the product's first value with a setup screen.
+@MainActor
+enum OnboardingRender {
+    static func run(to path: String, dark: Bool) {
+        let now = SessionsRender.now
+        let seeded = FleetRender.seeded(now: now)
+        let content = VStack(alignment: .leading, spacing: Theme.blockGap) {
+            RenderCaption("First launch · live Fleet Board remains visible")
+            onboardingWindow(
+                stage: .welcome(ProviderCorpusPresence(
+                    providers: [.claude, .codex])),
+                seeded: seeded)
+            RenderCaption("First exact terminal jump · app primer before macOS")
+            onboardingWindow(
+                stage: .automation(terminalName: "Terminal"),
+                seeded: seeded)
+        }
+        writePNG(content, to: path, dark: dark, width: 1_100)
+    }
+
+    private static func onboardingWindow(
+        stage: OnboardingStage,
+        seeded: (board: FleetBoard, attention: AttentionBoard,
+                 signals: [String: AttentionSignals])
+    ) -> some View {
+        FleetFloor(
+            board: seeded.board,
+            attention: seeded.attention,
+            signals: seeded.signals)
+            .padding(Theme.cardPadding)
+            .frame(width: 1_044, height: 640, alignment: .topLeading)
+            .background(Theme.surfaceWindow)
+            .overlay {
+                switch stage {
+                case .welcome:
+                    OnboardingOverlay(stage: stage)
+                case .automation:
+                    OnboardingOverlay(stage: stage, deferAction: {})
+                }
+            }
+            .clipShape(RoundedRectangle(
+                cornerRadius: Theme.radiusCard, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
+            }
+    }
+}
+
 // MARK: - Provider-parity acceptance evidence (`--render-parity`)
 
 /// Deterministic evidence for every provider-parity surface required by the

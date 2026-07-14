@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Combine
 import Foundation
+import TrifolaKit
 
 /// The only user decisions exposed by the at-value Accessibility explainer.
 /// The transport adapter owns what happens next; this coordinator only presents
@@ -12,6 +13,7 @@ enum WorkspaceAccessAction: Sendable, Equatable {
     case settingsOpened
     case settingsOpenFailed
     case notNow
+    case deferred
     case cancelled
 }
 
@@ -55,9 +57,11 @@ final class WorkspaceAccessCoordinator: ObservableObject {
 
     private let trustCheck: @MainActor () -> Bool
     private let settingsOpener: @MainActor () -> Bool
+    private let sessionGate: PermissionFlowSessionGate
     private var continuation: CheckedContinuation<WorkspaceAccessAction, Never>?
 
     init(
+        sessionGate: PermissionFlowSessionGate = PermissionFlowSessionGate(),
         trustCheck: @escaping @MainActor () -> Bool = { AXIsProcessTrusted() },
         settingsOpener: @escaping @MainActor () -> Bool = {
             guard let url = URL(string:
@@ -66,6 +70,7 @@ final class WorkspaceAccessCoordinator: ObservableObject {
             return NSWorkspace.shared.open(url)
         }
     ) {
+        self.sessionGate = sessionGate
         self.trustCheck = trustCheck
         self.settingsOpener = settingsOpener
     }
@@ -93,6 +98,7 @@ final class WorkspaceAccessCoordinator: ObservableObject {
         guard !Task.isCancelled else { return .cancelled }
         if status == .granted { return .retryTargeting }
         if hasSeenExplainer { return .notNow }
+        guard sessionGate.claim(.accessibility) else { return .deferred }
 
         cancelPendingPrompt()
         let requestID = UUID()

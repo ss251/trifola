@@ -59,6 +59,7 @@ public enum TrifolaCommandLine {
         "--render-layout",
         "--render-ledger",
         "--render-logo",
+        "--render-onboarding",
         "--render-palette",
         "--render-provenance",
         "--render-quota",
@@ -102,7 +103,7 @@ public enum TrifolaCommandLine {
                                     layout, sessions, search, search-pending, spend, attention, fleet, audit, ledger, launch,
                                     skills, crossmachine, palette, identity, burn,
                                     config, deadlines, provenance, contexttax,
-                                    reroutes, or quota
+                                    reroutes, quota, or onboarding
       --help, -h                    Show this help
 
     With no option, Trifola launches the macOS app.

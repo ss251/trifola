@@ -5,6 +5,15 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Calm, value-first onboarding** — corpus-present first launch now shows one persisted
+  welcome over the already-live board; the first exact Terminal/iTerm jump explains its
+  Apple Event before macOS asks; Automation and Accessibility explanations are spaced to one
+  per app session; and `--render-onboarding` captures both production panels in both themes.
+- Settings now rechecks Accessibility when its pane appears or Trifola returns to the
+  foreground, and source builds get code-signature recovery guidance when a prior grant is
+  no longer detected. A regression test also pins the app's no-login-item policy.
+
 ## [0.3.1] - 2026-07-14
 
 ### Added

@@ -375,7 +375,7 @@ struct SessionsScreen: View {
                 let progress = services.sessions.searchProgress
                 VStack(alignment: .trailing, spacing: 2) {
                     ProgressView().controlSize(.mini)
-                    Text("Partial — indexing \(progress.indexed.formatted()) of \(progress.total.formatted())…")
+                    Text(firstIndexProgressLine(progress))
                         .font(Theme.Typography.metadata)
                         .foregroundStyle(Theme.muted)
                 }
@@ -411,7 +411,7 @@ struct SessionsScreen: View {
                 if snapshot.searchState == .preparing {
                     let progress = services.sessions.searchProgress
                     if progress.isInProgress {
-                        searchProgress("Partial — indexing \(progress.indexed.formatted()) of \(progress.total.formatted())…")
+                        searchProgress(firstIndexProgressLine(progress))
                     } else {
                         searchProgress("Preparing conversation search…")
                     }
@@ -421,7 +421,7 @@ struct SessionsScreen: View {
                     || services.sessions.searchProgress.isInProgress {
                     let progress = services.sessions.searchProgress
                     searchProgress(progress.isPartial
-                        ? "Partial — indexing \(progress.indexed.formatted()) of \(progress.total.formatted())…"
+                        ? firstIndexProgressLine(progress)
                         : "Updating conversation search…")
                 } else {
                     Text("No matches in conversation text.")
@@ -436,6 +436,12 @@ struct SessionsScreen: View {
         } else {
             searchProgress("Searching conversation text…")
         }
+    }
+
+    private func firstIndexProgressLine(_ progress: SearchIndexProgress) -> String {
+        let base = "Partial — indexing \(progress.indexed.formatted()) of \(progress.total.formatted())…"
+        guard services.sessions.searchState == .preparing else { return base }
+        return base + " Sessions, costs, and attention are already live."
     }
 
     @ViewBuilder

@@ -115,6 +115,17 @@ private func uiHeadlessRenderTargets(flag: String, defaultBase: String,
 }
 
 if let targets = uiHeadlessRenderTargets(
+    flag: "--render-onboarding", defaultBase: "/tmp/onboarding",
+    arguments: cliArguments) {
+    MainActor.assumeIsolated {
+        for target in targets {
+            OnboardingRender.run(to: target.path, dark: target.dark)
+        }
+    }
+    exit(0)
+}
+
+if let targets = uiHeadlessRenderTargets(
     flag: "--render-sessions", defaultBase: "/tmp/sessions", arguments: cliArguments) {
     MainActor.assumeIsolated {
         for target in targets { SessionsRender.run(to: target.path, dark: target.dark) }

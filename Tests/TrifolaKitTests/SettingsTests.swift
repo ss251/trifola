@@ -13,6 +13,9 @@ struct SettingsPreferencesTests {
         #expect(preferences.claudeQuotaAccessEnabled == false)
         #expect(preferences.codexQuotaAccessEnabled == false)
         #expect(preferences.hasSeenAccessibilityWorkspaceExplainer == false)
+        #expect(preferences.hasCompletedFirstLaunchWelcome == false)
+        #expect(preferences.hasSeenTerminalAutomationPrimer == false)
+        #expect(preferences.hasOpenedAccessibilitySettings == false)
     }
 
     @Test func roundTripsThroughAppSupportStyleStore() throws {
@@ -27,7 +30,10 @@ struct SettingsPreferencesTests {
             defaultSnoozeDurationMinutes: 120,
             claudeQuotaAccessEnabled: true,
             codexQuotaAccessEnabled: true,
-            hasSeenAccessibilityWorkspaceExplainer: true
+            hasSeenAccessibilityWorkspaceExplainer: true,
+            hasCompletedFirstLaunchWelcome: true,
+            hasSeenTerminalAutomationPrimer: true,
+            hasOpenedAccessibilitySettings: true
         )
         #expect(store.save(expected))
         #expect(store.load() == expected)
@@ -37,6 +43,9 @@ struct SettingsPreferencesTests {
         let decoded = try JSONDecoder().decode(AppPreferences.self, from: Data("{}".utf8))
         #expect(decoded == AppPreferences())
         #expect(!decoded.hasSeenAccessibilityWorkspaceExplainer)
+        #expect(!decoded.hasCompletedFirstLaunchWelcome)
+        #expect(!decoded.hasSeenTerminalAutomationPrimer)
+        #expect(!decoded.hasOpenedAccessibilitySettings)
     }
 
     @Test func defaultStoreNeverWritesIntoClaudeConfig() {

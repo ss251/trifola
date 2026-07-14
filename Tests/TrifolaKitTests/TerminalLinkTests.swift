@@ -439,17 +439,21 @@ private final class FakeWorkspaceTargeter: WorkspaceTargeting {
     var verification: WorkspaceTargetVerification
     private(set) var calls: [WorkspaceTargetRequest] = []
     private(set) var verificationCalls: [(WorkspaceTargetRequest, String)] = []
+    var onTarget: (() -> Void)?
 
     init(
         _ result: WorkspaceTargetResult,
-        verification: WorkspaceTargetVerification = .verified
+        verification: WorkspaceTargetVerification = .verified,
+        onTarget: (() -> Void)? = nil
     ) {
         self.result = result
         self.verification = verification
+        self.onTarget = onTarget
     }
 
     func target(_ request: WorkspaceTargetRequest) async -> WorkspaceTargetResult {
         calls.append(request)
+        onTarget?()
         return result
     }
 
@@ -547,6 +551,9 @@ struct TerminalLaunchOutcomeCopyTests {
                 == "Brought Warp to the front")
         #expect(TerminalLaunchOutcome.ownerActivated(launchTarget(application: nil)).successMessage
                 == "Brought your terminal to the front")
+        #expect(TerminalLaunchOutcome.automationDeferred(
+            launchTarget(application: .terminal)).successMessage
+                == "Automation setup deferred until a later app session — brought Terminal to the front instead")
         #expect(TerminalLaunchOutcome.axTargeted(
             launchTarget(application: .other(name: "WorkspaceTerm")),
             matchedTitle: "portfolio").successMessage
@@ -588,6 +595,7 @@ struct TerminalLaunchOutcomeCopyTests {
         let error = TerminalAutomationError(number: 1, message: "failed", dictionary: [:])
         let outcomes: [TerminalLaunchOutcome] = [
             .exact(launchTarget()),
+            .automationDeferred(launchTarget()),
             .axTargeted(launchTarget(), matchedTitle: "trifola"),
             .axDenied(launchTarget()),
             .axNoConfidentMatch(launchTarget()),
@@ -612,6 +620,53 @@ struct TerminalLaunchOutcomeCopyTests {
 @Suite("Observable terminal launch flow")
 @MainActor
 struct TerminalLaunchFlowTests {
+    @Test("Automation primer resolves before the first AppleScript target attempt")
+    func primerBeforeFirstJump() async {
+        var events: [String] = []
+        let target = launchTarget()
+        let script = FakeWorkspaceTargeter(
+            .targeted(matchedTitle: nil),
+            onTarget: { events.append("script") })
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            scriptTargeter: script,
+            axTargeter: FakeWorkspaceTargeter(.notFound),
+            ownerActivator: FakeOwnerActivator(true),
+            windows: FakeTerminalWindows(),
+            prepareAutomation: { application in
+                #expect(application == .terminal)
+                events.append("primer")
+                return .proceed
+            })
+
+        let outcome = await flow.open(
+            sessionID: "session-a", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .exact(target))
+        #expect(events == ["primer", "script"])
+    }
+
+    @Test("a spaced Automation ask defers AppleScript and uses app activation")
+    func spacedAutomationDefersToActivation() async {
+        let target = launchTarget()
+        let script = FakeWorkspaceTargeter(.targeted(matchedTitle: nil))
+        let owner = FakeOwnerActivator(true)
+        let flow = TerminalLaunchFlow(
+            resolver: FixedTerminalResolver(resolution: .target(target)),
+            scriptTargeter: script,
+            axTargeter: FakeWorkspaceTargeter(.notFound),
+            ownerActivator: owner,
+            windows: FakeTerminalWindows(),
+            prepareAutomation: { _ in .deferToActivation })
+
+        let outcome = await flow.open(
+            sessionID: "session-a", cwd: "/repo", machineID: Machine.localID)
+
+        #expect(outcome == .automationDeferred(target))
+        #expect(script.calls.isEmpty)
+        #expect(owner.processIDs == [500])
+    }
+
     @Test("exact tab targeting returns exact and does not show transcript")
     func exact() async {
         let target = launchTarget()

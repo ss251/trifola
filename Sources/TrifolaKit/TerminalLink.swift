@@ -604,6 +604,10 @@ public struct TerminalAutomationError: Sendable, Equatable {
 /// a boolean and silently discarded.
 public enum TerminalLaunchOutcome: Sendable, Equatable {
     case exact(TerminalLinkTarget)
+    /// The first-use primer was declined or another permission explanation
+    /// already occupied this app session. Exact targeting waits for a later
+    /// session while the honest app-activation fallback still runs now.
+    case automationDeferred(TerminalLinkTarget)
     case axTargeted(TerminalLinkTarget, matchedTitle: String)
     /// Accessibility was unavailable and the user chose today's safe fallback:
     /// activate the owning app without claiming an exact workspace.
@@ -625,7 +629,7 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
 
     public var fallbackMessage: String? {
         switch self {
-        case .exact, .axTargeted, .axDenied, .axNoConfidentMatch,
+        case .exact, .automationDeferred, .axTargeted, .axDenied, .axNoConfidentMatch,
              .axFailed, .axSettingsOpened, .axSettingsOpenFailed,
              .ownerActivated, .cancelled:
             nil
@@ -652,6 +656,8 @@ public enum TerminalLaunchOutcome: Sendable, Equatable {
             } else {
                 "Jumped to your session in \(target.ownerApplication?.displayName ?? "your terminal")"
             }
+        case .automationDeferred(let target):
+            "Automation setup deferred until a later app session — brought \(target.ownerApplication?.displayName ?? "your terminal") to the front instead"
         case .axTargeted(let target, let matchedTitle):
             "Jumped to '\(matchedTitle)' in \(target.ownerApplication?.displayName ?? "your terminal")"
         case .axDenied(let target):
@@ -721,17 +727,20 @@ public struct TerminalLaunchFlow {
     private let axTargeter: any WorkspaceTargeting
     private let ownerActivator: any TerminalOwnerActivating
     private let windows: any TerminalWindowAdapting
+    private let prepareAutomation: @MainActor (TerminalApplication) async -> TerminalAutomationPreparation
 
     public init(resolver: any TerminalLinkResolving,
                 scriptTargeter: any WorkspaceTargeting,
                 axTargeter: any WorkspaceTargeting,
                 ownerActivator: any TerminalOwnerActivating,
-                windows: any TerminalWindowAdapting) {
+                windows: any TerminalWindowAdapting,
+                prepareAutomation: @escaping @MainActor (TerminalApplication) async -> TerminalAutomationPreparation = { _ in .proceed }) {
         self.resolver = resolver
         self.scriptTargeter = scriptTargeter
         self.axTargeter = axTargeter
         self.ownerActivator = ownerActivator
         self.windows = windows
+        self.prepareAutomation = prepareAutomation
     }
 
     @discardableResult
@@ -776,6 +785,22 @@ public struct TerminalLaunchFlow {
         guard !Task.isCancelled else { return .cancelled }
         var automationFailure: TerminalAutomationError?
         if target.supportsExactTargeting {
+            guard let application = target.ownerApplication else {
+                return presentFallback(
+                    .failed(.noTerminalOwner), sessionID: sessionID)
+            }
+            switch await prepareAutomation(application) {
+            case .proceed:
+                break
+            case .deferToActivation:
+                return await activateOwner(
+                    target: target,
+                    success: .automationDeferred(target),
+                    sessionID: sessionID)
+            case .cancelled:
+                return .cancelled
+            }
+            guard !Task.isCancelled else { return .cancelled }
             switch await scriptTargeter.target(request) {
             case .targeted:
                 return Task.isCancelled ? .cancelled : .exact(target)

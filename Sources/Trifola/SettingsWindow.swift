@@ -135,7 +135,8 @@ struct TrifolaSettingsView: View {
             TabView {
                 GeneralSettings(
                     menuPresence: menuPresence,
-                    workspaceAccess: workspaceAccess)
+                    workspaceAccess: workspaceAccess,
+                    preferences: preferences)
                     .tabItem { Label("General", systemImage: "gear") }
                 AttentionSettings(notifier: notifier, preferences: preferences)
                     .tabItem { Label("Attention", systemImage: "bell") }
@@ -218,6 +219,7 @@ private struct QuotaAccessSettings: View {
 private struct GeneralSettings: View {
     @ObservedObject var menuPresence: MenuBarPresence
     @ObservedObject var workspaceAccess: WorkspaceAccessCoordinator
+    @ObservedObject var preferences: AppPreferencesModel
     private let location = ClaudeConfigLocation.resolve()
 
     var body: some View {
@@ -244,18 +246,34 @@ private struct GeneralSettings: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if workspaceAccess.status == .notGranted,
+                   preferences.value.hasOpenedAccessibilitySettings {
+                    Text("Granted but still not detected? Remove Trifola’s stale Accessibility entry, then add the current app again. macOS ties this grant to the app’s code signature, which can change between source builds.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if workspaceAccess.status != .granted {
                     TapButton(WorkspaceAccessCopy.openSettingsButton) {
-                        _ = workspaceAccess.openAccessibilitySettings()
+                        guard workspaceAccess.openAccessibilitySettings() else { return }
+                        var updated = preferences.value
+                        updated.hasOpenedAccessibilitySettings = true
+                        preferences.value = updated
                     }
                     .help("Open System Settings → Privacy & Security → Accessibility")
                 }
             }
         }
         .formStyle(.grouped)
-        .onAppear { workspaceAccess.refreshStatus() }
+        .onAppear {
+            if PermissionStatusRefreshPolicy.shouldRefresh(on: .paneAppeared) {
+                workspaceAccess.refreshStatus()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard PermissionStatusRefreshPolicy.shouldRefresh(
+                on: .appBecameActive) else { return }
                 workspaceAccess.refreshStatus()
             }
     }

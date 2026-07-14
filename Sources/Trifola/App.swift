@@ -225,6 +225,7 @@ struct TrifolaApp: App {
                 .environmentObject(services.navigation)
                 .environmentObject(services.navigationSnapshots)
                 .environmentObject(services.workspaceAccess)
+                .environmentObject(services.automationAccess)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: Theme.Layout.defaultWindowWidth,

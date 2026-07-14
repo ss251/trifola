@@ -64,6 +64,15 @@ public struct AppPreferences: Codable, Sendable, Equatable {
     /// that the user saw the explanation; macOS TCC remains the sole source of
     /// truth for whether Accessibility is currently granted.
     public var hasSeenAccessibilityWorkspaceExplainer: Bool
+    /// True after the corpus-present welcome has been dismissed. This is app
+    /// presentation state only; provider files remain the source of corpus truth.
+    public var hasCompletedFirstLaunchWelcome: Bool
+    /// True after Continue on the Automation primer. The actual macOS decision
+    /// remains owned by TCC and may still be Allow or Don't Allow.
+    public var hasSeenTerminalAutomationPrimer: Bool
+    /// Recovery copy is relevant only after Trifola has successfully opened the
+    /// Accessibility Settings pane at least once.
+    public var hasOpenedAccessibilitySettings: Bool
     /// Optional user-defined model tier: model ids CONTAINING `customTierMatch`
     /// (case-insensitive) display as their own tier labeled `customTierLabel`
     /// instead of "Other". Lets a user name an internal/private model family
@@ -76,6 +85,9 @@ public struct AppPreferences: Codable, Sendable, Equatable {
                 claudeQuotaAccessEnabled: Bool = false,
                 codexQuotaAccessEnabled: Bool = false,
                 hasSeenAccessibilityWorkspaceExplainer: Bool = false,
+                hasCompletedFirstLaunchWelcome: Bool = false,
+                hasSeenTerminalAutomationPrimer: Bool = false,
+                hasOpenedAccessibilitySettings: Bool = false,
                 customTierMatch: String = "",
                 customTierLabel: String = "Custom") {
         self.quietHours = quietHours
@@ -84,6 +96,9 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         self.codexQuotaAccessEnabled = codexQuotaAccessEnabled
         self.hasSeenAccessibilityWorkspaceExplainer =
             hasSeenAccessibilityWorkspaceExplainer
+        self.hasCompletedFirstLaunchWelcome = hasCompletedFirstLaunchWelcome
+        self.hasSeenTerminalAutomationPrimer = hasSeenTerminalAutomationPrimer
+        self.hasOpenedAccessibilitySettings = hasOpenedAccessibilitySettings
         self.customTierMatch = customTierMatch
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let label = customTierLabel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,6 +115,8 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         case quietHours, defaultSnoozeDurationMinutes
         case claudeQuotaAccessEnabled, codexQuotaAccessEnabled
         case hasSeenAccessibilityWorkspaceExplainer
+        case hasCompletedFirstLaunchWelcome, hasSeenTerminalAutomationPrimer
+        case hasOpenedAccessibilitySettings
         case customTierMatch, customTierLabel
     }
 
@@ -116,6 +133,12 @@ public struct AppPreferences: Codable, Sendable, Equatable {
             Bool.self, forKey: .codexQuotaAccessEnabled) ?? false
         hasSeenAccessibilityWorkspaceExplainer = try values.decodeIfPresent(
             Bool.self, forKey: .hasSeenAccessibilityWorkspaceExplainer) ?? false
+        hasCompletedFirstLaunchWelcome = try values.decodeIfPresent(
+            Bool.self, forKey: .hasCompletedFirstLaunchWelcome) ?? false
+        hasSeenTerminalAutomationPrimer = try values.decodeIfPresent(
+            Bool.self, forKey: .hasSeenTerminalAutomationPrimer) ?? false
+        hasOpenedAccessibilitySettings = try values.decodeIfPresent(
+            Bool.self, forKey: .hasOpenedAccessibilitySettings) ?? false
         customTierMatch = (try values.decodeIfPresent(
             String.self, forKey: .customTierMatch) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)

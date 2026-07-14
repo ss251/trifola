@@ -11,6 +11,7 @@ enum TerminalLauncher {
         session: SessionSummary,
         resolver: any TerminalLinkResolving = TerminalLinkResolver(),
         workspacePermissionHandler: @escaping @MainActor @Sendable (String) async -> WorkspaceAccessAction,
+        automationPermissionHandler: @escaping @MainActor @Sendable (TerminalApplication) async -> TerminalAutomationPreparation,
         openMainWindow: @escaping @MainActor () -> Void,
         selectSession: @escaping @MainActor (String) -> Void,
         revealTranscript: @escaping @MainActor (String, TerminalLaunchOutcome) -> Void,
@@ -27,7 +28,8 @@ enum TerminalLauncher {
                 openMainWindow: openMainWindow,
                 selectSession: selectSession,
                 revealTranscript: revealTranscript
-            )
+            ),
+            prepareAutomation: automationPermissionHandler
         )
         return Task {
             let cwd = session.cwd
