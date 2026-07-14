@@ -19,23 +19,25 @@ import { buildFinding } from "./ledger.js";
 import { renderCard, renderJSON, HELP_TEXT } from "./card.js";
 import { spin } from "./spinner.js";
 import { fmtCount } from "./format.js";
+import { dim } from "./style.js";
 import {
   parseSearchArgs,
-  searchClaudeProjects,
   markedSnippet,
   relativeAge,
   SEARCH_SCOPE,
   RAW_WARNING,
   type SearchMatch,
 } from "./search.js";
+import { runTieredSearch } from "./search-index.js";
 
-function runSearch(argv: string[]): void {
+async function runSearch(argv: string[]): Promise<void> {
   const request = parseSearchArgs(argv);
   const claudeDir = resolveClaudeDir();
   const spinner = spin("searching Claude Code conversation text…");
   if (!request.json) {
     process.stdout.write(`trifola search — ${SEARCH_SCOPE}\n`);
   }
+  const notices: string[] = [];
   const emit = (match: SearchMatch): void => {
     if (request.json) {
       process.stdout.write(JSON.stringify(match) + "\n");
@@ -46,14 +48,23 @@ function runSearch(argv: string[]): void {
         `  ${match.role === "user" ? "You" : "Assistant"}: ${markedSnippet(match)}\n`,
     );
   };
-  const summary = searchClaudeProjects(
+  const summary = await runTieredSearch(
     projectsDirOf(claudeDir),
     request,
-    emit,
-    (done, total, pass) => {
-      spinner.update(
-        `${pass === "phrase" ? "phrase" : "term"} pass · ${fmtCount(done + 1)} of ${fmtCount(total)} file reads · nothing leaves this machine`,
-      );
+    {
+      onMatch: emit,
+      onTier: (info) => {
+        if (!request.json) process.stdout.write(dim(`engine: Tier ${info.tier} — ${info.detail}`) + "\n");
+      },
+      onNotice: (message) => {
+        notices.push(message);
+        if (!request.json) process.stdout.write(message + "\n");
+      },
+      onProgress: (done, total, pass) => {
+        spinner.update(
+          `${pass === "phrase" ? "phrase" : "term"} pass · ${fmtCount(done + 1)} of ${fmtCount(total)} file reads · nothing leaves this machine`,
+        );
+      },
     },
   );
   spinner.done();
@@ -61,30 +72,40 @@ function runSearch(argv: string[]): void {
     process.stdout.write(
       JSON.stringify({
         type: "status",
-        status: summary.scannedFiles === 0 ? "empty-corpus" : summary.emitted === 0 ? "no-matches" : "complete",
+        status: summary.scannedFiles === 0
+          ? "empty-corpus"
+          : request.terms.length === 0 || summary.emitted > 0
+            ? "complete"
+            : "no-matches",
         provider: "claude",
         scope: "conversation-text",
+        engine: summary.engine,
+        tier: summary.tier,
         scannedFiles: summary.scannedFiles,
         emitted: summary.emitted,
+        indexBuilt: summary.indexBuilt,
+        ...(summary.indexPath ? { indexPath: summary.indexPath } : {}),
+        ...(summary.update ? { update: summary.update } : {}),
+        ...(notices.length > 0 ? { notices } : {}),
         warning: RAW_WARNING,
       }) + "\n",
     );
   } else if (summary.scannedFiles === 0) {
     process.stdout.write("No Claude Code session transcripts found under this config directory.\n");
-  } else if (summary.emitted === 0) {
+  } else if (summary.emitted === 0 && request.terms.length > 0) {
     process.stdout.write("No matches in Claude Code conversation text.\n");
   }
   if (!request.json) process.stdout.write(`Warning: ${RAW_WARNING}.\n`);
 }
 
-function run(argv: string[]): void {
+async function run(argv: string[]): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(HELP_TEXT + "\n");
     return;
   }
 
   if (argv[0] === "search") {
-    runSearch(argv.slice(1));
+    await runSearch(argv.slice(1));
     return;
   }
 
@@ -118,7 +139,7 @@ function run(argv: string[]): void {
 }
 
 try {
-  run(process.argv.slice(2));
+  await run(process.argv.slice(2));
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err);
   process.stderr.write(`trifola: ${message}\n`);

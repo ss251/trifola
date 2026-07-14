@@ -1,6 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { withTempDir, buildSyntheticClaudeTree } from "./testutil.js";
@@ -33,7 +34,13 @@ describe("trifola CLI entry point (subprocess)", () => {
   test("default (text card) run against CLAUDE_CONFIG_DIR resolves the synthetic fixture and prints the known numbers", async () => {
     await withTempDir("trifola-cli-e2e-", async (root) => {
       buildSyntheticClaudeTree(root);
-      const { stdout, status } = runCli([], { ...process.env, CLAUDE_CONFIG_DIR: root });
+      const cache = path.join(root, "cache");
+      const { stdout, status } = runCli([], {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: root,
+        XDG_CACHE_HOME: cache,
+        HOME: root,
+      });
       assert.equal(status, 0);
       assert.match(stdout, /2 of 4 catalog skills never fired, across 2 sessions \(\+1 subagent run\)\./);
       assert.match(stdout, /\$18 API-equivalent across the scanned corpus/);
@@ -41,6 +48,7 @@ describe("trifola CLI entry point (subprocess)", () => {
       assert.match(stdout, /fresh-input premium above an all-cache-read floor/);
       assert.match(stdout, /1 entries used fast\/batch pricing modes trifola does not yet price/);
       assert.ok(!stdout.toLowerCase().includes("leak"));
+      assert.equal(fs.existsSync(path.join(cache, "trifola", "search-index.sqlite3")), false);
     });
   });
 

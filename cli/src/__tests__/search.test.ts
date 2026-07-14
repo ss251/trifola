@@ -23,7 +23,13 @@ function transcript(root: string, project: string, name: string, records: unknow
 
 function runCli(args: string[], root: string) {
   const result = spawnSync(process.execPath, [entry, ...args], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: root, NO_COLOR: "1" },
+    env: {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: root,
+      XDG_CACHE_HOME: path.join(root, "cache"),
+      HOME: root,
+      NO_COLOR: "1",
+    },
     encoding: "utf8",
   });
   return { stdout: result.stdout, stderr: result.stderr, status: result.status };
@@ -106,16 +112,18 @@ describe("Claude conversation search", () => {
       assert.deepEqual(
         Object.keys(lines[0]).sort(),
         [
-          "exactPhrase", "filePath", "lastActivity", "matchedTerms", "project",
+          "engine", "exactPhrase", "filePath", "lastActivity", "matchedTerms", "project",
           "provider", "role", "scope", "score", "sessionId", "snippet", "title",
           "type", "warning",
         ].sort(),
       );
       assert.equal(lines[0].provider, "claude");
       assert.equal(lines[0].scope, "conversation-text");
+      assert.equal(lines[0].engine, "scan");
       assert.match(lines[0].warning, /don't share raw/);
       assert.equal(lines[1].type, "status");
       assert.equal(lines[1].status, "complete");
+      assert.equal(lines[1].engine, "scan");
       assert.equal(lines[1].emitted, 1);
     });
   });
