@@ -108,15 +108,20 @@ Uploads nothing.
 
 Usage:
   npx trifola [options]
-  npx trifola search <terms...> [--limit N] [--json]
+  npx trifola search <terms...> [--limit N] [--json] [--rebuild-index]
+  npx trifola search --rebuild-index
 
 Search:
   Searches Claude Code conversation text only: user prompts + assistant prose.
   Tool calls/results and thinking are excluded. Exact words only; no fuzzy
-  matching. Results stream in phrase-first, then recency order.
+  matching. Search uses the app's read-only index when available, otherwise a
+  separate CLI index on Node 22.5+, with the existing scan fallback on Node 18+.
+  A first indexed search streams scan results, then finishes the local build.
   --limit N    Maximum results (default: 10).
   --json       Stream newline-delimited result/status JSON. Contains raw local
                conversation text — don't share without reviewing it.
+  --rebuild-index
+               Recreate the CLI-owned index (never modifies the app index).
 
 Options:
   --json       Print machine-readable JSON instead of the text card.
@@ -125,4 +130,9 @@ Options:
   --help, -h   Show this help and exit.
 
 Environment:
-  CLAUDE_CONFIG_DIR   Override the Claude Code config directory (default: ~/.claude).`;
+  CLAUDE_CONFIG_DIR   Override the Claude Code config directory (default: ~/.claude).
+
+Index storage:
+  macOS: ~/Library/Caches/trifola/search-index.sqlite3
+  XDG:   $XDG_CACHE_HOME/trifola/search-index.sqlite3
+  Delete that file (plus optional -wal/-shm sidecars) to clear the CLI index.`;

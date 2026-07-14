@@ -2,18 +2,26 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 export const SEARCH_SCOPE = "Claude Code conversation text only (user prompts + assistant prose; tool output excluded)";
 export const RAW_WARNING = "don't share raw search output without reviewing conversation text";
+export const MAX_ORDERED_TOKENS_PER_DOCUMENT = 20_000;
 export function tokenizeSearchText(text) {
     const runs = text.toLocaleLowerCase("en-US").match(/[\p{L}\p{N}]+/gu) ?? [];
-    return runs.filter((token) => token.length >= 2 && token.length <= 64);
+    return runs.filter((token) => {
+        const length = Array.from(token).length;
+        return length >= 2 && length <= 64;
+    });
 }
 export function parseSearchArgs(argv) {
     let limit = 10;
     let json = false;
+    let rebuildIndex = false;
     const queryParts = [];
     for (let index = 0; index < argv.length; index += 1) {
         const value = argv[index];
         if (value === "--json") {
             json = true;
+        }
+        else if (value === "--rebuild-index") {
+            rebuildIndex = true;
         }
         else if (value === "--limit") {
             const raw = argv[index + 1];
@@ -32,15 +40,15 @@ export function parseSearchArgs(argv) {
     }
     const raw = queryParts.join(" ").trim();
     const terms = tokenizeSearchText(raw);
-    if (terms.length === 0) {
+    if (terms.length === 0 && !rebuildIndex) {
         throw new Error("search requires one or more word terms");
     }
-    return { raw, terms, limit, json };
+    return { raw, terms, limit, json, rebuildIndex };
 }
 /**
- * Two streaming passes preserve the one global ranking promise without a
- * result buffer: exact-phrase files stream first, then bag-of-words files.
- * Each pass walks newest files first, so recency is the stable tie-breaker.
+ * The scan fallback deliberately retains the existing phrase-first two-pass
+ * behavior. It is the compatibility path for Node versions without node:sqlite
+ * and the result-serving path while a first CLI index is built.
  */
 export function searchClaudeProjects(projectsDir, request, onMatch, onProgress) {
     const files = walkJsonlFiles(projectsDir).sort((a, b) => {
@@ -48,6 +56,8 @@ export function searchClaudeProjects(projectsDir, request, onMatch, onProgress) 
         const bTime = safeMtime(b);
         return aTime === bTime ? a.localeCompare(b) : bTime - aTime;
     });
+    if (request.terms.length === 0)
+        return { scannedFiles: files.length, emitted: 0 };
     let emitted = 0;
     let attempts = 0;
     for (const pass of ["phrase", "terms"]) {
@@ -89,32 +99,40 @@ export function relativeAge(lastActivity, now = new Date()) {
         return `${Math.floor(seconds / 3_600)}h ago`;
     return `${Math.floor(seconds / 86_400)}d ago`;
 }
-function scanFile(filePath, projectsDir, request) {
-    let raw;
+export function readSearchDocument(filePath, projectsDir, seed) {
+    let data;
     try {
-        raw = fs.readFileSync(filePath, "utf8");
+        data = fs.readFileSync(filePath);
     }
     catch {
         return null;
     }
+    return parseSearchBuffer(data, filePath, projectsDir, seed);
+}
+/** Parse JSONL bytes and report the durable byte offset consumed. */
+export function parseSearchBuffer(data, filePath, projectsDir, seed) {
+    let sessionId = seed?.sessionId ?? path.basename(filePath, ".jsonl");
+    let title = seed?.title ?? "";
+    let cwd = seed?.cwd ?? "";
+    let lastActivity = seed?.lastActivity ? new Date(seed.lastActivity) : null;
     const events = [];
-    let title = null;
-    let sessionId = path.basename(filePath, ".jsonl");
-    let lastActivity = null;
-    for (const line of raw.split("\n")) {
-        if (!line)
-            continue;
+    let consumedBytes = 0;
+    const consume = (line) => {
+        if (line.length === 0)
+            return true;
         let parsed;
         try {
-            parsed = JSON.parse(line);
+            parsed = JSON.parse(line.toString("utf8"));
         }
         catch {
-            continue;
+            return false;
         }
         if (!parsed || typeof parsed !== "object")
-            continue;
+            return true;
         if (typeof parsed.sessionId === "string" && parsed.sessionId.length > 0)
             sessionId = parsed.sessionId;
+        if (typeof parsed.cwd === "string" && parsed.cwd.trim())
+            cwd = parsed.cwd.trim();
         if (parsed.type === "ai-title" && typeof parsed.aiTitle === "string" && parsed.aiTitle.trim()) {
             title = parsed.aiTitle.trim();
         }
@@ -125,10 +143,38 @@ function scanFile(filePath, projectsDir, request) {
             }
         }
         events.push(...searchableEvents(parsed));
+        return true;
+    };
+    let start = 0;
+    while (start < data.length) {
+        const newline = data.indexOf(0x0a, start);
+        if (newline < 0)
+            break;
+        consume(data.subarray(start, newline));
+        consumedBytes = newline + 1;
+        start = newline + 1;
     }
-    if (events.length === 0)
-        return null;
-    const allTokens = events.flatMap((event) => tokenizeSearchText(event.text));
+    if (start < data.length && consume(data.subarray(start)))
+        consumedBytes = data.length;
+    const relative = path.relative(projectsDir, filePath).split(path.sep);
+    const project = relative.length > 1 ? relative[0] : path.basename(path.dirname(filePath));
+    const fallbackTitle = events.find((event) => event.role === "user")?.text
+        .replace(/\s+/g, " ").trim().slice(0, 90) || path.basename(filePath, ".jsonl");
+    return {
+        sessionId,
+        title: title || fallbackTitle,
+        project,
+        cwd: cwd || project,
+        filePath,
+        lastActivity: lastActivity && !Number.isNaN(lastActivity.getTime())
+            ? lastActivity.toISOString()
+            : null,
+        events,
+        consumedBytes,
+    };
+}
+export function searchMatchForDocument(document, request, engine, exactPhraseOverride, scoreOverride) {
+    const allTokens = document.events.flatMap((event) => tokenizeSearchText(event.text));
     const frequencies = new Map();
     for (const token of allTokens)
         frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
@@ -136,7 +182,7 @@ function scanFile(filePath, projectsDir, request) {
     if (!uniqueTerms.every((term) => frequencies.has(term)))
         return null;
     let best = null;
-    for (const event of events) {
+    for (const event of document.events) {
         const tokens = tokenizeSearchText(event.text);
         const exact = containsPhrase(tokens, request.terms);
         const present = uniqueTerms.filter((term) => tokens.includes(term)).length;
@@ -144,95 +190,31 @@ function scanFile(filePath, projectsDir, request) {
             continue;
         const score = (exact ? 1_000 : 0) + present * 100;
         if (!best || score > best.score)
-            best = { event, score, exact };
+            best = { event, score };
     }
     if (!best)
         return null;
-    const exactPhrase = events.some((event) => containsPhrase(tokenizeSearchText(event.text), request.terms));
-    const stat = safeStat(filePath);
-    const activity = lastActivity ?? (stat ? stat.mtime : null);
-    const relative = path.relative(projectsDir, filePath).split(path.sep);
-    const project = relative.length > 1 ? relative[0] : path.basename(path.dirname(filePath));
-    const fallbackTitle = events.find((event) => event.role === "user")?.text
-        .replace(/\s+/g, " ").trim().slice(0, 90) || path.basename(filePath, ".jsonl");
-    const hitCount = uniqueTerms.reduce((sum, term) => sum + (frequencies.get(term) ?? 0), 0);
+    const exactPhrase = exactPhraseOverride ?? document.events.some((event) => containsPhrase(tokenizeSearchText(event.text), request.terms));
+    const activity = document.lastActivity ?? safeStat(document.filePath)?.mtime.toISOString() ?? null;
     return {
+        type: "result",
+        provider: "claude",
+        scope: "conversation-text",
+        engine,
+        sessionId: document.sessionId,
+        title: document.title,
+        project: document.project,
+        filePath: document.filePath,
+        lastActivity: activity,
+        role: best.event.role,
+        snippet: excerpt(best.event.text, request.terms),
+        matchedTerms: uniqueTerms,
         exactPhrase,
-        match: {
-            type: "result",
-            provider: "claude",
-            scope: "conversation-text",
-            sessionId,
-            title: title ?? fallbackTitle,
-            project,
-            filePath,
-            lastActivity: activity?.toISOString() ?? null,
-            role: best.event.role,
-            snippet: excerpt(best.event.text, request.terms),
-            matchedTerms: uniqueTerms,
-            exactPhrase,
-            score: (exactPhrase ? 1_000 : 0) + hitCount * 12,
-            warning: RAW_WARNING,
-        },
+        score: scoreOverride ?? appScore(uniqueTerms.length, exactPhrase, activity),
+        warning: RAW_WARNING,
     };
 }
-function searchableEvents(record) {
-    if (record.type === "user") {
-        if (record.isMeta === true || record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true)
-            return [];
-        const content = record.message?.content;
-        if (typeof content === "string") {
-            const cleaned = cleanUserText(content);
-            return cleaned ? [{ role: "user", text: cleaned }] : [];
-        }
-        if (Array.isArray(content)) {
-            return content
-                .filter((block) => block?.type === "text" && typeof block.text === "string")
-                .map((block) => cleanUserText(block.text))
-                .filter((text) => text !== null)
-                .map((text) => ({ role: "user", text }));
-        }
-    }
-    if (record.type === "assistant" && Array.isArray(record.message?.content)) {
-        return record.message.content
-            .filter((block) => block?.type === "text" && typeof block.text === "string" && block.text.trim().length > 0)
-            .map((block) => ({ role: "assistant", text: block.text }));
-    }
-    return [];
-}
-function cleanUserText(text) {
-    if (text.includes("<local-command-stdout>"))
-        return null;
-    let cleaned = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, " ").trim();
-    const command = cleaned.match(/<command-name>([\s\S]*?)<\/command-name>/);
-    if (command) {
-        const args = cleaned.match(/<command-args>([\s\S]*?)<\/command-args>/)?.[1]?.trim() ?? "";
-        cleaned = `${command[1].trim()}${args ? ` ${args}` : ""}`;
-    }
-    if (!cleaned || cleaned.startsWith("Caveat:"))
-        return null;
-    return cleaned;
-}
-function containsPhrase(tokens, phrase) {
-    if (phrase.length === 0 || phrase.length > tokens.length)
-        return false;
-    for (let start = 0; start <= tokens.length - phrase.length; start += 1) {
-        if (phrase.every((term, offset) => tokens[start + offset] === term))
-            return true;
-    }
-    return false;
-}
-function excerpt(text, terms, maximum = 220) {
-    if (text.length <= maximum)
-        return text;
-    const lower = text.toLocaleLowerCase("en-US");
-    const locations = terms.map((term) => lower.indexOf(term)).filter((value) => value >= 0);
-    const location = locations.length > 0 ? Math.min(...locations) : 0;
-    const start = Math.max(0, location - Math.floor(maximum / 3));
-    const end = Math.min(text.length, start + maximum);
-    return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
-}
-function walkJsonlFiles(root) {
+export function walkJsonlFiles(root) {
     const output = [];
     function walk(directory) {
         let entries;
@@ -252,6 +234,87 @@ function walkJsonlFiles(root) {
     }
     walk(root);
     return output;
+}
+export function containsPhrase(tokens, phrase) {
+    if (phrase.length === 0 || phrase.length > tokens.length)
+        return false;
+    for (let start = 0; start <= tokens.length - phrase.length; start += 1) {
+        if (phrase.every((term, offset) => tokens[start + offset] === term))
+            return true;
+    }
+    return false;
+}
+function scanFile(filePath, projectsDir, request) {
+    const document = readSearchDocument(filePath, projectsDir);
+    if (!document)
+        return null;
+    const match = searchMatchForDocument(document, request, "scan");
+    return match ? { match, exactPhrase: match.exactPhrase } : null;
+}
+function searchableEvents(record) {
+    if (record.isMeta === true)
+        return [];
+    if (record.type === "user") {
+        const content = record.message?.content;
+        if (typeof content === "string") {
+            const cleaned = cleanUserText(content);
+            return cleaned ? [{ role: "user", text: cleaned }] : [];
+        }
+        if (Array.isArray(content)) {
+            return content
+                .filter((block) => block?.type === "text" && typeof block.text === "string")
+                .map((block) => cleanUserText(block.text))
+                .filter((text) => text !== null)
+                .map((text) => ({ role: "user", text }));
+        }
+    }
+    if (record.type === "assistant" && Array.isArray(record.message?.content)) {
+        return record.message.content
+            .filter((block) => block?.type === "text" && typeof block.text === "string" && block.text.trim().length > 0)
+            .map((block) => ({ role: "assistant", text: clipText(block.text) }));
+    }
+    return [];
+}
+function cleanUserText(text) {
+    const command = text.match(/<command-name>([\s\S]*?)<\/command-name>/);
+    if (command) {
+        const args = text.match(/<command-args>([\s\S]*?)<\/command-args>/)?.[1]?.trim() ?? "";
+        const cleaned = `${command[1].trim()}${args ? ` ${args}` : ""}`.trim();
+        return cleaned ? clipText(cleaned) : null;
+    }
+    if (text.includes("<local-command-stdout>"))
+        return null;
+    const cleaned = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, " ").trim();
+    if (!cleaned || cleaned.startsWith("Caveat:"))
+        return null;
+    return clipText(cleaned);
+}
+function clipText(text, maximum = 4_000) {
+    const characters = Array.from(text);
+    if (characters.length <= maximum)
+        return text;
+    return `${characters.slice(0, maximum).join("")} … (+${characters.length - maximum} chars)`;
+}
+function appScore(uniqueTermCount, exactPhrase, lastActivity) {
+    let recency = 0;
+    if (lastActivity) {
+        const timestamp = new Date(lastActivity).getTime();
+        if (!Number.isNaN(timestamp)) {
+            const days = Math.max(0, (Date.now() - timestamp) / 86_400_000);
+            recency = Math.max(0, 30 * (1 - Math.min(days, 365) / 365));
+        }
+    }
+    return uniqueTermCount * 25 + recency + (exactPhrase ? 1_000 : 0);
+}
+function excerpt(text, terms, maximum = 220) {
+    if (text.length <= maximum)
+        return text;
+    const lower = text.toLocaleLowerCase("en-US");
+    const locations = terms.map((term) => lower.indexOf(term)).filter((value) => value >= 0);
+    const location = locations.length > 0 ? Math.min(...locations) : 0;
+    const start = Math.max(0, location - Math.floor(maximum / 3));
+    const end = Math.min(text.length, start + maximum);
+    return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
 }
 function safeStat(filePath) {
     try {

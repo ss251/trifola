@@ -26,9 +26,30 @@ npx trifola search keychain quota --json
 ```
 
 Search is Claude Code-only (the macOS app searches Claude Code and Codex). It reads user prompts
-and assistant prose, excluding tool calls/results, thinking, and system records. Results stream as
-files are parsed: exact phrases first, then all-term matches, newest first within each rank. Matching
-words are marked in text output; `--json` emits newline-delimited result and final status objects.
+and assistant prose, excluding tool calls/results, thinking, and system records. Matching words are
+marked in text output; `--json` emits newline-delimited result and final status objects, each labeled
+with the serving `engine`.
+
+Search chooses the fastest available local tier:
+
+1. **App index** — on macOS, a matching Trifola app index is queried read-only. The CLI never writes
+   to the app store.
+2. **CLI index** — when `node:sqlite` is available (Node 22.5+), search maintains a separate FTS5
+   index. The first query streams the normal scan results while the index is built, then announces
+   that later searches are instant. Warm runs parse only changed or appended transcripts.
+3. **Scan** — older Node versions keep the existing phrase-first, newest-first two-pass scan and say
+   honestly that Node 22.5+ enables indexing.
+
+The CLI index is stored at `$XDG_CACHE_HOME/trifola/search-index.sqlite3` when XDG cache is set,
+`~/Library/Caches/trifola/search-index.sqlite3` on macOS, or `~/.cache/trifola/search-index.sqlite3`
+on other platforms. It is never stored under `~/.claude`. Rebuild it with:
+
+```bash
+npx trifola search --rebuild-index
+```
+
+To delete it manually, remove `search-index.sqlite3` and its optional `-wal`/`-shm` sidecars from
+that cache directory. A bare `npx trifola` audit never creates or updates the search index.
 
 Search is exact-word only—no fuzzy or semantic matching. Unicode letters/numbers form words;
 unspaced CJK text is generally one long token in v1, so a substring inside that run may not match.
@@ -39,8 +60,10 @@ Search output contains real local conversation text. Review it before sharing.
 ```
 --json       Print the finding as machine-readable JSON.
 --list-dead  Print never-fired skill IDs, one per line, for local pruning.
-search <terms...> [--limit N] [--json]
+search <terms...> [--limit N] [--json] [--rebuild-index]
              Stream Claude Code conversation-text matches (default limit: 10).
+search --rebuild-index
+             Recreate the CLI-owned index without running a query.
 --help, -h   Print usage and exit.
 ```
 
