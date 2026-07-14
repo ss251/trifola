@@ -539,8 +539,10 @@ struct SearchResultRow: View {
                             .foregroundStyle(secondary)
                     }
                     if let snippet = result.snippet {
-                        (Text("\(snippet.role): ")
-                            .font(Theme.Typography.metadataMedium)
+                        ((snippet.role.isEmpty
+                            ? Text("")
+                            : Text("\(snippet.role): ")
+                                .font(Theme.Typography.metadataMedium))
                          + highlightedText(snippet))
                             .font(Theme.Typography.body)
                             .foregroundStyle(primary)

@@ -749,6 +749,35 @@ public struct SearchIndex: Sendable {
         return output
     }
 
+    /// The best-matching stored row for one document — snippets are served
+    /// from the index's own parsed text (Cursor/Zoekt pattern: never re-read
+    /// source files at query time; a multi-hundred-MB live transcript made
+    /// the old exact-reread path take 15s+ per query on a real corpus).
+    public func bestMatchContent(
+        sessionID: String, filePath: String, query: SearchQuery
+    ) -> String? {
+        guard !query.tokens.isEmpty else { return nil }
+        guard let connection = try? SQLiteConnection(
+            url: databaseURL, readOnly: true) else { return nil }
+        let sql = """
+            SELECT r.content
+            FROM search_fts JOIN search_rows r ON r.rowid = search_fts.rowid
+            WHERE search_fts MATCH ? AND r.scope = 'conversation'
+              AND r.document_key IN (
+                SELECT key FROM documents WHERE session_id = ? AND file_path = ?)
+            ORDER BY rank LIMIT 1
+            """
+        let phrase = query.tokens.joined(separator: " ")
+        for match in [phrase, query.tokens[0]] where !match.isEmpty {
+            guard let statement = try? connection.prepare(sql),
+                  (try? statement.bind(quoted(match), at: 1)) != nil,
+                  (try? statement.bind(sessionID, at: 2)) != nil,
+                  (try? statement.bind(filePath, at: 3)) != nil else { continue }
+            if statement.step() == SQLITE_ROW { return statement.text(0) }
+        }
+        return nil
+    }
+
     private func matchingDocuments(term: String, scope: SearchScope,
                                    connection: SQLiteConnection) -> Set<String>? {
         let sql = """
@@ -1045,7 +1074,7 @@ public enum SearchSnippetExtractor {
                           locale: Locale(identifier: "en_US_POSIX")) != nil
     }
 
-    private static func excerpt(from text: String, terms: [String]) -> String {
+    public static func excerpt(from text: String, terms: [String]) -> String {
         guard text.count > maximumCharacters else { return text }
         let first = terms.compactMap {
             text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive],
@@ -1060,7 +1089,7 @@ public enum SearchSnippetExtractor {
             + (endOffset < text.count ? "…" : "")
     }
 
-    private static func highlights(in text: String,
+    public static func highlights(in text: String,
                                    terms: [String]) -> [SearchHighlight] {
         var output: [SearchHighlight] = []
         let locale = Locale(identifier: "en_US_POSIX")

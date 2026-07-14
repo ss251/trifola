@@ -35,7 +35,11 @@ public struct SearchSnapshotState<Snapshot: Sendable & Equatable>:
     public mutating func begin(query: String) -> SearchSnapshotRequest {
         generation += 1
         requestedQuery = query
-        isPending = true
+        // Pending means "the answer on screen is for a DIFFERENT question".
+        // Same-query refreshes (index updates, live-probe ticks) recompute
+        // silently and swap atomically — they must not flash "Searching…"
+        // over an already-correct answer.
+        isPending = displayedQuery != query
         return SearchSnapshotRequest(query: query, generation: generation)
     }
 
@@ -46,8 +50,7 @@ public struct SearchSnapshotState<Snapshot: Sendable & Equatable>:
         _ snapshot: Snapshot,
         for request: SearchSnapshotRequest
     ) -> Bool {
-        guard isPending,
-              request.generation == generation,
+        guard request.generation == generation,
               request.query == requestedQuery else { return false }
         displayed = snapshot
         displayedQuery = request.query

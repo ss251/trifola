@@ -324,11 +324,28 @@ final class NavigationSnapshotStore: ObservableObject {
                                 $0.provider.rawValue, $0.id, $0.filePath
                             ].joined(separator: "\u{1}"))
                         }
-                    results = candidates.prefix(20).map {
-                        SearchResult(
-                            candidate: $0,
-                            snippet: SearchSnippetExtractor.snippet(
-                                for: $0, query: query))
+                    results = candidates.prefix(20).map { candidate in
+                        // Index-served snippets: query-time file rereads took
+                        // 15s+ against multi-hundred-MB live transcripts. The
+                        // stored row IS the parsed truth (same triggers keep
+                        // it in sync); the reread survives only as a fallback.
+                        let snippet: SearchSnippet?
+                        if let stored = inputs.searchIndex.bestMatchContent(
+                            sessionID: candidate.id,
+                            filePath: candidate.filePath,
+                            query: query) {
+                            let excerpt = SearchSnippetExtractor.excerpt(
+                                from: stored, terms: query.tokens)
+                            snippet = SearchSnippet(
+                                text: excerpt,
+                                highlights: SearchSnippetExtractor.highlights(
+                                    in: excerpt, terms: query.tokens),
+                                role: "")
+                        } else {
+                            snippet = SearchSnippetExtractor.snippet(
+                                for: candidate, query: query)
+                        }
+                        return SearchResult(candidate: candidate, snippet: snippet)
                     }
                 }
                 _ = NavigationMetrics.endProjection(metric)
