@@ -1,7 +1,7 @@
 {
   "name": "trifola",
-  "version": "0.3.0",
-  "description": "Finding generator for your Claude Code corpus — dead skills, prompt tax, and re-sent context, priced at API-equivalent rates. Reads ~/.claude locally; uploads nothing.",
+  "version": "0.4.0",
+  "description": "Finding generator and exact conversation search for your Claude Code and Codex corpus. Reads ~/.claude and ~/.codex locally; uploads nothing.",
   "type": "module",
   "bin": {
     "trifola": "dist/trifola.js"
@@ -20,6 +20,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p . && chmod +x dist/trifola.js",
     "benchmark:search": "node scripts/benchmark-search-index.mjs",
+    "parity": "node scripts/parity-check.mjs",
     "test": "tsc -p . && node --test dist/__tests__/*.test.js",
     "start": "node dist/trifola.js",
     "prepack": "npm run clean && npm run build",
@@ -38,6 +39,7 @@
   },
   "keywords": [
     "claude-code",
+    "openai-codex",
     "cli",
     "audit",
     "cost",

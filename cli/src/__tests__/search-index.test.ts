@@ -22,6 +22,12 @@ function transcript(root: string, name: string, records: unknown[]): string {
   return filePath;
 }
 
+function codexRollout(root: string, name: string, records: unknown[]): string {
+  const filePath = path.join(root, ".codex", "sessions", "2026", "07", "14", `rollout-${name}.jsonl`);
+  writeFile(filePath, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  return filePath;
+}
+
 async function execute(
   root: string,
   cache: string,
@@ -61,6 +67,27 @@ function digest(filePath: string): string {
 }
 
 describe("search index tiers", () => {
+  test("Codex documents join Claude in scan and warm Tier 2 with provider labels", { skip: !sqlite }, async () => {
+    await withTempDir("trifola-index-codex-", async (root) => {
+      const cache = path.join(root, "cache");
+      transcript(root, "claude", [
+        { type: "user", sessionId: "claude", message: { content: "Shared parityneedle from Claude" } },
+      ]);
+      codexRollout(root, "codex", [
+        { type: "session_meta", payload: { id: "codex", cwd: "/work/codex-demo" } },
+        { type: "event_msg", payload: { type: "user_message", message: "Shared parityneedle from Codex" } },
+        { type: "response_item", payload: { type: "function_call", arguments: "excludedtoolneedle" } },
+      ]);
+      const cold = await execute(root, cache, ["parityneedle"]);
+      const warm = await execute(root, cache, ["parityneedle"]);
+      assert.deepEqual(new Set(cold.matches.map((match) => match.provider)), new Set(["claude", "codex"]));
+      const byProvider = (matches: SearchMatch[]) => matches.map(stableMatch)
+        .sort((left, right) => left.provider.localeCompare(right.provider));
+      assert.deepEqual(byProvider(warm.matches), byProvider(cold.matches));
+      assert.equal((await execute(root, cache, ["excludedtoolneedle"])).matches.length, 0);
+    });
+  });
+
   test("feature-detected node:sqlite failure preserves Tier 3 and never creates a cache", async () => {
     await withTempDir("trifola-index-tier3-", async (root) => {
       const cache = path.join(root, "cache");

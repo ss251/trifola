@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-export const SEARCH_SCOPE = "Claude Code conversation text only (user prompts + assistant prose; tool output excluded)";
+import { codexRolloutIsImported, loadCodexImportManifest, readCodexRollout, parseCodexRollout, walkCodexRollouts, } from "./codex.js";
+export const SEARCH_SCOPE = "Claude Code + Codex conversation text (user prompts + assistant prose; tool output excluded)";
 export const RAW_WARNING = "don't share raw search output without reviewing conversation text";
 export const MAX_ORDERED_TOKENS_PER_DOCUMENT = 20_000;
 export function tokenizeSearchText(text) {
@@ -51,20 +52,23 @@ export function parseSearchArgs(argv) {
  * and the result-serving path while a first CLI index is built.
  */
 export function searchClaudeProjects(projectsDir, request, onMatch, onProgress) {
-    const files = walkJsonlFiles(projectsDir).sort((a, b) => {
-        const aTime = safeMtime(a);
-        const bTime = safeMtime(b);
-        return aTime === bTime ? a.localeCompare(b) : bTime - aTime;
+    return searchCorpora({ claude: projectsDir, codex: path.join(projectsDir, ".codex-disabled"), codexHome: path.dirname(projectsDir) }, request, onMatch, onProgress);
+}
+export function searchCorpora(roots, request, onMatch, onProgress) {
+    const files = collectSearchFiles(roots).sort((a, b) => {
+        const aTime = safeMtime(a.filePath);
+        const bTime = safeMtime(b.filePath);
+        return aTime === bTime ? a.filePath.localeCompare(b.filePath) : bTime - aTime;
     });
     if (request.terms.length === 0)
         return { scannedFiles: files.length, emitted: 0 };
     let emitted = 0;
     let attempts = 0;
     for (const pass of ["phrase", "terms"]) {
-        for (const filePath of files) {
+        for (const source of files) {
             onProgress?.(attempts, files.length * 2, pass);
             attempts += 1;
-            const found = scanFile(filePath, projectsDir, request);
+            const found = scanFile(source, request);
             if (!found || found.exactPhrase !== (pass === "phrase"))
                 continue;
             onMatch(found.match);
@@ -100,6 +104,13 @@ export function relativeAge(lastActivity, now = new Date()) {
     return `${Math.floor(seconds / 86_400)}d ago`;
 }
 export function readSearchDocument(filePath, projectsDir, seed) {
+    const provider = seed?.provider ?? "claude";
+    if (provider === "codex") {
+        const read = readCodexRollout(filePath);
+        if (!read.rollout)
+            return null;
+        return codexSearchDocument(read.rollout, filePath, projectsDir, seed);
+    }
     let data;
     try {
         data = fs.readFileSync(filePath);
@@ -111,6 +122,9 @@ export function readSearchDocument(filePath, projectsDir, seed) {
 }
 /** Parse JSONL bytes and report the durable byte offset consumed. */
 export function parseSearchBuffer(data, filePath, projectsDir, seed) {
+    if (seed?.provider === "codex") {
+        return codexSearchDocument(parseCodexRollout(data, path.basename(filePath).replace(/\.jsonl(?:\.zst)?$/, "")), filePath, projectsDir, seed);
+    }
     let sessionId = seed?.sessionId ?? path.basename(filePath, ".jsonl");
     let title = seed?.title ?? "";
     let cwd = seed?.cwd ?? "";
@@ -160,7 +174,11 @@ export function parseSearchBuffer(data, filePath, projectsDir, seed) {
     const project = relative.length > 1 ? relative[0] : path.basename(path.dirname(filePath));
     const fallbackTitle = events.find((event) => event.role === "user")?.text
         .replace(/\s+/g, " ").trim().slice(0, 90) || path.basename(filePath, ".jsonl");
+    if (filePath.split(path.sep).includes("subagents")) {
+        sessionId = `${sessionId}/${path.basename(filePath, ".jsonl")}`;
+    }
     return {
+        provider: "claude",
         sessionId,
         title: title || fallbackTitle,
         project,
@@ -198,7 +216,7 @@ export function searchMatchForDocument(document, request, engine, exactPhraseOve
     const activity = document.lastActivity ?? safeStat(document.filePath)?.mtime.toISOString() ?? null;
     return {
         type: "result",
-        provider: "claude",
+        provider: document.provider,
         scope: "conversation-text",
         engine,
         sessionId: document.sessionId,
@@ -244,12 +262,44 @@ export function containsPhrase(tokens, phrase) {
     }
     return false;
 }
-function scanFile(filePath, projectsDir, request) {
-    const document = readSearchDocument(filePath, projectsDir);
+function scanFile(source, request) {
+    const document = source.provider === "codex"
+        ? readSearchDocument(source.filePath, source.root, { provider: "codex", sessionId: "", title: "", cwd: "", lastActivity: null })
+        : readSearchDocument(source.filePath, source.root);
     if (!document)
         return null;
     const match = searchMatchForDocument(document, request, "scan");
     return match ? { match, exactPhrase: match.exactPhrase } : null;
+}
+export function collectSearchFiles(roots) {
+    const output = walkJsonlFiles(roots.claude).map((filePath) => ({
+        filePath, provider: "claude", root: roots.claude,
+    }));
+    const manifest = loadCodexImportManifest(roots.codexHome);
+    for (const filePath of walkCodexRollouts(roots.codex)) {
+        const read = readCodexRollout(filePath);
+        if (!read.rollout || codexRolloutIsImported(read.rollout, manifest))
+            continue;
+        output.push({ filePath, provider: "codex", root: roots.codex });
+    }
+    return output;
+}
+function codexSearchDocument(rollout, filePath, sessionsDir, seed) {
+    const cwd = rollout.cwd || seed?.cwd || "";
+    const project = cwd ? path.basename(cwd) : "—";
+    const fallbackTitle = rollout.events.find((event) => event.role === "user" && !/^\/\S+$/.test(event.text.trim()))?.text
+        .replace(/\s+/g, " ").trim().slice(0, 90) || project || rollout.sessionId;
+    return {
+        provider: "codex",
+        sessionId: rollout.sessionId || seed?.sessionId || path.basename(filePath),
+        title: seed?.title || fallbackTitle,
+        cwd,
+        project,
+        filePath,
+        lastActivity: rollout.lastActivity ?? seed?.lastActivity ?? null,
+        events: rollout.events,
+        consumedBytes: rollout.consumedBytes,
+    };
 }
 function searchableEvents(record) {
     if (record.isMeta === true)

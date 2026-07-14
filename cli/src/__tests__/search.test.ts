@@ -132,8 +132,8 @@ describe("Claude conversation search", () => {
     await withTempDir("trifola-search-empty-", async (root) => {
       const text = runCli(["search", "keychain"], root);
       assert.equal(text.status, 0);
-      assert.match(text.stdout, /No Claude Code session transcripts found/);
-      assert.match(text.stdout, /Claude Code conversation text only/);
+      assert.match(text.stdout, /No Claude Code sessions or Codex rollouts found/);
+      assert.match(text.stdout, /Claude Code \+ Codex conversation text/);
 
       const json = runCli(["search", "keychain", "--json"], root);
       assert.equal(json.status, 0);

@@ -6,15 +6,20 @@ import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 
 const FILES = 7_000;
+const CODEX_FILES = 500;
+const CLAUDE_FILES = FILES - CODEX_FILES;
 const WARM_RUNS = 30;
 const WARMUP_RUNS = 3;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "trifola-search-benchmark-"));
 const cache = path.join(root, "cache");
 const project = path.join(root, "projects", "benchmark");
+const codexHome = path.join(root, ".codex");
+const codexSessions = path.join(codexHome, "sessions", "2026", "01", "01");
 const entry = path.resolve("dist", "trifola.js");
 
 fs.mkdirSync(project, { recursive: true });
-for (let index = 0; index < FILES; index += 1) {
+fs.mkdirSync(codexSessions, { recursive: true });
+for (let index = 0; index < CLAUDE_FILES; index += 1) {
   const record = {
     type: "user",
     sessionId: `benchmark-${index}`,
@@ -27,11 +32,27 @@ for (let index = 0; index < FILES; index += 1) {
   };
   fs.writeFileSync(path.join(project, `${String(index).padStart(4, "0")}.jsonl`), `${JSON.stringify(record)}\n`);
 }
+for (let index = 0; index < CODEX_FILES; index += 1) {
+  const records = [
+    { type: "session_meta", timestamp: "2026-01-01T00:00:00Z", payload: { id: `codex-benchmark-${index}`, cwd: "/benchmark/codex" } },
+    { type: "event_msg", timestamp: "2026-01-01T00:00:01Z", payload: {
+      type: "user_message",
+      message: index % 50 === 0
+        ? `Benchmarkneedle commonterm deterministic Codex file ${index}`
+        : `Background commonterm deterministic Codex rollout ${index}`,
+    } },
+  ];
+  fs.writeFileSync(
+    path.join(codexSessions, `rollout-${String(index).padStart(4, "0")}.jsonl`),
+    records.map((record) => JSON.stringify(record)).join("\n") + "\n",
+  );
+}
 
 const environment = {
   ...process.env,
   HOME: root,
   CLAUDE_CONFIG_DIR: root,
+  CODEX_HOME: codexHome,
   XDG_CACHE_HOME: cache,
   NO_COLOR: "1",
 };
@@ -96,6 +117,7 @@ try {
     node: process.version,
     platform: `${process.platform}-${process.arch}`,
     fixtureFiles: FILES,
+    providers: { claude: CLAUDE_FILES, codex: CODEX_FILES },
     cold: {
       firstResultMs: Number(cold.firstResultMs?.toFixed(2)),
       completeMs: Number(cold.elapsedMs.toFixed(2)),

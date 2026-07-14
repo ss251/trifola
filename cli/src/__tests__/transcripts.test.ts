@@ -74,6 +74,26 @@ describe("scanProjects", () => {
     });
   });
 
+  test("dedups stable usage keys across files and prefers the parent transcript", async () => {
+    await withTempDir("trifola-cross-file-dedup-", async (dir) => {
+      const parent = assistantLine({
+        model: "claude-opus-4-8", requestId: "shared-request", messageId: "shared-message",
+        timestamp: "2026-07-01T10:00:00.000Z", input: 900,
+      });
+      const copiedSubagent = assistantLine({
+        model: "claude-opus-4-8", requestId: "shared-request", messageId: "shared-message",
+        timestamp: "2026-07-01T10:00:00.000Z", input: 100,
+      });
+      writeFile(path.join(dir, "proj", "parent.jsonl"), parent);
+      writeFile(path.join(dir, "proj", "parent", "subagents", "agent-copy.jsonl"), copiedSubagent);
+
+      const stats = scanProjects(dir);
+      assert.equal(stats.totalDedupedEntries, 1);
+      assert.equal(stats.totalUsage.inputTokens, 900);
+      assert.equal(stats.usageEntriesByProvider.claude, 1);
+    });
+  });
+
   test("merges Skill tool_use invocations across sessions", async () => {
     await withTempDir("trifola-skillcount-", async (dir) => {
       const s1 = assistantLine({
