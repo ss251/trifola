@@ -60,10 +60,51 @@ private func corpus() -> [SessionSummary] {
 private let registeredSelfID = "aaaa1111-0000-0000-0000-000000000001"
 
 private func server(quota: MCPQuotaOutcome = .unavailable("no credentials found (test)"),
+                    codexQuota: MCPQuotaOutcome = .unavailable(
+                        MCPIntrospectionServer.codexNoCorpusMessage),
                     sessions: [SessionSummary]? = nil,
                     registeredSessionID: String? = registeredSelfID) -> MCPIntrospectionServer {
     MCPIntrospectionServer(sessions: { sessions ?? corpus() }, quota: { quota },
+                           codexQuota: { codexQuota },
                            now: { fixedNow }, registeredSessionID: registeredSessionID)
+}
+
+private actor MCPQuotaProbeProvider: QuotaProvider {
+    nonisolated let provider: Provider = .codex
+    private let result: Result<QuotaSnapshot, QuotaProviderFailure>
+    private var callCount = 0
+
+    init(result: Result<QuotaSnapshot, QuotaProviderFailure>) {
+        self.result = result
+    }
+
+    func snapshot() async -> Result<QuotaSnapshot, QuotaProviderFailure> {
+        callCount += 1
+        return result
+    }
+
+    func calls() -> Int { callCount }
+}
+
+private struct MCPDelayedQuotaProvider: QuotaProvider {
+    let provider: Provider = .codex
+    func snapshot() async -> Result<QuotaSnapshot, QuotaProviderFailure> {
+        try? await Task.sleep(for: .milliseconds(100))
+        return .failure(.noRateLimits)
+    }
+}
+
+private struct MCPConsentRevokingQuotaProvider: QuotaProvider {
+    let provider: Provider = .codex
+    let revoke: @Sendable () -> Void
+
+    func snapshot() async -> Result<QuotaSnapshot, QuotaProviderFailure> {
+        revoke()
+        return .success(QuotaSnapshot(
+            fiveHour: QuotaWindow(title: "Session (5h)", usedPercent: 42,
+                                  resetsAt: nil),
+            weekly: nil, scoped: [], fetchedAt: fixedNow))
+    }
 }
 
 // MARK: - decode helpers
@@ -128,6 +169,10 @@ struct MCPProtocolTests {
         let properties = (brief?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
         #expect(properties?["use_newest"] != nil)
         #expect((brief?["description"] as? String)?.contains("usually you") == false)
+        let quota = tools?.first { $0["name"] as? String == "quota_windows" }
+        #expect((quota?["description"] as? String)?.contains("Dual-provider") == true)
+        #expect((quota?["description"] as? String)?.contains("consent-gated independently") == true)
+        #expect((quota?["description"] as? String)?.contains("both provider blocks are always present") == true)
     }
 
     @Test func pingAndNotificationsAndClientResponses() {
@@ -295,24 +340,102 @@ struct MCPToolTests {
         #expect(quiet?["orchestrator_hog_alert"] is NSNull)
     }
 
-    @Test func quotaWindowsRoundTripAndDegradeGracefully() {
-        // Canned snapshot through the REAL decoder seam (QuotaSnapshot.decode).
+    @Test func quotaWindowsReturnsBothProviderBlocksFromSharedSnapshots() async throws {
+        // Claude fixture through the REAL OAuth decoder seam.
         let payload = #"{"five_hour":{"utilization":91.0,"resets_at":"2026-07-07T12:35:00Z"},"seven_day":{"utilization":40.5,"resets_at":"2026-07-10T00:00:00Z"},"limits":[{"kind":"weekly_scoped","group":"weekly","percent":12.0,"resets_at":"2026-07-10T00:00:00Z","is_active":false,"scope":{"model":{"id":"ghost","display_name":"Ghost"}}}]}"#
-        let snap = QuotaSnapshot.decode(Data(payload.utf8), now: fixedNow)
-        #expect(snap != nil)
-        let json = toolJSON(call(server(quota: .snapshot(snap!)), "quota_windows"))
-        #expect(json?["available"] as? Bool == true)
-        let windows = json?["windows"] as? [[String: Any]]
-        #expect(windows?.count == 3)
-        #expect(windows?.first?["title"] as? String == "Session (5h)")
-        #expect(windows?.first?["used_percent"] as? Double == 91.0)
-        #expect(windows?.first?["reset_in_seconds"] as? Int == 35 * 60)
-        #expect(windows?.first?["reset_runway"] as? String == "35m")
-        #expect(windows?.last?["title"] as? String == "Ghost only")
-        // No credentials → graceful {available:false, reason}, never an error.
-        let degraded = toolJSON(call(server(), "quota_windows"))
-        #expect(degraded?["available"] as? Bool == false)
-        #expect((degraded?["reason"] as? String)?.contains("no credentials") == true)
+        let claudeSnapshot = try #require(QuotaSnapshot.decode(Data(payload.utf8), now: fixedNow))
+
+        // Codex fixture goes through the exact CodexQuotaProvider used by the
+        // Quota screen. MCP receives its shared QuotaSnapshot; it never parses
+        // the rollout independently.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-mcp-quota-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rollout = root.appendingPathComponent("2026/07/10/rollout-quota.jsonl")
+        try FileManager.default.createDirectory(
+            at: rollout.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let rateLine = #"{"timestamp":"2026-07-07T12:01:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":37.5,"window_minutes":300,"resets_at":1783427700},"secondary":{"used_percent":62.25,"window_minutes":10080,"resets_at":1784310593}}}}"#
+        try Data((rateLine + "\n").utf8).write(to: rollout)
+        let codexResult = await CodexQuotaProvider(
+            sessionsRoot: root, now: { fixedNow }).snapshot()
+        let codexSnapshot: QuotaSnapshot
+        switch codexResult {
+        case .success(let snapshot): codexSnapshot = snapshot
+        case .failure(let failure):
+            Issue.record("unexpected Codex fixture failure: \(failure)")
+            return
+        }
+
+        let json = try #require(toolJSON(call(server(
+            quota: .snapshot(claudeSnapshot),
+            codexQuota: .snapshot(codexSnapshot)), "quota_windows")))
+        let providers = try #require(json["providers"] as? [String: Any])
+        #expect(Set(providers.keys) == Set(["claude", "codex"]))
+        let claude = try #require(providers["claude"] as? [String: Any])
+        let codex = try #require(providers["codex"] as? [String: Any])
+        #expect(claude["provider"] as? String == "claude")
+        #expect(claude["available"] as? Bool == true)
+        #expect(claude["status"] as? String == "ok")
+        let claudeWindows = try #require(claude["windows"] as? [[String: Any]])
+        #expect(claudeWindows.count == claudeSnapshot.windows.count)
+        #expect(claudeWindows.first?["used_fraction"] as? Double == 0.91)
+        #expect(claudeWindows.first?["reset_in_seconds"] as? Int == 35 * 60)
+        #expect(claudeWindows.first?["reset_runway"] as? String == "35m")
+        #expect(claudeWindows.last?["title"] as? String == "Ghost only")
+
+        #expect(codex["provider"] as? String == "codex")
+        #expect(codex["available"] as? Bool == true)
+        #expect(codex["status"] as? String == "ok")
+        let codexWindows = try #require(codex["windows"] as? [[String: Any]])
+        #expect(codexWindows.count == codexSnapshot.windows.count)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        for (serialized, shared) in zip(codexWindows, codexSnapshot.windows) {
+            #expect(serialized["title"] as? String == shared.title)
+            #expect(serialized["used_percent"] as? Double == shared.usedPercent)
+            #expect(serialized["used_fraction"] as? Double == shared.usedPercent / 100)
+            if let resetsAt = shared.resetsAt {
+                #expect(serialized["resets_at"] as? String == formatter.string(from: resetsAt))
+            } else {
+                #expect(serialized["resets_at"] is NSNull)
+            }
+        }
+    }
+
+    @Test func quotaWindowsKeepsUnavailableProvidersVisible() throws {
+        let claudeSnapshot = QuotaSnapshot(
+            fiveHour: QuotaWindow(title: "Session (5h)", usedPercent: 20,
+                                  resetsAt: nil),
+            weekly: nil, scoped: [], fetchedAt: fixedNow)
+        let json = try #require(toolJSON(call(server(
+            quota: .snapshot(claudeSnapshot),
+            codexQuota: .unavailable(MCPIntrospectionServer.codexNoCorpusMessage)),
+            "quota_windows")))
+        let providers = try #require(json["providers"] as? [String: Any])
+        let claude = try #require(providers["claude"] as? [String: Any])
+        let codex = try #require(providers["codex"] as? [String: Any])
+        #expect(claude["available"] as? Bool == true)
+        #expect(codex["available"] as? Bool == false)
+        #expect(codex["status"] as? String == MCPIntrospectionServer.codexNoCorpusMessage)
+        #expect((codex["windows"] as? [[String: Any]])?.isEmpty == true)
+    }
+
+    @Test func quotaWindowsUsesProviderSpecificEmptySnapshotStatuses() throws {
+        let empty = QuotaSnapshot(
+            fiveHour: nil, weekly: nil, scoped: [], fetchedAt: fixedNow)
+        let json = try #require(toolJSON(call(server(
+            quota: .snapshot(empty), codexQuota: .snapshot(empty)),
+            "quota_windows")))
+        let providers = try #require(json["providers"] as? [String: Any])
+        let claude = try #require(providers["claude"] as? [String: Any])
+        let codex = try #require(providers["codex"] as? [String: Any])
+        #expect(claude["available"] as? Bool == false)
+        #expect(claude["status"] as? String ==
+                MCPIntrospectionServer.claudeEmptySnapshotMessage)
+        #expect(codex["available"] as? Bool == false)
+        #expect(codex["status"] as? String ==
+                MCPIntrospectionServer.codexEmptySnapshotMessage)
     }
 
     @Test func repeatedCallsAreDeterministic() {
@@ -341,6 +464,12 @@ struct MCPQuotaTimeoutTests {
         let clock = ContinuousClock.now
         #expect(MCPIntrospectionServer.waitBounded(sem, timeout: 0.2) == false)
         #expect(clock.duration(to: .now) < .seconds(2))
+    }
+
+    @Test func dualProviderLiveTimeoutBudgetDoesNotDoubleTheOldCap() {
+        #expect(MCPIntrospectionServer.credentialReadTimeout
+                + MCPIntrospectionServer.quotaFetchTimeout
+                + MCPIntrospectionServer.codexQuotaReadTimeout <= 40)
     }
 
     // Reads the real Keychain and issues a real network fetch through the
@@ -372,6 +501,70 @@ struct MCPQuotaTimeoutTests {
             Issue.record("quota must not fetch without consent")
         case .unavailable(let message):
             #expect(message == MCPIntrospectionServer.quotaConsentRequiredMessage)
+        }
+    }
+
+    @Test func blockingCodexQuotaFetchHonorsConsentBeforeRolloutReads() async throws {
+        let provider = MCPQuotaProbeProvider(result: .failure(.noRateLimits))
+        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
+            provider: provider, consent: false)
+        #expect(await provider.calls() == 0)
+        let json = try #require(toolJSON(call(server(
+            codexQuota: outcome), "quota_windows")))
+        let providers = try #require(json["providers"] as? [String: Any])
+        let codex = try #require(providers["codex"] as? [String: Any])
+        #expect(codex["available"] as? Bool == false)
+        #expect(codex["status"] as? String == "consent not granted in trifola Settings")
+        #expect((codex["windows"] as? [[String: Any]])?.isEmpty == true)
+    }
+
+    @Test func blockingCodexQuotaFetchReportsMissingRateLimitEvents() async {
+        let provider = MCPQuotaProbeProvider(result: .failure(.noRateLimits))
+        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
+            provider: provider, consent: true)
+        #expect(await provider.calls() == 1)
+        switch outcome {
+        case .snapshot:
+            Issue.record("a missing rate-limit event must not produce a snapshot")
+        case .unavailable(let status):
+            #expect(status == MCPIntrospectionServer.codexNoRecentRateLimitsMessage)
+        }
+    }
+
+    @Test func blockingCodexQuotaFetchDiscardsAResultAfterConsentRevocation() {
+        let consent = Locked(true)
+        let provider = MCPConsentRevokingQuotaProvider {
+            consent.withLock { $0 = false }
+        }
+        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
+            provider: provider,
+            consent: nil,
+            consentProvider: { consent.withLock { $0 } })
+        switch outcome {
+        case .snapshot:
+            Issue.record("revoked consent must discard the late Codex snapshot")
+        case .unavailable(let status):
+            #expect(status == MCPIntrospectionServer.quotaConsentRequiredMessage)
+        }
+    }
+
+    @Test func revokedConsentTakesPrecedenceOverACodexReadTimeout() {
+        let consentReads = Locked(0)
+        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
+            provider: MCPDelayedQuotaProvider(),
+            consent: nil,
+            consentProvider: {
+                consentReads.withLock { count in
+                    count += 1
+                    return count == 1
+                }
+            },
+            timeout: 0.01)
+        switch outcome {
+        case .snapshot:
+            Issue.record("revoked consent must win over a timed-out Codex read")
+        case .unavailable(let status):
+            #expect(status == MCPIntrospectionServer.quotaConsentRequiredMessage)
         }
     }
 }

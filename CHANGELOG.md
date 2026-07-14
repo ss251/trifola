@@ -6,6 +6,10 @@ All notable changes to trifola are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Dual-provider MCP quota windows** — `quota_windows` now returns labeled Claude and Codex
+  provider blocks, each independently consent-gated and carrying an explicit status when consent,
+  credentials, a Codex corpus, or recent rollout rate-limit events are unavailable. Codex values
+  come from the same local-only rollout reader as the Quota screen.
 - **Calm, value-first onboarding** — corpus-present first launch now shows one persisted
   welcome over the already-live board; the first exact Terminal/iTerm jump explains its
   Apple Event before macOS asks; Automation and Accessibility explanations are spaced to one

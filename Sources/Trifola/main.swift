@@ -1175,7 +1175,10 @@ if isSelfCheck {
     // is still a well-formed result, which is the contract.
     let mcp = MCPIntrospectionServer(sessions: { sessions },
                                      quota: { MCPIntrospectionServer.blockingQuotaFetch(
-                                        configDirectory: paths.root) })
+                                        configDirectory: paths.root) },
+                                     codexQuota: {
+                                        MCPIntrospectionServer.blockingCodexQuotaFetch()
+                                     })
     func mcpCall(_ line: String) -> [String: Any]? {
         guard let out = mcp.handleLine(line) else { return nil }
         return (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [String: Any]
