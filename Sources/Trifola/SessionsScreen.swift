@@ -205,7 +205,10 @@ struct SessionsScreen: View {
                                 }
                             }
                         }
-                        ForEach(ModelTier.allCases.filter { $0 != .other }, id: \.self) { tier in
+                        // .codex is excluded: the Codex PROVIDER chip above already
+                        // covers it — two identical "Codex" chips confused the owner.
+                        ForEach(ModelTier.allCases.filter { $0 != .other && $0 != .codex },
+                                id: \.self) { tier in
                             FilterChip(label: tier.label, isOn: tierFilter == tier) {
                                 updateFilter(
                                     \.tier,
@@ -277,7 +280,11 @@ struct SessionsScreen: View {
                         if !isPending,
                            !SearchQuery(snapshot.filter.query).isEmpty,
                            filtered.isEmpty,
-                           snapshot.conversationResults.isEmpty {
+                           snapshot.conversationResults.isEmpty,
+                           // A partially built index cannot honestly claim "no
+                           // matches" — hold the progress state until settled.
+                           !services.sessions.searchProgress.isPartial,
+                           !services.sessions.searchProgress.isInProgress {
                             combinedEmptyState(query: snapshot.filter.query)
                         } else {
                             ForEach(shown) { s in
@@ -410,6 +417,12 @@ struct SessionsScreen: View {
                     }
                 } else if case .rebuilding = snapshot.searchState {
                     searchProgress("Rebuilding conversation search after an index update…")
+                } else if services.sessions.searchProgress.isPartial
+                    || services.sessions.searchProgress.isInProgress {
+                    let progress = services.sessions.searchProgress
+                    searchProgress(progress.isPartial
+                        ? "Partial — indexing \(progress.indexed.formatted()) of \(progress.total.formatted())…"
+                        : "Updating conversation search…")
                 } else {
                     Text("No matches in conversation text.")
                         .font(Theme.Typography.body)

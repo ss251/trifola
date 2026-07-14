@@ -707,7 +707,13 @@ final class AppServices: ObservableObject {
         let snapshot = await Task.detached(priority: .utility) {
             resolver.liveRegisteredSessionSnapshot()
         }.value
-        liveTerminalSessionIDs = snapshot.sessionIDs
+        // Sticky on failure: a transiently failing probe must not flap every
+        // downstream projection to empty (with "Live in terminal" active this
+        // emptied the whole session list mid-search). A SUCCESSFUL empty probe
+        // is honest and replaces; a failed one keeps the last good set.
+        if snapshot.failureReason == nil {
+            liveTerminalSessionIDs = snapshot.sessionIDs
+        }
         liveTerminalSnapshotFailure = snapshot.failureReason
     }
 
