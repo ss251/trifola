@@ -1690,7 +1690,7 @@ enum SearchRender {
     }
 
     @MainActor
-    static func run(to path: String, dark: Bool) {
+    private static func panel(pending: Bool) -> some View {
         let content = VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: Theme.blockGap) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -1705,7 +1705,7 @@ enum SearchRender {
                     Image(systemName: "magnifyingglass")
                         .font(Theme.Typography.metadataMedium)
                         .foregroundStyle(Theme.muted)
-                    Text("keychain quota")
+                    Text(pending ? "keychain quota retry" : "keychain quota")
                         .font(Theme.Typography.body)
                         .foregroundStyle(Theme.ink)
                     Spacer()
@@ -1718,9 +1718,23 @@ enum SearchRender {
                     RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
                         .strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
                 }
-                Text("0 title/path matches")
-                    .font(Theme.Typography.metadata)
-                    .foregroundStyle(Theme.muted)
+                if pending {
+                    HStack(spacing: Theme.rhythm) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(Theme.Typography.metadataMedium)
+                            .foregroundStyle(Theme.muted)
+                        Text("Searching…")
+                            .font(Theme.Typography.metadataMedium)
+                            .foregroundStyle(Theme.ink)
+                        Text("Showing previous results")
+                            .font(Theme.Typography.metadata)
+                            .foregroundStyle(Theme.muted)
+                    }
+                } else {
+                    Text("0 title/path matches")
+                        .font(Theme.Typography.metadata)
+                        .foregroundStyle(Theme.muted)
+                }
             }
             .padding(Theme.gutter)
 
@@ -1741,10 +1755,22 @@ enum SearchRender {
                 }
             }
             .padding(Theme.gutter)
+            .opacity(pending ? 0.52 : 1)
         }
         .frame(width: 620, height: 560, alignment: .topLeading)
         .background(Theme.surfaceWindow)
-        writePNG(content, to: path, dark: dark,
+        return content
+    }
+
+    @MainActor
+    static func run(to path: String, dark: Bool) {
+        writePNG(panel(pending: false), to: path, dark: dark,
+                 width: 620 + Theme.renderInset * 2)
+    }
+
+    @MainActor
+    static func runPending(to path: String, dark: Bool) {
+        writePNG(panel(pending: true), to: path, dark: dark,
                  width: 620 + Theme.renderInset * 2)
     }
 }

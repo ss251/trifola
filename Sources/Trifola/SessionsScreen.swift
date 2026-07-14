@@ -44,9 +44,10 @@ struct SessionsScreen: View {
 
     var body: some View {
         Group {
-            if let snapshot = navigationSnapshots.sessions,
-               snapshot.filter == projectionFilter {
-                sessionColumns(filtered: snapshot.rows)
+            if let snapshot = navigationSnapshots.sessions {
+                sessionColumns(
+                    snapshot: snapshot,
+                    isPending: navigationSnapshots.sessionSearch.isPending)
             } else {
                 sessionShell
             }
@@ -54,7 +55,10 @@ struct SessionsScreen: View {
         .reorderMotion(value: services.selectedSessionID)
     }
 
-    private func sessionColumns(filtered: [SessionSummary]) -> some View {
+    private func sessionColumns(
+        snapshot: SessionProjectionSnapshot,
+        isPending: Bool
+    ) -> some View {
         // Snapshot every corpus-derived/shared input once for the whole list.
         // `SessionStore.fleetMachines` walks the complete session corpus; calling
         // `services.isCrossMachine` from each visible row multiplied that work by
@@ -72,7 +76,8 @@ struct SessionsScreen: View {
             onBack: { services.selectedSessionID = nil }
         ) {
             listColumn(
-                filtered: filtered,
+                snapshot: snapshot,
+                isPending: isPending,
                 fleetMachines: fleetMachines,
                 isCrossMachine: isCrossMachine,
                 now: now,
@@ -110,13 +115,15 @@ struct SessionsScreen: View {
     // MARK: List column
 
     private func listColumn(
-        filtered: [SessionSummary],
+        snapshot: SessionProjectionSnapshot,
+        isPending: Bool,
         fleetMachines: [Machine],
         isCrossMachine: Bool,
         now: Date,
         suppressionState: AttentionSuppressionState
     ) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let filtered = snapshot.rows
+        return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: Theme.blockGap) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Sessions")
@@ -147,8 +154,9 @@ struct SessionsScreen: View {
                             .font(Theme.Typography.body)
                             .foregroundStyle(Theme.ink)
                             .onSubmit {
-                                if let result = navigationSnapshots.search?.results.first,
-                                   navigationSnapshots.search?.query == query {
+                                guard !isPending,
+                                      snapshot.filter == projectionFilter else { return }
+                                if let result = snapshot.conversationResults.first {
                                     services.selectedSessionID = result.id
                                 } else if let first = filtered.first {
                                     services.selectedSessionID = first.id
@@ -207,11 +215,21 @@ struct SessionsScreen: View {
                     }
 
                     HStack {
-                        Text(query.isEmpty
-                             ? "\(filtered.count) session\(filtered.count == 1 ? "" : "s")"
-                             : "\(filtered.count) title/path match\(filtered.count == 1 ? "" : "es")")
-                            .font(Theme.Typography.metadata)
-                            .foregroundStyle(Theme.muted)
+                        if isPending {
+                            ProgressView().controlSize(.mini)
+                            Text("Searching…")
+                                .font(Theme.Typography.metadataMedium)
+                                .foregroundStyle(Theme.ink)
+                            Text("Showing previous results")
+                                .font(Theme.Typography.metadata)
+                                .foregroundStyle(Theme.muted)
+                        } else {
+                            Text(query.isEmpty
+                                 ? "\(filtered.count) session\(filtered.count == 1 ? "" : "s")"
+                                 : "\(filtered.count) title/path match\(filtered.count == 1 ? "" : "es")")
+                                .font(Theme.Typography.metadata)
+                                .foregroundStyle(Theme.muted)
+                        }
                         Spacer()
                         Picker("Sort sessions", selection: Binding(
                             get: { sort },
@@ -231,6 +249,9 @@ struct SessionsScreen: View {
                     .help(liveInTerminalOnly && services.liveTerminalSnapshotFailure != nil
                         ? "Live terminal registry unavailable; no sessions can be verified"
                         : "Count after every selected filter")
+                    .accessibilityLabel(isPending
+                        ? "Searching for \(query). Showing previous results."
+                        : "Search results ready")
                 }
                 .padding(.horizontal, Theme.gutter)
                 .launchReveal(.content)
@@ -253,31 +274,42 @@ struct SessionsScreen: View {
                     uniquingKeysWith: { current, _ in current })
                 ScrollView {
                     LazyVStack(spacing: Theme.micro / 2) {
-                        ForEach(shown) { s in
-                            SessionRow(
-                                session: s,
-                                isSelected: services.selectedSessionID == s.id,
-                                stateOverride: attentionStates[s.id]
-                                    ?? (s.isActive(at: now) ? .running : .idle),
-                                suppressedOverride:
-                                    suppressionState.isSnoozed(
-                                        sessionID: s.id, at: now)
-                                    || suppressionState.isMuted(
-                                        projectKey: s.project),
-                                now: now,
-                                isCrossMachine: isCrossMachine,
-                                onSelect: { services.selectedSessionID = s.id })
-                        }
-                        if filtered.count > 400 {
-                            Text("Showing first 400 — refine the search to narrow down.")
-                                .font(Theme.Typography.metadata)
-                                .foregroundStyle(Theme.muted)
-                                .padding(.vertical, Theme.codePadding)
-                        }
-                        if !query.isEmpty {
-                            conversationSearchSection(now: now)
+                        if !isPending,
+                           !SearchQuery(snapshot.filter.query).isEmpty,
+                           filtered.isEmpty,
+                           snapshot.conversationResults.isEmpty {
+                            combinedEmptyState(query: snapshot.filter.query)
+                        } else {
+                            ForEach(shown) { s in
+                                SessionRow(
+                                    session: s,
+                                    isSelected: services.selectedSessionID == s.id,
+                                    stateOverride: attentionStates[s.id]
+                                        ?? (s.isActive(at: now) ? .running : .idle),
+                                    suppressedOverride:
+                                        suppressionState.isSnoozed(
+                                            sessionID: s.id, at: now)
+                                        || suppressionState.isMuted(
+                                            projectKey: s.project),
+                                    now: now,
+                                    isCrossMachine: isCrossMachine,
+                                    onSelect: { services.selectedSessionID = s.id })
+                            }
+                            if filtered.count > 400 {
+                                Text("Showing first 400 — refine the search to narrow down.")
+                                    .font(Theme.Typography.metadata)
+                                    .foregroundStyle(Theme.muted)
+                                    .padding(.vertical, Theme.codePadding)
+                            }
+                            if !query.isEmpty {
+                                conversationSearchSection(
+                                    snapshot: snapshot,
+                                    isPending: isPending,
+                                    now: now)
+                            }
                         }
                     }
+                    .opacity(isPending ? 0.52 : 1)
                     .padding(.horizontal, Theme.codePadding)
                     .padding(.top, Theme.intraCell)
                     .padding(.bottom, Theme.blockGap)
@@ -314,7 +346,11 @@ struct SessionsScreen: View {
     }
 
     @ViewBuilder
-    private func conversationSearchSection(now: Date) -> some View {
+    private func conversationSearchSection(
+        snapshot: SessionProjectionSnapshot,
+        isPending: Bool,
+        now: Date
+    ) -> some View {
         Divider()
             .padding(.vertical, Theme.intraCell)
 
@@ -328,7 +364,10 @@ struct SessionsScreen: View {
                     .foregroundStyle(Theme.muted)
             }
             Spacer()
-            if services.sessions.searchState == .updating {
+            if isPending {
+                ProgressView().controlSize(.mini)
+                    .help("Searching conversation text")
+            } else if services.sessions.searchState == .updating {
                 ProgressView().controlSize(.mini)
                     .help("Updating conversation search from changed sessions")
             }
@@ -342,12 +381,17 @@ struct SessionsScreen: View {
                 .foregroundStyle(Theme.muted)
                 .padding(.horizontal, Theme.intraCell)
                 .padding(.vertical, Theme.rhythm)
-        } else if let snapshot = navigationSnapshots.search,
-                  snapshot.query == query {
-            if snapshot.results.isEmpty {
-                if services.sessions.searchState == .preparing {
+        } else if isPending {
+            if snapshot.conversationResults.isEmpty {
+                searchProgress("Searching conversation text…")
+            } else {
+                conversationRows(snapshot.conversationResults, now: now)
+            }
+        } else if snapshot.filter.query == query {
+            if snapshot.conversationResults.isEmpty {
+                if snapshot.searchState == .preparing {
                     searchProgress("Preparing conversation search…")
-                } else if case .rebuilding = services.sessions.searchState {
+                } else if case .rebuilding = snapshot.searchState {
                     searchProgress("Rebuilding conversation search after an index update…")
                 } else {
                     Text("No matches in conversation text.")
@@ -357,18 +401,32 @@ struct SessionsScreen: View {
                         .padding(.vertical, Theme.rhythm)
                 }
             } else {
-                ForEach(snapshot.results) { result in
-                    SearchResultRow(
-                        result: result,
-                        isSelected: services.selectedSessionID == result.id,
-                        now: now,
-                        onSelect: { services.selectedSessionID = result.id })
-                        .id("search:\(result.candidate.provider.rawValue):\(result.id)")
-                }
+                conversationRows(snapshot.conversationResults, now: now)
             }
         } else {
             searchProgress("Searching conversation text…")
         }
+    }
+
+    @ViewBuilder
+    private func conversationRows(_ results: [SearchResult], now: Date) -> some View {
+        ForEach(results) { result in
+            SearchResultRow(
+                result: result,
+                isSelected: services.selectedSessionID == result.id,
+                now: now,
+                onSelect: { services.selectedSessionID = result.id })
+                .id("search:\(result.candidate.provider.rawValue):\(result.id)")
+        }
+    }
+
+    private func combinedEmptyState(query: String) -> some View {
+        EmptyState(
+            icon: "text.magnifyingglass",
+            title: "No matches",
+            detail: "No title or conversation matches for ‘\(query)’."
+        )
+        .padding(.vertical, Theme.gutter)
     }
 
     private func searchProgress(_ label: String) -> some View {

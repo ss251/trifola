@@ -25,15 +25,10 @@ struct SessionProjectionFilter: Sendable, Equatable, Hashable {
 
 struct SessionProjectionSnapshot: Sendable, Equatable {
     let rows: [SessionSummary]
+    let conversationResults: [SearchResult]
+    let searchState: SearchIndexState
     let sourceCount: Int
     let filter: SessionProjectionFilter
-    let generation: Int
-}
-
-struct SearchProjectionSnapshot: Sendable, Equatable {
-    let query: String
-    let results: [SearchResult]
-    let state: SearchIndexState
     let generation: Int
 }
 
@@ -63,11 +58,13 @@ struct DeadlineProjectionSnapshot: Sendable, Equatable {
 @MainActor
 final class NavigationSnapshotStore: ObservableObject {
     @Published private(set) var corpus: CorpusProjection?
-    @Published private(set) var sessions: SessionProjectionSnapshot?
-    @Published private(set) var search: SearchProjectionSnapshot?
+    @Published private(set) var sessionSearch =
+        SearchSnapshotState<SessionProjectionSnapshot>()
     @Published private(set) var fleet: FleetProjectionSnapshot?
     @Published private(set) var deadlines: DeadlineProjectionSnapshot?
     @Published private(set) var sessionFilter: SessionProjectionFilter
+
+    var sessions: SessionProjectionSnapshot? { sessionSearch.displayed }
 
     private struct Inputs: Sendable {
         let sessions: [SessionSummary]
@@ -88,13 +85,11 @@ final class NavigationSnapshotStore: ObservableObject {
     private var fleetGeneration = 0
     private var deadlineGeneration = 0
     private var sessionTask: Task<Void, Never>?
-    private var searchTask: Task<Void, Never>?
     private var corpusTask: Task<Void, Never>?
     private var fleetTask: Task<Void, Never>?
     private var deadlineTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var sourceGeneration = 0
-    private var searchGeneration = 0
 
     init(defaults: UserDefaults = .standard,
          initialCorpus: CorpusProjection? = nil) {
@@ -132,7 +127,6 @@ final class NavigationSnapshotStore: ObservableObject {
 
     deinit {
         sessionTask?.cancel()
-        searchTask?.cancel()
         corpusTask?.cancel()
         fleetTask?.cancel()
         deadlineTask?.cancel()
@@ -165,7 +159,6 @@ final class NavigationSnapshotStore: ObservableObject {
             now: now)
         scheduleCorpus()
         scheduleSessions()
-        scheduleSearch()
         scheduleFleet()
         scheduleDeadlines()
     }
@@ -223,10 +216,11 @@ final class NavigationSnapshotStore: ObservableObject {
 
     func updateSessionFilter(_ next: SessionProjectionFilter) {
         guard sessionFilter != next else { return }
+        let queryChanged = sessionFilter.query != next.query
         sessionFilter = next
         persistSessionFilter(next)
-        scheduleSessions()
-        scheduleSearch()
+        scheduleSessions(
+            debounce: queryChanged && !SearchQuery(next.query).isEmpty)
     }
 
     private func persistSessionFilter(_ value: SessionProjectionFilter) {
@@ -289,23 +283,59 @@ final class NavigationSnapshotStore: ObservableObject {
         }
     }
 
-    private func scheduleSessions() {
+    private func scheduleSessions(debounce: Bool = false) {
         guard let inputs else { return }
         sessionGeneration += 1
         let generation = sessionGeneration
         let filter = sessionFilter
         sessionTask?.cancel()
+        var state = sessionSearch
+        let request = state.begin(query: filter.query)
+        sessionSearch = state
         sessionTask = Task { [weak self] in
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+            }
             let result = await Task.detached(priority: .userInitiated) {
                 let metric = NavigationMetrics.beginProjection(
                     .sessions, generation: generation)
-                let rows = Self.projectSessions(
+                var eligibilityFilter = filter
+                eligibilityFilter.query = ""
+                let eligible = Self.projectSessions(
                     inputs.sessions,
                     liveTerminalSessionIDs: inputs.liveTerminalSessionIDs,
-                    filter: filter)
+                    filter: eligibilityFilter)
+                let rows = SessionBrowserSearch.titlePathMatches(
+                    eligible, query: filter.query)
+                let query = SearchQuery(filter.query)
+                let results: [SearchResult]
+                if query.isEmpty {
+                    results = []
+                } else {
+                    let eligibleKeys = Set(eligible.map {
+                        [$0.provider.rawValue, $0.id, $0.filePath]
+                            .joined(separator: "\u{1}")
+                    })
+                    let candidates = inputs.searchIndex.query(
+                        query, scope: .conversationText, limit: 200,
+                        now: inputs.now).filter {
+                            eligibleKeys.contains([
+                                $0.provider.rawValue, $0.id, $0.filePath
+                            ].joined(separator: "\u{1}"))
+                        }
+                    results = candidates.prefix(20).map {
+                        SearchResult(
+                            candidate: $0,
+                            snippet: SearchSnippetExtractor.snippet(
+                                for: $0, query: query))
+                    }
+                }
                 _ = NavigationMetrics.endProjection(metric)
                 return SessionProjectionSnapshot(
                     rows: rows,
+                    conversationResults: results,
+                    searchState: inputs.searchState,
                     sourceCount: inputs.sessions.count,
                     filter: filter,
                     generation: generation)
@@ -313,60 +343,9 @@ final class NavigationSnapshotStore: ObservableObject {
             guard !Task.isCancelled,
                   let self,
                   self.sessionGeneration == generation else { return }
-            self.sessions = result
-        }
-    }
-
-    private func scheduleSearch() {
-        guard let inputs else { return }
-        searchGeneration += 1
-        let generation = searchGeneration
-        let filter = sessionFilter
-        searchTask?.cancel()
-        let query = SearchQuery(filter.query)
-        guard !query.isEmpty else {
-            search = SearchProjectionSnapshot(
-                query: filter.query, results: [], state: inputs.searchState,
-                generation: generation)
-            return
-        }
-        searchTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled else { return }
-            let result = await Task.detached(priority: .userInitiated) {
-                var eligibilityFilter = filter
-                eligibilityFilter.query = ""
-                let eligible = Self.projectSessions(
-                    inputs.sessions,
-                    liveTerminalSessionIDs: inputs.liveTerminalSessionIDs,
-                    filter: eligibilityFilter)
-                let eligibleKeys = Set(eligible.map {
-                    [$0.provider.rawValue, $0.id, $0.filePath]
-                        .joined(separator: "\u{1}")
-                })
-                let candidates = inputs.searchIndex.query(
-                    query, scope: .conversationText, limit: 200,
-                    now: inputs.now).filter {
-                        eligibleKeys.contains([
-                            $0.provider.rawValue, $0.id, $0.filePath
-                        ].joined(separator: "\u{1}"))
-                    }
-                let results = candidates.prefix(20).map {
-                    SearchResult(
-                        candidate: $0,
-                        snippet: SearchSnippetExtractor.snippet(
-                            for: $0, query: query))
-                }
-                return SearchProjectionSnapshot(
-                    query: filter.query,
-                    results: results,
-                    state: inputs.searchState,
-                    generation: generation)
-            }.value
-            guard !Task.isCancelled,
-                  let self,
-                  self.searchGeneration == generation else { return }
-            self.search = result
+            var state = self.sessionSearch
+            guard state.publish(result, for: request) else { return }
+            self.sessionSearch = state
         }
     }
 
@@ -460,15 +439,6 @@ final class NavigationSnapshotStore: ObservableObject {
         }
         if filter.activeOnly { rows.removeAll { !$0.isActive } }
         if filter.heavyOnly { rows.removeAll { !$0.isContextHeavy } }
-        if !filter.query.isEmpty {
-            let query = filter.query.lowercased()
-            rows.removeAll {
-                !$0.project.lowercased().contains(query)
-                    && !$0.displayTitle.lowercased().contains(query)
-                    && !$0.cwd.lowercased().contains(query)
-                    && !$0.id.lowercased().hasPrefix(query)
-            }
-        }
         switch filter.sort {
         case .recent:
             rows.sort {

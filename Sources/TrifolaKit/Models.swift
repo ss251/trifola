@@ -57,6 +57,7 @@ public enum TrifolaCommandLine {
         "--render-quota",
         "--render-reroutes",
         "--render-search",
+        "--render-search-pending",
         "--render-sessions",
         "--render-skills",
         "--render-spend",
@@ -91,7 +92,7 @@ public enum TrifolaCommandLine {
       --render-logo <output-dir>    Export the three launch identity studies
       --render-strengthen <dir>     Export the 36-image 1280/1680/2560 design matrix
       --render-<surface> <base>     Export a visual QA surface
-                                    layout, sessions, search, spend, attention, fleet, audit, ledger, launch,
+                                    layout, sessions, search, search-pending, spend, attention, fleet, audit, ledger, launch,
                                     skills, crossmachine, palette, identity, burn,
                                     config, deadlines, provenance, contexttax,
                                     reroutes, or quota

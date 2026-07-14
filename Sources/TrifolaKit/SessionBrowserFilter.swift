@@ -28,3 +28,22 @@ public struct SessionBrowserFilter: Sendable, Equatable, Codable {
         }
     }
 }
+
+/// Title/path matching for the Sessions browser. Kept in the data layer so the
+/// coalesced off-main projection and its 7k-session performance budget share
+/// one implementation.
+public enum SessionBrowserSearch {
+    public static func titlePathMatches(
+        _ sessions: [SessionSummary],
+        query: String
+    ) -> [SessionSummary] {
+        guard !query.isEmpty else { return sessions }
+        let needle = query.lowercased()
+        return sessions.filter {
+            $0.project.lowercased().contains(needle)
+                || $0.displayTitle.lowercased().contains(needle)
+                || $0.cwd.lowercased().contains(needle)
+                || $0.id.lowercased().hasPrefix(needle)
+        }
+    }
+}
