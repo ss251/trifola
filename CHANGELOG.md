@@ -102,5 +102,6 @@ Initial public tree.
 - **Headless `--render-*` harness** — a synthetic-fixture screenshot factory (also the CI-vs-version and demo surface).
 - **Personal-PII CI lint** — fails the build on configured personal identifiers or private paths.
 
-[Unreleased]: https://github.com/ss251/trifola/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ss251/trifola/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ss251/trifola/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ss251/trifola/releases/tag/v0.2.0
