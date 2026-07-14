@@ -5,6 +5,8 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-14
+
 ### Added
 - **Conversation search** — the macOS Sessions field now searches exact words across Claude Code
   and Codex user prompts plus assistant prose through a separately versioned, incremental local

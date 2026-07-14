@@ -251,7 +251,9 @@ struct ClaudeConfigLocationTests {
         try process.run()
         // Watchdog: a headless spend query must exit in well under a second. If it
         // ever regresses into the GUI runloop, terminate rather than hang the suite.
-        let deadline = Date().addingTimeInterval(15)
+        // 60s, not 15: this spawns the real debug binary and flaked twice under
+        // parallel release-build load. Generous beats flaky for a hang-guard.
+        let deadline = Date().addingTimeInterval(60)
         while process.isRunning && Date() < deadline { usleep(20_000) }
         if process.isRunning { process.terminate() }
         process.waitUntilExit()
