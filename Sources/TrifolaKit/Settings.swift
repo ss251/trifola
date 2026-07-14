@@ -241,6 +241,7 @@ public struct ClaudePaths: Sendable, Equatable {
     public let source: ClaudeConfigLocationSource
     public let sessionIndexCacheURL: URL
     public let searchIndexCacheURL: URL
+    public let legacySearchIndexCacheURL: URL
 
     public var projects: URL { root.appendingPathComponent("projects", isDirectory: true) }
     public var sessions: URL { root.appendingPathComponent("sessions", isDirectory: true) }
@@ -269,8 +270,17 @@ public struct ClaudePaths: Sendable, Equatable {
         self.source = source
         self.sessionIndexCacheURL = sessionIndexCacheURL
             ?? Self.cacheURL(for: self.root, source: source)
-        self.searchIndexCacheURL = searchIndexCacheURL
-            ?? Self.searchCacheURL(for: self.sessionIndexCacheURL)
+        if let searchIndexCacheURL,
+           searchIndexCacheURL.pathExtension.lowercased() == "json" {
+            self.searchIndexCacheURL = searchIndexCacheURL
+                .deletingPathExtension().appendingPathExtension("sqlite3")
+            self.legacySearchIndexCacheURL = searchIndexCacheURL
+        } else {
+            self.searchIndexCacheURL = searchIndexCacheURL
+                ?? Self.searchDatabaseURL(for: self.sessionIndexCacheURL)
+            self.legacySearchIndexCacheURL = Self.legacySearchCacheURL(
+                for: self.sessionIndexCacheURL)
+        }
     }
 
     public static let process = resolve()
@@ -319,7 +329,17 @@ public struct ClaudePaths: Sendable, Equatable {
             "session-index-\(String(hash, radix: 16)).json")
     }
 
-    private static func searchCacheURL(for sessionCache: URL) -> URL {
+    private static func searchDatabaseURL(for sessionCache: URL) -> URL {
+        let name = sessionCache.lastPathComponent
+        let searchName = name.hasPrefix("session-index")
+            ? "search-index" + String(name.dropFirst("session-index".count))
+            : "search-index.sqlite3"
+        let stem = (searchName as NSString).deletingPathExtension
+        return sessionCache.deletingLastPathComponent()
+            .appendingPathComponent(stem + ".sqlite3")
+    }
+
+    private static func legacySearchCacheURL(for sessionCache: URL) -> URL {
         let name = sessionCache.lastPathComponent
         let searchName = name.hasPrefix("session-index")
             ? "search-index" + String(name.dropFirst("session-index".count))

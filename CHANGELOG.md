@@ -5,6 +5,15 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Conversation-search indexing no longer rewrites the whole cache** — the v1 app encoded and
+  atomically replaced a 98.5 MB `search-index.json` after every live transcript change, which
+  could pin a CPU core and delay searches indefinitely. The index is now a schema-versioned
+  system SQLite FTS5 database in WAL mode: unchanged transcripts read zero source bytes,
+  append-only sessions parse and persist only their new JSONL suffix, rewrites replace only that
+  session, first-run work commits in queryable 200-session batches with an honest partial-progress
+  label, and the obsolete JSON cache is removed after a successful migration.
+
 ## [0.3.0] - 2026-07-14
 
 ### Added

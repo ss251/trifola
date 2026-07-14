@@ -3,6 +3,18 @@ import TrifolaKit
 
 let cliArguments = Array(CommandLine.arguments.dropFirst())
 
+if cliArguments.contains("--benchmark-search") {
+    do {
+        let configuration = try SearchBenchmark.Configuration(arguments: cliArguments)
+        try SearchBenchmark.run(configuration: configuration)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data(
+            "trifola: search benchmark failed: \(error)\n".utf8))
+        exit(1)
+    }
+}
+
 if cliArguments.contains("--benchmark-nav") {
     do {
         let configuration = try NavBenchmark.Configuration(arguments: cliArguments)

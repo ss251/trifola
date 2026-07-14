@@ -210,6 +210,8 @@ struct ClaudeConfigLocationTests {
         #expect(paths.skills.path == "/tmp/team-claude/skills")
         #expect(paths.pluginCache.path == "/tmp/team-claude/plugins/cache")
         #expect(paths.sessionIndexCacheURL.path == "/tmp/team-index.json")
+        #expect(paths.searchIndexCacheURL.path == "/tmp/search-index.sqlite3")
+        #expect(paths.legacySearchIndexCacheURL.path == "/tmp/search-index.json")
     }
 
     // Launches the real .build/debug/Trifola executable, which `swift test` does

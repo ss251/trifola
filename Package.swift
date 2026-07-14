@@ -48,7 +48,10 @@ let package = Package(
         .target(
             name: "TrifolaKit",
             dependencies: ["TrifolaVersion"],
-            path: "Sources/TrifolaKit"
+            path: "Sources/TrifolaKit",
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
         ),
         // The app: glassmorphic SwiftUI command center + `--selfcheck` headless mode.
         .executableTarget(

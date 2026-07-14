@@ -850,6 +850,22 @@ public enum SearchIndexState: Sendable, Equatable {
     case ready
 }
 
+public struct SearchIndexProgress: Sendable, Equatable {
+    public let indexed: Int
+    public let total: Int
+    public let isInProgress: Bool
+
+    public init(indexed: Int, total: Int, isInProgress: Bool) {
+        self.total = max(0, total)
+        self.indexed = min(max(0, indexed), self.total)
+        self.isInProgress = isInProgress
+    }
+
+    public var isPartial: Bool { isInProgress && indexed < total }
+    public static let idle = SearchIndexProgress(
+        indexed: 0, total: 0, isInProgress: false)
+}
+
 public struct SessionIndex: Sendable {
     struct Entry: Sendable {
         var size: UInt64
@@ -1156,7 +1172,8 @@ public final class SessionStore: ObservableObject {
     @Published public private(set) var scanProgress: SessionScanProgress = .idle
     @Published public private(set) var scanPresentation: SessionScanPresentationState = .coldScanning
     @Published public private(set) var searchState: SearchIndexState = .preparing
-    public private(set) var searchIndex = SearchIndex()
+    @Published public private(set) var searchProgress: SearchIndexProgress = .idle
+    public private(set) var searchIndex: SearchIndex
     /// Monotonic stamp, bumped on every real `sessions` assignment — lets
     /// derived-value caches (the attention-board memo) detect change with one
     /// Int compare instead of an array walk. Not @Published: it rides the
@@ -1167,6 +1184,8 @@ public final class SessionStore: ObservableObject {
     private var refreshQueued = false
     private var triedCache = false
     private var triedSearchCache = false
+    private var searchTask: Task<Void, Never>?
+    private var pendingSearchSessions: [SessionSummary]?
     /// Monotonic refresh generation — stale progress snapshots are dropped.
     private var refreshGen = 0
     /// Entry count of the largest snapshot applied in the current generation.
@@ -1191,6 +1210,7 @@ public final class SessionStore: ObservableObject {
         self.nameResolver = SessionNameResolver(claudeDir: paths.root.path)
         self.codexNameResolver = CodexSessionNameResolver(
             indexURL: codexPaths.sessionIndexJSONL)
+        self.searchIndex = SearchIndex.reference(to: paths.searchIndexCacheURL)
         self.sources = [
             .claude(root: paths.projects),
             .codex(root: codexPaths.sessions,
@@ -1234,8 +1254,21 @@ public final class SessionStore: ObservableObject {
         if !triedSearchCache {
             triedSearchCache = true
             let cacheURL = paths.searchIndexCacheURL
+            let legacyURL = paths.legacySearchIndexCacheURL
             let loaded = await Task.detached(priority: .userInitiated) {
-                SearchIndex.load(from: cacheURL)
+                let found = SearchIndex.load(from: cacheURL)
+                switch found {
+                case .ready:
+                    return found
+                case .versionMismatch, .corrupt:
+                    SearchIndex.removeDatabase(at: cacheURL)
+                    return found
+                case .missing:
+                    if FileManager.default.fileExists(atPath: legacyURL.path) {
+                        return .versionMismatch(found: 1)
+                    }
+                    return found
+                }
             }.value
             switch loaded {
             case .ready(let cached):
@@ -1243,8 +1276,14 @@ public final class SessionStore: ObservableObject {
                 searchState = .updating
             case .versionMismatch(let found):
                 searchState = .rebuilding(previousVersion: found)
+                if let created = try? SearchIndex(storageURL: cacheURL) {
+                    searchIndex = created
+                }
             case .missing, .corrupt:
                 searchState = .preparing
+                if let created = try? SearchIndex(storageURL: cacheURL) {
+                    searchIndex = created
+                }
             }
         } else if searchState == .ready {
             searchState = .updating
@@ -1288,17 +1327,7 @@ public final class SessionStore: ObservableObject {
             revision += 1
         }
 
-        let previousSearch = searchIndex
-        let searchUpdate = await Task.detached(priority: .userInitiated) {
-            SearchIndex.update(previousSearch, sessions: named)
-        }.value
-        searchIndex = searchUpdate.index
-        searchState = .ready
-        let searchCacheURL = paths.searchIndexCacheURL
-        let searchSnapshot = searchUpdate.index
-        Task.detached(priority: .utility) {
-            try? searchSnapshot.save(to: searchCacheURL)
-        }
+        scheduleSearchUpdate(named)
         lastRefresh = Date()
         let completed = latestProgress.withLock { $0 }
         scanProgress = SessionScanProgress(
@@ -1311,6 +1340,55 @@ public final class SessionStore: ObservableObject {
         let cacheURL = paths.sessionIndexCacheURL
         Task.detached(priority: .utility) { Self.saveIndexCache(result, to: cacheURL) }
         if refreshQueued { refreshQueued = false; await refreshNow() }
+    }
+
+    private func scheduleSearchUpdate(_ summaries: [SessionSummary]) {
+        pendingSearchSessions = summaries
+        guard searchTask == nil else {
+            if searchState == .ready { searchState = .updating }
+            return
+        }
+        searchTask = Task { [weak self] in
+            await self?.runSearchUpdates()
+        }
+    }
+
+    private func runSearchUpdates() async {
+        while let summaries = pendingSearchSessions {
+            pendingSearchSessions = nil
+            let handle = searchIndex
+            let existing = min(handle.statistics.documentCount, summaries.count)
+            searchProgress = SearchIndexProgress(
+                indexed: existing, total: summaries.count, isInProgress: true)
+            if searchState == .ready { searchState = .updating }
+            let store = self
+            let update = await Task.detached(priority: .utility) {
+                SearchIndex.update(handle, sessions: summaries) { progress in
+                    Task { @MainActor in
+                        store.searchProgress = SearchIndexProgress(
+                            indexed: progress.indexed, total: progress.total,
+                            isInProgress: progress.indexed < progress.total)
+                    }
+                }
+            }.value
+            searchIndex = update.index
+            if update.succeeded {
+                searchState = .ready
+                searchProgress = SearchIndexProgress(
+                    indexed: summaries.count, total: summaries.count,
+                    isInProgress: false)
+                let legacyURL = paths.legacySearchIndexCacheURL
+                Task.detached(priority: .utility) {
+                    try? FileManager.default.removeItem(at: legacyURL)
+                }
+            } else {
+                searchState = .preparing
+                searchProgress = SearchIndexProgress(
+                    indexed: 0, total: summaries.count, isInProgress: false)
+            }
+        }
+        searchTask = nil
+        if pendingSearchSessions != nil { scheduleSearchUpdate(pendingSearchSessions ?? []) }
     }
 
     /// Scan each remote mirror dir with the SAME incremental parser used for the

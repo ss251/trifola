@@ -364,7 +364,19 @@ struct SessionsScreen: View {
                     .foregroundStyle(Theme.muted)
             }
             Spacer()
-            if isPending {
+            if services.sessions.searchProgress.isPartial {
+                let progress = services.sessions.searchProgress
+                VStack(alignment: .trailing, spacing: 2) {
+                    ProgressView().controlSize(.mini)
+                    Text("Partial — indexing \(progress.indexed.formatted()) of \(progress.total.formatted())…")
+                        .font(Theme.Typography.metadata)
+                        .foregroundStyle(Theme.muted)
+                }
+                .help("Search is available over the sessions indexed so far")
+            } else if services.sessions.searchProgress.isInProgress {
+                ProgressView().controlSize(.mini)
+                    .help("Updating conversation search from changed sessions")
+            } else if isPending {
                 ProgressView().controlSize(.mini)
                     .help("Searching conversation text")
             } else if services.sessions.searchState == .updating {
@@ -390,7 +402,12 @@ struct SessionsScreen: View {
         } else if snapshot.filter.query == query {
             if snapshot.conversationResults.isEmpty {
                 if snapshot.searchState == .preparing {
-                    searchProgress("Preparing conversation search…")
+                    let progress = services.sessions.searchProgress
+                    if progress.isInProgress {
+                        searchProgress("Partial — indexing \(progress.indexed.formatted()) of \(progress.total.formatted())…")
+                    } else {
+                        searchProgress("Preparing conversation search…")
+                    }
                 } else if case .rebuilding = snapshot.searchState {
                     searchProgress("Rebuilding conversation search after an index update…")
                 } else {

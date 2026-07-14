@@ -250,6 +250,17 @@ final class AppServices: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &forwarders)
 
+        // Each committed FTS batch is immediately queryable through WAL. Refresh
+        // the detached search projection at a bounded cadence so a first-run query
+        // gains partial results without waiting for the final batch.
+        sessions.$searchProgress
+            .removeDuplicates()
+            .dropFirst()
+            .throttle(for: .milliseconds(250), scheduler: DispatchQueue.main,
+                      latest: true)
+            .sink { [weak self] _ in self?.refreshNavigationSnapshots() }
+            .store(in: &forwarders)
+
         // The optional user-defined tier must be configured BEFORE the first
         // index load: summaries (and their tier roll-ups) derive from cached
         // accumulators at load time, so this re-tiers the whole corpus with no
