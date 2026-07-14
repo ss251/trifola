@@ -1377,10 +1377,11 @@ public final class SessionStore: ObservableObject {
                 searchProgress = SearchIndexProgress(
                     indexed: summaries.count, total: summaries.count,
                     isInProgress: false)
-                let legacyURL = paths.legacySearchIndexCacheURL
-                Task.detached(priority: .utility) {
-                    try? FileManager.default.removeItem(at: legacyURL)
-                }
+                // Synchronous by design: `.ready` is a claim that migration is
+                // complete, so disk must agree before the state says so (a
+                // detached deletion raced observers under load).
+                try? FileManager.default.removeItem(
+                    at: paths.legacySearchIndexCacheURL)
             } else {
                 searchState = .preparing
                 searchProgress = SearchIndexProgress(
