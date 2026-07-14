@@ -5,6 +5,30 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **No dishonest states, anywhere** — every limitation notice now carries its remedy in-surface
+  (terminal fallback toasts gained Open Settings / copy-resume actions with honest copy and
+  correct glyph semantics); no surface claims quiet/empty/$0 while the session scan is
+  provisional (one canonical "Reading your sessions — N of ~M…" state across the app and menu
+  bar); a transient read failure can no longer poison the search index's delta ladder, and
+  historical poison self-heals on the next update.
+- **Live-append CPU** — changed-path coalescing and key-scoped reconciliation take a 60s
+  live-append fixture from 28.8% to 0.5% whole-process CPU; the session index moved from a
+  59MB wholesale-rewrite JSON file to versioned SQLite/WAL with per-row delta writes.
+
+### Added
+- **Dual-provider CLI, proven** — `npx trifola` audits and searches Claude Code AND Codex with
+  the app's exact money rules; `npm run parity` ships as the permanent cross-implementation
+  contract (per-provider document/session/row equality and per-day per-model cents vs the app).
+- **Dual-provider MCP quota** — `quota_windows` returns both providers with independent honest
+  statuses; consent gates unchanged.
+- **First-run onboarding** — a once-ever welcome over the live board, a primed user-initiated
+  Automation ask, one permission flow per session, live Accessibility status with stale-grant
+  recovery guidance; builds sign with a stable identity when available so grants survive
+  rebuilds.
+- **Perceptual accessibility** — Reduce Motion / Reduce Transparency / Increase Contrast
+  honored across cards, chips, tiles, toasts, and onboarding.
+
 ### Added
 - **Dual-provider MCP quota windows** — `quota_windows` now returns labeled Claude and Codex
   provider blocks, each independently consent-gated and carrying an explicit status when consent,
