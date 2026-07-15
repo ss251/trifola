@@ -6,6 +6,15 @@ All notable changes to trifola are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **Section-switch jank** — switching sections mounted the destination screen twice (a
+  SwiftUI identity change as the presented generation caught up), producing a freeze,
+  then a visible flash as the just-drawn screen was torn down and remounted; the M-2
+  section transition had also been dropped in the nav-freeze restructure, so the swap
+  hard-cut. The destination now keeps one structural identity (draw probes parameterize
+  instead of detaching), the M-2 `nav`/`exit` transition is restored, and the cold-path
+  shell exits with an opacity fade instead of popping. Warm Overview first-frame:
+  142ms → 108ms median; the second mount is gone entirely. The presentation phase is a
+  pure TrifolaKit decision (`NavigationPresentation`) pinned by tests.
 - **No dishonest states, anywhere** — every limitation notice now carries its remedy in-surface
   (terminal fallback toasts gained Open Settings / copy-resume actions with honest copy and
   correct glyph semantics); no surface claims quiet/empty/$0 while the session scan is

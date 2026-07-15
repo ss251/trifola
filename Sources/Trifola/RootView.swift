@@ -149,48 +149,62 @@ private struct ContentColumn: View {
     @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
     @State private var presentedGeneration = 0
 
+    // The destination is rendered from exactly ONE structural position and the
+    // shell overlays it — never an if/else sibling swap. Rendering the
+    // destination from different branches as `presentedGeneration` caught up
+    // gave it a new SwiftUI identity one main-queue tick after it appeared, so
+    // every section switch mounted the heavy screen TWICE (state reset, scroll
+    // reset, a visible double-freeze — the "janky switch"). Probe activity is a
+    // parameter (`enabled:`), not presence, for the same reason. The phase
+    // decision itself is pure and pinned: NavigationPresentation (TrifolaKit).
     var body: some View {
+        let generation = navigation.navigationMetricGeneration
+        let isPending = presentedGeneration != generation
+        let phase = NavigationPresentation.resolve(
+            isPending: isPending,
+            cold: navigation.navigationCold,
+            ready: navigationSnapshots.isReady(for: navigation.section))
+        let animates = navigation.navigationOrigin == .pointer
         ZStack {
-            let isPending = presentedGeneration
-                != navigation.navigationMetricGeneration
-            let isReady = navigationSnapshots.isReady(for: navigation.section)
-            if isPending && (navigation.navigationCold || !isReady) {
+            if phase == .content {
+                destination
+                    .id(navigation.section)
+                    .sectionTransition(enabled: animates)
+                    .navigationFirstDrawProbe(
+                        generation: generation,
+                        milestone: .firstFrame,
+                        journey: navigation.navigationMetricJourney,
+                        enabled: isPending,
+                        onDraw: presentDestination)
+                    .navigationFirstDrawProbe(
+                        generation: generation,
+                        milestone: .hydratedContent,
+                        journey: navigation.navigationMetricJourney)
+                    .onAppear {
+                        navigation.navigationDidAppear(navigation.section)
+                    }
+            }
+            if phase == .shell {
                 destinationShell
+                    .shellExitTransition(enabled: animates)
                     .onAppear {
                         navigation.navigationDidAppear(navigation.section)
                     }
                     .navigationFirstDrawProbe(
-                        generation: navigation.navigationMetricGeneration,
+                        generation: generation,
                         milestone: .firstFrame,
                         journey: navigation.navigationMetricJourney,
-                        onDraw: presentDestinationAfterShell)
-            } else if isPending {
-                destination
-                    .navigationFirstDrawProbe(
-                        generation: navigation.navigationMetricGeneration,
-                        milestone: .firstFrame,
-                        journey: navigation.navigationMetricJourney,
-                        onDraw: presentDestinationAfterShell)
-                    .navigationFirstDrawProbe(
-                        generation: navigation.navigationMetricGeneration,
-                        milestone: .hydratedContent,
-                        journey: navigation.navigationMetricJourney)
-            } else if isReady {
-                destination
-                    .navigationFirstDrawProbe(
-                        generation: navigation.navigationMetricGeneration,
-                        milestone: .hydratedContent,
-                        journey: navigation.navigationMetricJourney)
-            } else {
-                destination
+                        onDraw: presentDestination)
             }
         }
     }
 
-    private func presentDestinationAfterShell() {
+    private func presentDestination() {
         let generation = navigation.navigationMetricGeneration
-        // Mutate after AppKit completes this draw pass. The shell is therefore
-        // a committed visual frame, not merely a SwiftUI `.onAppear` milestone.
+        // Mutate after AppKit completes this draw pass. A shell is therefore
+        // a committed visual frame before the heavy destination mounts; a
+        // warm destination merely retires its own first-frame probe (the
+        // state write changes no structure, so nothing remounts).
         DispatchQueue.main.async {
             guard generation == navigation.navigationMetricGeneration else { return }
             presentedGeneration = generation

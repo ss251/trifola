@@ -446,6 +446,7 @@ struct NavigationFirstDrawProbe: NSViewRepresentable {
     let generation: Int
     let milestone: NavigationDrawMilestone
     let journey: NavigationMetricJourney?
+    var enabled = true
     var onDraw: @MainActor () -> Void = {}
 
     func makeNSView(context: Context) -> NavigationFirstDrawNSView {
@@ -463,6 +464,7 @@ struct NavigationFirstDrawProbe: NSViewRepresentable {
             generation: generation,
             milestone: milestone,
             journey: journey,
+            enabled: enabled,
             onDraw: onDraw
         )
     }
@@ -487,12 +489,23 @@ final class NavigationFirstDrawNSView: NSView {
         generation: Int,
         milestone: NavigationDrawMilestone,
         journey: NavigationMetricJourney?,
+        enabled: Bool = true,
         onDraw: @escaping @MainActor () -> Void
     ) {
         let next = DrawKey(generation: generation, milestone: milestone)
         key = next
         self.journey = journey
         self.onDraw = onDraw
+        // A disabled probe treats the key as already delivered instead of
+        // detaching: the probe must stay structurally attached so its
+        // presence never changes the host view's identity (the double-mount
+        // regression this file's callers exist to prevent). Another surface
+        // owns this milestone for the generation — usually the shell owning
+        // first-frame while the destination mounts behind it.
+        if !enabled {
+            delivered = next
+            return
+        }
         if delivered != next {
             needsDisplay = true
             superview?.needsDisplay = true
@@ -525,6 +538,7 @@ extension View {
         generation: Int,
         milestone: NavigationDrawMilestone,
         journey: NavigationMetricJourney?,
+        enabled: Bool = true,
         onDraw: @escaping @MainActor () -> Void = {}
     ) -> some View {
         background(alignment: .topLeading) {
@@ -532,6 +546,7 @@ extension View {
                 generation: generation,
                 milestone: milestone,
                 journey: journey,
+                enabled: enabled,
                 onDraw: onDraw
             )
             .frame(width: 1, height: 1)

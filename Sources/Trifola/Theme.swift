@@ -472,6 +472,24 @@ private struct SectionTransition: ViewModifier {
     }
 }
 
+/// M-2's shell leg: the cold-navigation placeholder appears instantly (it IS
+/// the immediate feedback frame — easing its entry would defeat it) and leaves
+/// with the standard opacity-led exit once the destination is mounted beneath.
+/// Reduce Motion keeps the <=200ms opacity exit; non-pointer origins snap.
+private struct ShellExitTransition: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        let removal = enabled
+            ? AnyTransition.opacity.animation(
+                Theme.motion(Theme.Motion.exit, reduceMotion: reduceMotion))
+            : .identity
+        return content.transition(
+            .asymmetric(insertion: .identity, removal: removal))
+    }
+}
+
 private struct SidebarSelectionTravel: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let namespace: Namespace.ID
@@ -774,6 +792,10 @@ extension View {
 
     func sectionTransition(enabled: Bool = true) -> some View {
         modifier(SectionTransition(enabled: enabled))
+    }
+
+    func shellExitTransition(enabled: Bool = true) -> some View {
+        modifier(ShellExitTransition(enabled: enabled))
     }
 
     func sidebarSelectionTravel(in namespace: Namespace.ID) -> some View {
