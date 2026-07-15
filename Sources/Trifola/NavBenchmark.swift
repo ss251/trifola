@@ -389,6 +389,7 @@ enum NavBenchmark {
             .environmentObject(services.navigation)
             .environmentObject(services.navigationSnapshots)
             .environmentObject(services.workspaceAccess)
+            .environmentObject(services.automationAccess)
         let host = NSHostingView(rootView: root)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
