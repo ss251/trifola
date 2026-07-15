@@ -36,10 +36,10 @@ extension AppSection {
     }
 }
 
-/// The two draw milestones in a navigation journey. The destination shell ends
-/// the first-frame interval; the ready-content tree ends hydration. Warm
-/// snapshots normally deliver both on the same display pass, while a cold
-/// snapshot delivers the shell first and hydrated content later.
+/// The two draw milestones in a navigation journey. The immediate-feedback
+/// surface ends the first-frame interval; ready content ends hydration. A warm,
+/// ready destination normally delivers both on the same display pass, while a
+/// shell path delivers first frame before hydrated content.
 enum NavigationDrawMilestone: Equatable, Sendable {
     case firstFrame
     case hydratedContent
@@ -161,7 +161,7 @@ enum NavigationMetrics {
     }
 
     /// Start before the selection write. The caller retains the returned journey
-    /// until the shell and hydrated-content probes have both drawn.
+    /// until the first-surface and hydrated-content probes have both drawn.
     @MainActor
     static func beginNavigation(
         to screen: NavigationMetricScreen,
@@ -189,7 +189,8 @@ enum NavigationMetrics {
         return journey
     }
 
-    /// Ends at the destination shell's first AppKit draw pass.
+    /// Ends at the first AppKit draw pass of whichever surface owns immediate
+    /// feedback: the cold/not-ready shell or the warm, ready destination.
     @MainActor
     @discardableResult
     static func endFirstFrame(_ journey: NavigationMetricJourney?) -> Double? {
@@ -528,8 +529,9 @@ final class NavigationFirstDrawNSView: NSView {
 }
 
 extension View {
-    /// Attach at the top level of a shell or ready-content tree. The 1pt probe is
-    /// non-interactive and visually empty.
+    /// Attach at the top level of a shell or content tree. Activity is
+    /// parameterized so ownership/readiness changes never alter view identity;
+    /// the 1pt probe is non-interactive and visually empty.
     func navigationFirstDrawProbe(
         generation: Int,
         milestone: NavigationDrawMilestone,

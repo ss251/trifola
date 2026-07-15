@@ -74,8 +74,8 @@ final class AppNavigation: ObservableObject {
         }
     }
 
-    /// Destination-mount end of the opt-in stderr span. AppKit draw probes own
-    /// the acceptance intervals and remain attached to the content shell.
+    /// First-surface mount end of the opt-in stderr span. AppKit draw probes
+    /// own the acceptance intervals independently of this diagnostic span.
     func navigationDidAppear(_ appearedSection: AppSection) {
         guard Perf.enabled,
               let start = navigationStart,
