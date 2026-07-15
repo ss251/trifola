@@ -1,5 +1,11 @@
 import Foundation
 
+public enum NavigationDrawProbeActivity: Equatable, Sendable {
+    case active
+    case ownedElsewhere
+    case deferred
+}
+
 /// Pure decision for the content column: which surface carries a section
 /// change, and which surface owns the first-frame draw probe.
 ///
@@ -39,5 +45,11 @@ public enum NavigationPresentation: Equatable, Sendable {
         ready: Bool
     ) -> Bool {
         isPending && resolve(isPending: isPending, cold: cold, ready: ready) == .content
+    }
+
+    public static func hydratedContentProbeActivity(
+        isReady: Bool
+    ) -> NavigationDrawProbeActivity {
+        isReady ? .active : .deferred
     }
 }

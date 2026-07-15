@@ -56,4 +56,14 @@ struct NavigationPresentationTests {
         #expect(!NavigationPresentation.contentCarriesFirstFrame(
             isPending: false, cold: false, ready: true))
     }
+
+    @Test("hydration defers until content is ready, then arms")
+    func hydrationProbeActivity() {
+        let readinessSequence = [false, true]
+        let activitySequence = readinessSequence.map {
+            NavigationPresentation.hydratedContentProbeActivity(isReady: $0)
+        }
+
+        #expect(activitySequence == [.deferred, .active])
+    }
 }

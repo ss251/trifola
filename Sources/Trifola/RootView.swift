@@ -155,15 +155,20 @@ private struct ContentColumn: View {
     // gave it a new SwiftUI identity one main-queue tick after it appeared, so
     // every section switch mounted the heavy screen TWICE (state reset, scroll
     // reset, a visible double-freeze — the "janky switch"). Probe activity is a
-    // parameter (`enabled:`), not presence, for the same reason. The phase
+    // parameter, not presence, for the same reason. The phase
     // decision itself is pure and pinned: NavigationPresentation (TrifolaKit).
     var body: some View {
         let generation = navigation.navigationMetricGeneration
         let isPending = presentedGeneration != generation
+        let isReady = navigationSnapshots.isReady(for: navigation.section)
         let phase = NavigationPresentation.resolve(
             isPending: isPending,
             cold: navigation.navigationCold,
-            ready: navigationSnapshots.isReady(for: navigation.section))
+            ready: isReady)
+        let contentCarriesFirstFrame = NavigationPresentation.contentCarriesFirstFrame(
+            isPending: isPending,
+            cold: navigation.navigationCold,
+            ready: isReady)
         let animates = navigation.navigationOrigin == .pointer
         ZStack {
             if phase == .content {
@@ -174,12 +179,14 @@ private struct ContentColumn: View {
                         generation: generation,
                         milestone: .firstFrame,
                         journey: navigation.navigationMetricJourney,
-                        enabled: isPending,
+                        activity: contentCarriesFirstFrame ? .active : .ownedElsewhere,
                         onDraw: presentDestination)
                     .navigationFirstDrawProbe(
                         generation: generation,
                         milestone: .hydratedContent,
-                        journey: navigation.navigationMetricJourney)
+                        journey: navigation.navigationMetricJourney,
+                        activity: NavigationPresentation.hydratedContentProbeActivity(
+                            isReady: isReady))
                     .onAppear {
                         navigation.navigationDidAppear(navigation.section)
                     }

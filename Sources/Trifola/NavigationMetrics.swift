@@ -446,7 +446,7 @@ struct NavigationFirstDrawProbe: NSViewRepresentable {
     let generation: Int
     let milestone: NavigationDrawMilestone
     let journey: NavigationMetricJourney?
-    var enabled = true
+    var activity: NavigationDrawProbeActivity = .active
     var onDraw: @MainActor () -> Void = {}
 
     func makeNSView(context: Context) -> NavigationFirstDrawNSView {
@@ -464,7 +464,7 @@ struct NavigationFirstDrawProbe: NSViewRepresentable {
             generation: generation,
             milestone: milestone,
             journey: journey,
-            enabled: enabled,
+            activity: activity,
             onDraw: onDraw
         )
     }
@@ -481,6 +481,7 @@ final class NavigationFirstDrawNSView: NSView {
     private var delivered: DrawKey?
     private weak var journey: NavigationMetricJourney?
     private var onDraw: (@MainActor () -> Void)?
+    private var activity: NavigationDrawProbeActivity = .active
 
     override var intrinsicContentSize: NSSize { NSSize(width: 1, height: 1) }
     override var isOpaque: Bool { false }
@@ -489,24 +490,19 @@ final class NavigationFirstDrawNSView: NSView {
         generation: Int,
         milestone: NavigationDrawMilestone,
         journey: NavigationMetricJourney?,
-        enabled: Bool = true,
+        activity: NavigationDrawProbeActivity = .active,
         onDraw: @escaping @MainActor () -> Void
     ) {
         let next = DrawKey(generation: generation, milestone: milestone)
         key = next
         self.journey = journey
         self.onDraw = onDraw
-        // A disabled probe treats the key as already delivered instead of
-        // detaching: the probe must stay structurally attached so its
-        // presence never changes the host view's identity (the double-mount
-        // regression this file's callers exist to prevent). Another surface
-        // owns this milestone for the generation — usually the shell owning
-        // first-frame while the destination mounts behind it.
-        if !enabled {
+        self.activity = activity
+        if activity == .ownedElsewhere {
             delivered = next
             return
         }
-        if delivered != next {
+        if activity == .active, delivered != next {
             needsDisplay = true
             superview?.needsDisplay = true
         }
@@ -519,7 +515,7 @@ final class NavigationFirstDrawNSView: NSView {
 
     override func viewWillDraw() {
         super.viewWillDraw()
-        guard let key, delivered != key else { return }
+        guard activity == .active, let key, delivered != key else { return }
         delivered = key
         switch key.milestone {
         case .firstFrame:
@@ -538,7 +534,7 @@ extension View {
         generation: Int,
         milestone: NavigationDrawMilestone,
         journey: NavigationMetricJourney?,
-        enabled: Bool = true,
+        activity: NavigationDrawProbeActivity = .active,
         onDraw: @escaping @MainActor () -> Void = {}
     ) -> some View {
         background(alignment: .topLeading) {
@@ -546,7 +542,7 @@ extension View {
                 generation: generation,
                 milestone: milestone,
                 journey: journey,
-                enabled: enabled,
+                activity: activity,
                 onDraw: onDraw
             )
             .frame(width: 1, height: 1)
