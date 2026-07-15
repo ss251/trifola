@@ -107,6 +107,19 @@ private struct MCPConsentRevokingQuotaProvider: QuotaProvider {
     }
 }
 
+/// The MCP bridge is synchronous because production calls it from the stdio
+/// server thread. Run it on a blocking GCD thread in async tests so the test
+/// itself does not occupy the cooperative executor needed by `snapshot()`.
+private func runBlockingMCPBridge<T: Sendable>(
+    _ operation: @escaping @Sendable () -> T
+) async -> T {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global().async {
+            continuation.resume(returning: operation())
+        }
+    }
+}
+
 // MARK: - decode helpers
 
 private func rpc(_ srv: MCPIntrospectionServer, _ line: String) -> [String: Any]? {
@@ -520,8 +533,10 @@ struct MCPQuotaTimeoutTests {
 
     @Test func blockingCodexQuotaFetchReportsMissingRateLimitEvents() async {
         let provider = MCPQuotaProbeProvider(result: .failure(.noRateLimits))
-        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: provider, consent: true)
+        let outcome = await runBlockingMCPBridge {
+            MCPIntrospectionServer.blockingCodexQuotaFetch(
+                provider: provider, consent: true)
+        }
         #expect(await provider.calls() == 1)
         switch outcome {
         case .snapshot:
@@ -531,15 +546,17 @@ struct MCPQuotaTimeoutTests {
         }
     }
 
-    @Test func blockingCodexQuotaFetchDiscardsAResultAfterConsentRevocation() {
+    @Test func blockingCodexQuotaFetchDiscardsAResultAfterConsentRevocation() async {
         let consent = Locked(true)
         let provider = MCPConsentRevokingQuotaProvider {
             consent.withLock { $0 = false }
         }
-        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: provider,
-            consent: nil,
-            consentProvider: { consent.withLock { $0 } })
+        let outcome = await runBlockingMCPBridge {
+            MCPIntrospectionServer.blockingCodexQuotaFetch(
+                provider: provider,
+                consent: nil,
+                consentProvider: { consent.withLock { $0 } })
+        }
         switch outcome {
         case .snapshot:
             Issue.record("revoked consent must discard the late Codex snapshot")
