@@ -230,9 +230,13 @@ struct CodexParityContentTests {
     }
 
     @Test(
-        .enabled(if: FileManager.default.isExecutableFile(
-            atPath: "/opt/homebrew/bin/zstd")
-            || FileManager.default.isExecutableFile(atPath: "/usr/local/bin/zstd"))
+        // CI cannot spawn subprocesses from swift test (the ProbePrimitives
+        // precedent) — the zstd seam is exercised on developer machines.
+        .enabled(if: ProcessInfo.processInfo.environment["CI"] == nil
+            && (FileManager.default.isExecutableFile(
+                atPath: "/opt/homebrew/bin/zstd")
+                || FileManager.default.isExecutableFile(
+                    atPath: "/usr/local/bin/zstd")))
     )
     func archivedRolloutTranscriptUsesBoundedZstdSeam() throws {
         let root = try parityTempDirectory()
