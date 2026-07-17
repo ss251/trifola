@@ -520,8 +520,11 @@ struct MCPQuotaTimeoutTests {
 
     @Test func blockingCodexQuotaFetchReportsMissingRateLimitEvents() async {
         let provider = MCPQuotaProbeProvider(result: .failure(.noRateLimits))
+        // Generous explicit timeout: this test pins the missing-rate-limits
+        // path, not the deadline. CI runners lost the 2s default race.
         let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: provider, consent: true)
+            provider: provider, consent: true,
+            consentProvider: { true }, timeout: 30)
         #expect(await provider.calls() == 1)
         switch outcome {
         case .snapshot:
@@ -539,7 +542,8 @@ struct MCPQuotaTimeoutTests {
         let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
             provider: provider,
             consent: nil,
-            consentProvider: { consent.withLock { $0 } })
+            consentProvider: { consent.withLock { $0 } },
+            timeout: 30)
         switch outcome {
         case .snapshot:
             Issue.record("revoked consent must discard the late Codex snapshot")
