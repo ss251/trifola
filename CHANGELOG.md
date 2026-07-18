@@ -3,7 +3,7 @@
 All notable changes to trifola are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-07-18
 
 ### Fixed
 - **Section-switch jank** — switching sections mounted the destination screen twice (a
@@ -29,27 +29,21 @@ All notable changes to trifola are documented here. The format follows
 - **Dual-provider CLI, proven** — `npx trifola` audits and searches Claude Code AND Codex with
   the app's exact money rules; `npm run parity` ships as the permanent cross-implementation
   contract (per-provider document/session/row equality and per-day per-model cents vs the app).
-- **Dual-provider MCP quota** — `quota_windows` returns both providers with independent honest
-  statuses; consent gates unchanged.
-- **First-run onboarding** — a once-ever welcome over the live board, a primed user-initiated
-  Automation ask, one permission flow per session, live Accessibility status with stale-grant
-  recovery guidance; builds sign with a stable identity when available so grants survive
-  rebuilds.
+- **Dual-provider MCP quota** — `quota_windows` returns labeled Claude and Codex provider
+  blocks, each independently consent-gated and carrying an explicit status when consent,
+  credentials, a Codex corpus, or recent rollout rate-limit events are unavailable. Codex
+  values come from the same local-only rollout reader as the Quota screen.
+- **Calm, value-first onboarding** — corpus-present first launch shows one persisted welcome
+  over the already-live board; the first exact Terminal/iTerm jump explains its Apple Event
+  before macOS asks; Automation and Accessibility explanations are spaced to one per app
+  session; live Accessibility status with stale-grant recovery guidance; builds sign with a
+  stable identity when available so grants survive rebuilds; `--render-onboarding` captures
+  both production panels in both themes.
 - **Perceptual accessibility** — Reduce Motion / Reduce Transparency / Increase Contrast
   honored across cards, chips, tiles, toasts, and onboarding.
-
-### Added
-- **Dual-provider MCP quota windows** — `quota_windows` now returns labeled Claude and Codex
-  provider blocks, each independently consent-gated and carrying an explicit status when consent,
-  credentials, a Codex corpus, or recent rollout rate-limit events are unavailable. Codex values
-  come from the same local-only rollout reader as the Quota screen.
-- **Calm, value-first onboarding** — corpus-present first launch now shows one persisted
-  welcome over the already-live board; the first exact Terminal/iTerm jump explains its
-  Apple Event before macOS asks; Automation and Accessibility explanations are spaced to one
-  per app session; and `--render-onboarding` captures both production panels in both themes.
-- Settings now rechecks Accessibility when its pane appears or Trifola returns to the
-  foreground, and source builds get code-signature recovery guidance when a prior grant is
-  no longer detected. A regression test also pins the app's no-login-item policy.
+- Settings rechecks Accessibility when its pane appears or Trifola returns to the foreground,
+  and source builds get code-signature recovery guidance when a prior grant is no longer
+  detected. A regression test also pins the app's no-login-item policy.
 
 ## [0.3.1] - 2026-07-14
 

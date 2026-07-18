@@ -2,14 +2,14 @@
 import PackageDescription
 import Foundation
 
-// RELEASE 0.3.1 — this literal MUST match the VERSION file, and every version
+// RELEASE 0.4.0 — this literal MUST match the VERSION file, and every version
 // bump must edit BOTH. SwiftPM caches the manifest's evaluation keyed on this
 // file's content (globally, surviving `swift package reset`), so editing
 // VERSION alone silently keeps shipping the previous version — the 0.2.0
 // release caught exactly that: a full rebuild still compiled "0.1.0" until the
 // manifest itself changed. The precondition below turns a mismatch into a
 // build error instead of a stale binary.
-let manifestDeclaredVersion = "0.3.1"
+let manifestDeclaredVersion = "0.4.0"
 
 let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let versionFile = packageRoot.appendingPathComponent("VERSION")
