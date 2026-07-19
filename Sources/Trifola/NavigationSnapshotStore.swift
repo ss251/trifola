@@ -5,6 +5,11 @@ import TrifolaKit
 /// The complete Sessions query. Views own/persist the controls; this Sendable
 /// value crosses the actor boundary so sorting/filtering never runs in `body`.
 struct SessionProjectionFilter: Sendable, Equatable, Hashable {
+    enum Mode: String, Sendable, Hashable {
+        case lineage = "Lineage"
+        case flat = "Flat"
+    }
+
     enum Sort: String, Sendable, Hashable {
         case recent = "Recent"
         case cost = "Cost"
@@ -18,16 +23,65 @@ struct SessionProjectionFilter: Sendable, Equatable, Hashable {
     var machineID: String?
     var activeOnly = false
     var heavyOnly = false
-    var topLevelOnly = SessionBrowserFilter.defaultTopLevelOnly
+    var mode: Mode = .lineage
     var liveInTerminalOnly = SessionBrowserFilter.defaultLiveInTerminalOnly
     var sort: Sort = .recent
 }
 
+struct SessionLineageCounts: Sendable, Equatable {
+    var subagents = 0
+    var remoteTasks = 0
+    var codex = 0
+    var imports = 0
+    var heuristic = 0
+
+    var total: Int { subagents + remoteTasks + codex + imports + heuristic }
+}
+
+/// Ready-to-paint Sessions value. It intentionally contains no transcript
+/// usage maps or `SessionSummary`: the main actor receives at most the display
+/// cap, while the full corpus remains inside detached projection inputs.
+struct SessionLineageDisplayRow: Identifiable, Sendable, Equatable {
+    let id: String
+    let sessionID: String
+    let provider: Provider
+    let project: String
+    let cwd: String
+    let title: String
+    let tier: ModelTier
+    let model: String?
+    let lastActivity: Date?
+    let duration: TimeInterval?
+    let cost: Double
+    let machineID: String
+    let isRemote: Bool
+    let isActive: Bool
+    let isContextHeavy: Bool
+    let isMetadataOnly: Bool
+    let transcriptNote: String?
+    let edgeKind: LineageEdgeKind?
+    let confidence: LineageConfidence?
+    let edgeDetail: String?
+    let spawnDepth: Int
+    let displayDepth: Int
+    let parentKey: String?
+    let parentTitle: String?
+    let parentMissingNote: String?
+    let hasChildren: Bool
+    let descendantCounts: SessionLineageCounts
+    let totalDescendantCost: Double
+    let isContextOnly: Bool
+}
+
 struct SessionProjectionSnapshot: Sendable, Equatable {
-    let rows: [SessionSummary]
+    let rows: [SessionLineageDisplayRow]
     let conversationResults: [SearchResult]
+    let conversationParentTitles: [String: String]
+    let forcedExpandedParentKeys: Set<String>
     let searchState: SearchIndexState
     let sourceCount: Int
+    let lineageCounts: SessionLineageCounts
+    let isLineageResolving: Bool
     let filter: SessionProjectionFilter
     let generation: Int
 }
@@ -76,6 +130,9 @@ final class NavigationSnapshotStore: ObservableObject {
         let liveTerminalSessionIDs: Set<String>
         let searchIndex: SearchIndex
         let searchState: SearchIndexState
+        let lineageEvidence: SessionLineageEvidence
+        let showHeuristicLinks: Bool
+        let lineageIsProvisional: Bool
         let now: Date
     }
 
@@ -103,6 +160,15 @@ final class NavigationSnapshotStore: ObservableObject {
             forKey: AppRestorationKeys.sessionsTier) ?? ""
         let machineRaw = defaults.string(
             forKey: AppRestorationKeys.sessionsMachine) ?? ""
+        let mode: SessionProjectionFilter.Mode = {
+            if let raw = defaults.string(forKey: AppRestorationKeys.sessionsMode),
+               let mode = SessionProjectionFilter.Mode(rawValue: raw) {
+                return mode
+            }
+            // One-way compatibility with the superseded Top-level toggle.
+            return bool(AppRestorationKeys.sessionsTopLevelOnly,
+                        fallback: true) ? .lineage : .flat
+        }()
         sessionFilter = SessionProjectionFilter(
             query: defaults.string(
                 forKey: AppRestorationKeys.sessionsQuery) ?? "",
@@ -113,9 +179,7 @@ final class NavigationSnapshotStore: ObservableObject {
                 AppRestorationKeys.sessionsActiveOnly, fallback: false),
             heavyOnly: bool(
                 AppRestorationKeys.sessionsHeavyOnly, fallback: false),
-            topLevelOnly: bool(
-                AppRestorationKeys.sessionsTopLevelOnly,
-                fallback: SessionBrowserFilter.defaultTopLevelOnly),
+            mode: mode,
             liveInTerminalOnly: bool(
                 AppRestorationKeys.sessionsLiveInTerminalOnly,
                 fallback: SessionBrowserFilter.defaultLiveInTerminalOnly),
@@ -143,6 +207,9 @@ final class NavigationSnapshotStore: ObservableObject {
         liveTerminalSessionIDs: Set<String>,
         searchIndex: SearchIndex,
         searchState: SearchIndexState,
+        lineageEvidence: SessionLineageEvidence,
+        showHeuristicLinks: Bool,
+        lineageIsProvisional: Bool,
         now: Date
     ) {
         sourceGeneration += 1
@@ -156,6 +223,9 @@ final class NavigationSnapshotStore: ObservableObject {
             liveTerminalSessionIDs: liveTerminalSessionIDs,
             searchIndex: searchIndex,
             searchState: searchState,
+            lineageEvidence: lineageEvidence,
+            showHeuristicLinks: showHeuristicLinks,
+            lineageIsProvisional: lineageIsProvisional,
             now: now)
         scheduleCorpus()
         scheduleSessions()
@@ -238,7 +308,9 @@ final class NavigationSnapshotStore: ObservableObject {
                          forKey: AppRestorationKeys.sessionsActiveOnly)
             defaults.set(value.heavyOnly,
                          forKey: AppRestorationKeys.sessionsHeavyOnly)
-            defaults.set(value.topLevelOnly,
+            defaults.set(value.mode.rawValue,
+                         forKey: AppRestorationKeys.sessionsMode)
+            defaults.set(value.mode == .lineage,
                          forKey: AppRestorationKeys.sessionsTopLevelOnly)
             defaults.set(value.liveInTerminalOnly,
                          forKey: AppRestorationKeys.sessionsLiveInTerminalOnly)
@@ -302,12 +374,21 @@ final class NavigationSnapshotStore: ObservableObject {
                     .sessions, generation: generation)
                 var eligibilityFilter = filter
                 eligibilityFilter.query = ""
-                let eligible = Self.projectSessions(
+                let eligible = Self.projectEligibleSessions(
                     inputs.sessions,
                     liveTerminalSessionIDs: inputs.liveTerminalSessionIDs,
-                    filter: eligibilityFilter)
-                let rows = SessionBrowserSearch.titlePathMatches(
-                    eligible, query: filter.query)
+                    filter: eligibilityFilter,
+                    now: inputs.now)
+                let lineage = SessionLineage.resolve(
+                    sessions: inputs.sessions,
+                    evidence: inputs.lineageEvidence,
+                    includeHeuristicLinks: inputs.showHeuristicLinks)
+                let projected = Self.projectLineage(
+                    lineage,
+                    summaries: inputs.sessions,
+                    liveTerminalSessionIDs: inputs.liveTerminalSessionIDs,
+                    filter: filter,
+                    now: inputs.now)
                 let query = SearchQuery(filter.query)
                 let results: [SearchResult]
                 if query.isEmpty {
@@ -348,12 +429,22 @@ final class NavigationSnapshotStore: ObservableObject {
                         return SearchResult(candidate: candidate, snippet: snippet)
                     }
                 }
+                let conversationParents = Dictionary(
+                    results.compactMap { result -> (String, String)? in
+                        guard let parent = projected.parentTitlesBySessionID[result.id]
+                        else { return nil }
+                        return (result.id, parent)
+                    }, uniquingKeysWith: { first, _ in first })
                 _ = NavigationMetrics.endProjection(metric)
                 return SessionProjectionSnapshot(
-                    rows: rows,
+                    rows: projected.rows,
                     conversationResults: results,
+                    conversationParentTitles: conversationParents,
+                    forcedExpandedParentKeys: projected.forcedExpandedParentKeys,
                     searchState: inputs.searchState,
                     sourceCount: inputs.sessions.count,
+                    lineageCounts: projected.counts,
+                    isLineageResolving: inputs.lineageIsProvisional,
                     filter: filter,
                     generation: generation)
             }.value
@@ -437,16 +528,23 @@ final class NavigationSnapshotStore: ObservableObject {
         }
     }
 
-    private nonisolated static func projectSessions(
+    private struct ProjectedLineage {
+        let rows: [SessionLineageDisplayRow]
+        let counts: SessionLineageCounts
+        let forcedExpandedParentKeys: Set<String>
+        let parentTitlesBySessionID: [String: String]
+    }
+
+    private nonisolated static func projectEligibleSessions(
         _ sessions: [SessionSummary],
         liveTerminalSessionIDs: Set<String>,
-        filter: SessionProjectionFilter
+        filter: SessionProjectionFilter,
+        now: Date
     ) -> [SessionSummary] {
-        var rows = SessionBrowserFilter(
-            topLevelOnly: filter.topLevelOnly,
-            liveInTerminalOnly: filter.liveInTerminalOnly)
-            .apply(to: sessions,
-                   liveTerminalSessionIDs: liveTerminalSessionIDs)
+        var rows = sessions
+        if filter.liveInTerminalOnly {
+            rows.removeAll { !liveTerminalSessionIDs.contains($0.id) }
+        }
         if let provider = filter.provider {
             rows.removeAll { $0.provider != provider }
         }
@@ -454,9 +552,16 @@ final class NavigationSnapshotStore: ObservableObject {
         if let machineID = filter.machineID {
             rows.removeAll { $0.machineID != machineID }
         }
-        if filter.activeOnly { rows.removeAll { !$0.isActive } }
+        if filter.activeOnly { rows.removeAll { !$0.isActive(at: now) } }
         if filter.heavyOnly { rows.removeAll { !$0.isContextHeavy } }
-        switch filter.sort {
+        return rows
+    }
+
+    private nonisolated static func sortSessions(
+        _ input: [SessionSummary], by sort: SessionProjectionFilter.Sort
+    ) -> [SessionSummary] {
+        var rows = input
+        switch sort {
         case .recent:
             rows.sort {
                 let lhs = $0.lastActivity ?? .distantPast
@@ -486,6 +591,209 @@ final class NavigationSnapshotStore: ObservableObject {
             }
         }
         return rows
+    }
+
+    private nonisolated static func projectLineage(
+        _ forest: SessionLineageForest,
+        summaries: [SessionSummary],
+        liveTerminalSessionIDs: Set<String>,
+        filter: SessionProjectionFilter,
+        now: Date
+    ) -> ProjectedLineage {
+        let summaryByKey = Dictionary(
+            summaries.map { (SessionLineage.key($0), $0) },
+            uniquingKeysWith: { first, _ in first })
+        var counts = SessionLineageCounts()
+        for node in forest.allNodes where node.spawnDepth > 0 {
+            switch node.edgeKind {
+            case .subagent: counts.subagents += 1
+            case .remoteTask: counts.remoteTasks += 1
+            case .codexSpawn, .codexFork: counts.codex += 1
+            case .importBridge: counts.imports += 1
+            case .orchestrated: counts.heuristic += 1
+            case nil: break
+            }
+        }
+
+        func matchesStructure(_ node: LineageNode) -> Bool {
+            let reference = node.session
+            if let provider = filter.provider, reference.provider != provider { return false }
+            if let tier = filter.tier, reference.tier != tier { return false }
+            if let machine = filter.machineID, reference.machineID != machine { return false }
+            if filter.liveInTerminalOnly,
+               !liveTerminalSessionIDs.contains(reference.id) { return false }
+            guard let summary = summaryByKey[reference.stableKey] else {
+                return !filter.activeOnly && !filter.heavyOnly
+            }
+            if filter.activeOnly && !summary.isActive(at: now) { return false }
+            if filter.heavyOnly && !summary.isContextHeavy { return false }
+            return true
+        }
+
+        let query = filter.query.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        func matchesQuery(_ node: LineageNode) -> Bool {
+            guard !query.isEmpty else { return true }
+            let value = node.session
+            return value.project.lowercased().contains(query)
+                || value.title.lowercased().contains(query)
+                || value.cwd.lowercased().contains(query)
+                || value.id.lowercased().hasPrefix(query)
+        }
+
+        var descendantCountCache: [String: SessionLineageCounts] = [:]
+        func descendantCounts(_ node: LineageNode) -> SessionLineageCounts {
+            if let cached = descendantCountCache[node.session.stableKey] {
+                return cached
+            }
+            var result = SessionLineageCounts()
+            for child in node.children {
+                switch child.edgeKind {
+                case .subagent: result.subagents += 1
+                case .remoteTask: result.remoteTasks += 1
+                case .codexSpawn, .codexFork: result.codex += 1
+                case .importBridge: result.imports += 1
+                case .orchestrated: result.heuristic += 1
+                case nil: break
+                }
+                let nested = descendantCounts(child)
+                result.subagents += nested.subagents
+                result.remoteTasks += nested.remoteTasks
+                result.codex += nested.codex
+                result.imports += nested.imports
+                result.heuristic += nested.heuristic
+            }
+            descendantCountCache[node.session.stableKey] = result
+            return result
+        }
+
+        var descendantCostCache: [String: Double] = [:]
+        func descendantCost(_ node: LineageNode) -> Double {
+            if let cached = descendantCostCache[node.session.stableKey] {
+                return cached
+            }
+            let cost = node.children.reduce(0) { partial, child in
+                partial + child.session.cost + descendantCost(child)
+            }
+            descendantCostCache[node.session.stableKey] = cost
+            return cost
+        }
+
+        func ordered(_ nodes: [LineageNode]) -> [LineageNode] {
+            nodes.sorted { lhs, rhs in
+                switch filter.sort {
+                case .recent:
+                    let l = lhs.session.lastActivity ?? .distantPast
+                    let r = rhs.session.lastActivity ?? .distantPast
+                    return l == r ? lhs.id < rhs.id : l > r
+                case .cost:
+                    return lhs.session.cost == rhs.session.cost
+                        ? lhs.id < rhs.id : lhs.session.cost > rhs.session.cost
+                case .context:
+                    return lhs.session.contextWeight == rhs.session.contextWeight
+                        ? lhs.id < rhs.id
+                        : lhs.session.contextWeight > rhs.session.contextWeight
+                case .tokens:
+                    return lhs.session.totalTokens == rhs.session.totalTokens
+                        ? lhs.id < rhs.id
+                        : lhs.session.totalTokens > rhs.session.totalTokens
+                }
+            }
+        }
+
+        func displayRow(_ node: LineageNode, parent: LineageNode?,
+                        contextOnly: Bool) -> SessionLineageDisplayRow {
+            let summary = summaryByKey[node.session.stableKey]
+            return SessionLineageDisplayRow(
+                id: node.session.stableKey,
+                sessionID: node.session.id,
+                provider: node.session.provider,
+                project: node.session.project,
+                cwd: node.session.cwd,
+                title: node.session.title,
+                tier: node.session.tier,
+                model: node.session.model,
+                lastActivity: node.session.lastActivity,
+                duration: node.session.duration,
+                cost: node.session.cost,
+                machineID: node.session.machineID,
+                isRemote: node.session.machineID != Machine.localID,
+                isActive: summary?.isActive(at: now) ?? false,
+                isContextHeavy: summary?.isContextHeavy ?? false,
+                isMetadataOnly: node.session.isMetadataOnly,
+                transcriptNote: node.session.transcriptNote,
+                edgeKind: node.edgeKind,
+                confidence: node.confidence,
+                edgeDetail: node.edgeDetail,
+                spawnDepth: node.spawnDepth,
+                displayDepth: node.displayDepth,
+                parentKey: parent?.session.stableKey,
+                parentTitle: parent?.session.title,
+                parentMissingNote: node.parentMissingNote,
+                hasChildren: !node.children.isEmpty,
+                descendantCounts: descendantCounts(node),
+                totalDescendantCost: descendantCost(node),
+                isContextOnly: contextOnly)
+        }
+
+        var rows: [SessionLineageDisplayRow] = []
+        var forced: Set<String> = []
+        var parentTitles: [String: String] = [:]
+
+        @discardableResult
+        func appendLineage(_ node: LineageNode, parent: LineageNode?) -> Bool {
+            let ownMatch = matchesStructure(node) && matchesQuery(node)
+            var childGroups: [[SessionLineageDisplayRow]] = []
+            var anyChild = false
+            for child in ordered(node.children) {
+                let start = rows.count
+                let matched = appendLineage(child, parent: node)
+                if matched {
+                    childGroups.append(Array(rows[start...]))
+                    rows.removeSubrange(start...)
+                    anyChild = true
+                }
+            }
+            let include = ownMatch || anyChild
+            guard include else { return false }
+            let contextOnly = !ownMatch && anyChild
+            rows.append(displayRow(node, parent: parent, contextOnly: contextOnly))
+            if anyChild && !query.isEmpty { forced.insert(node.session.stableKey) }
+            for group in childGroups { rows.append(contentsOf: group) }
+            if let parent {
+                parentTitles[node.session.id] = parent.session.title
+            }
+            return true
+        }
+
+        if filter.mode == .flat {
+            let eligible = projectEligibleSessions(
+                summaries,
+                liveTerminalSessionIDs: liveTerminalSessionIDs,
+                filter: filter,
+                now: now)
+            let matches = SessionBrowserSearch.titlePathMatches(
+                eligible, query: filter.query)
+            rows = sortSessions(matches, by: filter.sort).prefix(400).map { summary in
+                let reference = LineageSessionReference(summary: summary)
+                let node = LineageNode(
+                    session: reference, children: [], edgeKind: nil,
+                    confidence: nil, spawnDepth: 0, displayDepth: 0,
+                    parentMissingNote: nil, edgeDetail: nil)
+                return displayRow(node, parent: nil, contextOnly: false)
+            }
+        } else {
+            for root in ordered(forest.roots) {
+                _ = appendLineage(root, parent: nil)
+                if rows.count >= 400 { break }
+            }
+            rows = Array(rows.prefix(400))
+        }
+        return ProjectedLineage(
+            rows: rows,
+            counts: counts,
+            forcedExpandedParentKeys: forced,
+            parentTitlesBySessionID: parentTitles)
     }
 
     private nonisolated static func projectDeadlineTiers(

@@ -13,6 +13,7 @@ enum AppRestorationKeys {
     static let sessionsActiveOnly = "trifola.restoration.sessions.activeOnly"
     static let sessionsHeavyOnly = "trifola.restoration.sessions.heavyOnly"
     static let sessionsTopLevelOnly = "trifola.restoration.sessions.topLevelOnly"
+    static let sessionsMode = "trifola.restoration.sessions.mode"
     static let sessionsLiveInTerminalOnly = "trifola.restoration.sessions.liveInTerminalOnly"
     static let sessionsSort = "trifola.restoration.sessions.sort"
 }
@@ -284,6 +285,13 @@ final class AppServices: ObservableObject {
             }
             .store(in: &forwarders)
 
+        preferences.$value
+            .map(\.showHeuristicLineageLinks)
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.refreshNavigationSnapshots() }
+            .store(in: &forwarders)
+
         // Apply quota trust changes immediately. Turning a provider off clears
         // its in-memory snapshot without touching that provider's read boundary;
         // turning it on performs the newly-authorized probe once.
@@ -521,6 +529,10 @@ final class AppServices: ObservableObject {
             liveTerminalSessionIDs: liveTerminalSessionIDs,
             searchIndex: sessions.searchIndex,
             searchState: sessions.searchState,
+            lineageEvidence: sessions.lineageEvidence,
+            showHeuristicLinks: preferences.value.showHeuristicLineageLinks,
+            lineageIsProvisional: sessions.scanPresentation.isProvisional
+                || sessions.scanProgress.isInProgress,
             now: now)
     }
 

@@ -6,6 +6,7 @@ import TrifolaKit
 struct SessionsScreen: View {
     @EnvironmentObject var services: AppServices
     @EnvironmentObject var navigationSnapshots: NavigationSnapshotStore
+    @State private var expandedParentKeys: Set<String> = []
 
     enum SortKey: String, CaseIterable, Identifiable {
         case recent = "Recent", cost = "Cost", context = "Context", tokens = "Tokens"
@@ -21,7 +22,7 @@ struct SessionsScreen: View {
     private var machineFilter: String? { projectionFilter.machineID }
     private var activeOnly: Bool { projectionFilter.activeOnly }
     private var heavyOnly: Bool { projectionFilter.heavyOnly }
-    private var topLevelOnly: Bool { projectionFilter.topLevelOnly }
+    private var mode: SessionProjectionFilter.Mode { projectionFilter.mode }
     private var liveInTerminalOnly: Bool { projectionFilter.liveInTerminalOnly }
     private var sort: SortKey {
         SortKey(rawValue: projectionFilter.sort.rawValue) ?? .recent
@@ -72,7 +73,7 @@ struct SessionsScreen: View {
         let suppressionState = services.agency.suppressionState
 
         return SessionsAdaptiveSplit(
-            compactShowsDetail: services.selectedSession != nil,
+            compactShowsDetail: services.selectedSessionID != nil,
             onBack: { services.selectedSessionID = nil }
         ) {
             listColumn(
@@ -173,8 +174,11 @@ struct SessionsScreen: View {
                     }
 
                     FlowLayout(spacing: Theme.rhythm, lineSpacing: Theme.rhythm) {
-                        FilterChip(label: "Top-level", isOn: topLevelOnly) {
-                            updateFilter(\.topLevelOnly, to: !topLevelOnly)
+                        FilterChip(label: "Lineage", isOn: mode == .lineage) {
+                            updateFilter(\.mode, to: .lineage)
+                        }
+                        FilterChip(label: "Flat", isOn: mode == .flat) {
+                            updateFilter(\.mode, to: .flat)
                         }
                         FilterChip(label: "Live in terminal", isOn: liveInTerminalOnly) {
                             updateFilter(\.liveInTerminalOnly,
@@ -218,7 +222,12 @@ struct SessionsScreen: View {
                     }
 
                     HStack {
-                        if isPending {
+                        if snapshot.isLineageResolving {
+                            ProgressView().controlSize(.mini)
+                            Text(services.sessions.scanProgress.readingSentence)
+                                .font(Theme.Typography.metadataMedium)
+                                .foregroundStyle(Theme.ink)
+                        } else if isPending {
                             ProgressView().controlSize(.mini)
                             Text("Searching…")
                                 .font(Theme.Typography.metadataMedium)
@@ -228,8 +237,8 @@ struct SessionsScreen: View {
                                 .foregroundStyle(Theme.muted)
                         } else {
                             Text(query.isEmpty
-                                 ? "\(filtered.count) session\(filtered.count == 1 ? "" : "s")"
-                                 : "\(filtered.count) title/path match\(filtered.count == 1 ? "" : "es")")
+                                 ? "\(snapshot.sourceCount) session file\(snapshot.sourceCount == 1 ? "" : "s") · \(snapshot.lineageCounts.total) linked child\(snapshot.lineageCounts.total == 1 ? "" : "ren")"
+                                 : "\(filtered.count) lineage match\(filtered.count == 1 ? "" : "es")")
                                 .font(Theme.Typography.metadata)
                                 .foregroundStyle(Theme.muted)
                         }
@@ -270,7 +279,9 @@ struct SessionsScreen: View {
             Divider()
 
             ScrollViewReader { proxy in
-                let shown = filtered.prefix(400)
+                let shown = visibleRows(
+                    filtered,
+                    forcedExpanded: snapshot.forcedExpandedParentKeys)
                 let attentionStates = Dictionary(
                     (navigationSnapshots.fleet?.attention.items ?? [])
                         .map { ($0.id, $0.state) },
@@ -287,22 +298,34 @@ struct SessionsScreen: View {
                            !services.sessions.searchProgress.isInProgress {
                             combinedEmptyState(query: snapshot.filter.query)
                         } else {
-                            ForEach(shown) { s in
-                                SessionRow(
-                                    session: s,
-                                    isSelected: services.selectedSessionID == s.id,
-                                    stateOverride: attentionStates[s.id]
-                                        ?? (s.isActive(at: now) ? .running : .idle),
+                            ForEach(shown) { row in
+                                SessionLineageRow(
+                                    row: row,
+                                    isExpanded: expandedParentKeys.contains(row.id)
+                                        || snapshot.forcedExpandedParentKeys.contains(row.id),
+                                    isSelected: services.selectedSessionID == row.sessionID,
+                                    stateOverride: attentionStates[row.sessionID]
+                                        ?? (row.isActive ? .running : .idle),
                                     suppressedOverride:
                                         suppressionState.isSnoozed(
-                                            sessionID: s.id, at: now)
+                                            sessionID: row.sessionID, at: now)
                                         || suppressionState.isMuted(
-                                            projectKey: s.project),
+                                            projectKey: row.project),
                                     now: now,
                                     isCrossMachine: isCrossMachine,
-                                    onSelect: { services.selectedSessionID = s.id })
+                                    onDisclosure: {
+                                        if expandedParentKeys.contains(row.id) {
+                                            expandedParentKeys.remove(row.id)
+                                        } else {
+                                            expandedParentKeys.insert(row.id)
+                                        }
+                                    },
+                                    onSelect: {
+                                        services.selectedSessionID = row.sessionID
+                                    })
+                                    .id(row.sessionID)
                             }
-                            if filtered.count > 400 {
+                            if filtered.count >= 400 {
                                 Text("Showing first 400 — refine the search to narrow down.")
                                     .font(Theme.Typography.metadata)
                                     .foregroundStyle(Theme.muted)
@@ -339,7 +362,7 @@ struct SessionsScreen: View {
                 }
                 .onChange(of: services.terminalTranscriptReveal?.generation) {
                     guard let request = services.terminalTranscriptReveal else { return }
-                    proxy.scrollTo(request.sessionID, anchor: .center)
+                        proxy.scrollTo(request.sessionID, anchor: .center)
                 }
             }
             .launchReveal(.content)
@@ -350,6 +373,30 @@ struct SessionsScreen: View {
         .onChange(of: navigationSnapshots.fleet?.generation) {
             clearStaleRestorationIfIndexReady()
         }
+    }
+
+    /// The detached snapshot is capped to display-sized preorder rows. This
+    /// final O(display) pass applies the user's disclosure state without ever
+    /// touching the corpus or rebuilding the lineage tree in `body`.
+    private func visibleRows(
+        _ rows: [SessionLineageDisplayRow],
+        forcedExpanded: Set<String>
+    ) -> [SessionLineageDisplayRow] {
+        guard mode == .lineage else { return rows }
+        let expanded = expandedParentKeys.union(forcedExpanded)
+        var visibleKeys: Set<String> = []
+        var output: [SessionLineageDisplayRow] = []
+        output.reserveCapacity(rows.count)
+        for row in rows {
+            if let parent = row.parentKey {
+                guard visibleKeys.contains(parent), expanded.contains(parent) else {
+                    continue
+                }
+            }
+            visibleKeys.insert(row.id)
+            output.append(row)
+        }
+        return output
     }
 
     @ViewBuilder
@@ -449,11 +496,16 @@ struct SessionsScreen: View {
         ForEach(results) { result in
             SearchResultRow(
                 result: result,
+                parentTitle: snapshotParentTitle(for: result.id),
                 isSelected: services.selectedSessionID == result.id,
                 now: now,
                 onSelect: { services.selectedSessionID = result.id })
                 .id("search:\(result.candidate.provider.rawValue):\(result.id)")
         }
+    }
+
+    private func snapshotParentTitle(for sessionID: String) -> String? {
+        navigationSnapshots.sessions?.conversationParentTitles[sessionID]
     }
 
     private func combinedEmptyState(query: String) -> some View {
@@ -496,6 +548,13 @@ struct SessionsScreen: View {
             SessionInspector(session: session)
                 .id(session.id)
                 .motionRowTransition()
+        } else if let id = services.selectedSessionID,
+                  let row = navigationSnapshots.sessions?.rows.first(where: {
+                      $0.sessionID == id && $0.isMetadataOnly
+                  }) {
+            MetadataOnlyLineageInspector(row: row)
+                .id(row.id)
+                .motionRowTransition()
         } else {
             EmptyState(
                 icon: "square.stack.3d.up",
@@ -506,8 +565,51 @@ struct SessionsScreen: View {
     }
 }
 
+private struct MetadataOnlyLineageInspector: View {
+    let row: SessionLineageDisplayRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            HStack(spacing: Theme.intraCell) {
+                Image(systemName: lineageIcon(row.edgeKind))
+                    .foregroundStyle(row.confidence == .heuristic
+                        ? Theme.faint : Theme.accent)
+                Text(row.edgeKind?.label ?? "Lineage child")
+                    .font(Theme.Typography.metadataMedium)
+                    .foregroundStyle(Theme.muted)
+                ProviderBadge(provider: row.provider)
+            }
+            Text(row.title)
+                .font(Theme.Typography.screenTitle)
+                .foregroundStyle(Theme.ink)
+            Text(row.sessionID)
+                .font(Theme.Typography.mono)
+                .foregroundStyle(Theme.faint)
+                .textSelection(.enabled)
+            if let parent = row.parentTitle {
+                Text("Spawned under \(parent)")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.muted)
+            }
+            Divider()
+            EmptyState(
+                icon: "doc.badge.ellipsis",
+                title: "Transcript not stored locally",
+                detail: row.transcriptNote
+                    ?? "Only lineage metadata is available for this child session.")
+            Spacer()
+        }
+        .padding(.horizontal, Theme.gutter)
+        .padding(.top, ScreenScaffoldMetrics.topInset)
+        .frame(maxWidth: Theme.Layout.sessionsInspectorMaxWidth,
+               maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
 struct SearchResultRow: View {
     let result: SearchResult
+    var parentTitle: String? = nil
     let isSelected: Bool
     let now: Date
     let onSelect: () -> Void
@@ -536,6 +638,12 @@ struct SearchResultRow: View {
                         Text("· \(result.candidate.provider.label)")
                             .font(Theme.Typography.metadata)
                             .foregroundStyle(secondary)
+                        if let parentTitle {
+                            Text("in \(parentTitle)")
+                                .font(Theme.Typography.metadata)
+                                .foregroundStyle(secondary)
+                                .lineLimit(1)
+                        }
                         Spacer()
                         Text(result.candidate.lastActivity.map {
                             fmtAgeShort(max(0, now.timeIntervalSince($0)))
@@ -640,6 +748,253 @@ private struct SessionListColumns: View {
 // Selection uses the app's native luminance step. Hover, press and keyboard
 // focus continue to come from HoverRow/TapButton, so all input paths share the
 // same feedback grammar and remain immune to the macOS render storm.
+
+private func lineageIcon(_ kind: LineageEdgeKind?) -> String {
+    switch kind {
+    case .subagent: return "person.2"
+    case .remoteTask: return "cloud"
+    case .codexSpawn: return "arrow.triangle.branch"
+    case .codexFork: return "arrow.triangle.pull"
+    case .importBridge: return "square.and.arrow.down"
+    case .orchestrated: return "link"
+    case nil: return "circle"
+    }
+}
+
+struct SessionLineageRow: View {
+    @EnvironmentObject var services: AppServices
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
+    let row: SessionLineageDisplayRow
+    let isExpanded: Bool
+    let isSelected: Bool
+    var stateOverride: AttentionState? = nil
+    var suppressedOverride: Bool? = nil
+    let now: Date
+    let isCrossMachine: Bool
+    let onDisclosure: () -> Void
+    let onSelect: () -> Void
+
+    private var primary: Color { isSelected ? Theme.selectionText : Theme.ink }
+    private var secondary: Color {
+        isSelected ? Theme.selectionText.opacity(0.86) : Theme.muted
+    }
+
+    var body: some View {
+        let suppressed = suppressedOverride ?? false
+        let state = stateOverride ?? (row.isActive ? .running : .idle)
+        HStack(spacing: 0) {
+            if row.hasChildren {
+                TapButton(action: onDisclosure) {
+                    Image(systemName: "chevron.right")
+                        .font(Theme.Typography.metadataMedium)
+                        .foregroundStyle(secondary)
+                        .frame(width: 16, height: Theme.sessionRowHeight)
+                        .disclosureChevron(isExpanded: isExpanded)
+                }
+                .accessibilityLabel(isExpanded ? "Collapse children" : "Expand children")
+                .accessibilityHint("Show or hide spawned sessions under \(row.title)")
+            } else {
+                Color.clear.frame(width: 16, height: 1)
+            }
+
+            TapButton(action: onSelect) {
+                HStack(spacing: Theme.intraCell) {
+                    VStack(spacing: Theme.micro / 2) {
+                        if row.spawnDepth == 0 {
+                            SessionRowSeatMark(state: DoorLightState(state))
+                        } else {
+                            Image(systemName: lineageIcon(row.edgeKind))
+                                .font(Theme.Typography.metadata)
+                                .foregroundStyle(edgeColor)
+                                .accessibilityHidden(true)
+                        }
+                        if suppressed { SuppressionMark() }
+                    }
+                    .frame(width: SessionListMetrics.markWidth)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
+                            Text(row.project)
+                                .font(Theme.Typography.bodyMedium)
+                                .foregroundStyle(primary)
+                                .lineLimit(1)
+                                .layoutPriority(1)
+                            ProviderBadge(provider: row.provider, compact: true)
+                            if isCrossMachine {
+                                MachineChip(machineID: row.machineID)
+                            }
+                            if row.spawnDepth > 2 {
+                                Text("depth \(row.spawnDepth)")
+                                    .font(Theme.Typography.metadata)
+                                    .foregroundStyle(secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Capsule().fill(Theme.codeFill))
+                            }
+                        }
+                        identitySubtitle
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(row.lastActivity.map {
+                        fmtAgeShort(max(0, now.timeIntervalSince($0)))
+                    } ?? "—")
+                        .font(Theme.Typography.metadata)
+                        .monospacedDigit()
+                        .foregroundStyle(secondary)
+                        .frame(width: SessionListMetrics.ageWidth, alignment: .trailing)
+
+                    Text(fmtUSD(row.cost))
+                        .font(Theme.Typography.metadataMedium)
+                        .monospacedDigit()
+                        .foregroundStyle(primary)
+                        .frame(width: SessionListMetrics.costWidth, alignment: .trailing)
+
+                    stateCell(state)
+                        .frame(width: SessionListMetrics.stateWidth, alignment: .trailing)
+                }
+                .padding(.horizontal, Theme.intraCell)
+                .padding(.leading, CGFloat(row.displayDepth) * 12)
+                .frame(maxWidth: .infinity)
+                .frame(height: Theme.sessionRowHeight)
+            }
+        }
+        .opacity(row.confidence == .heuristic && accessibilityContrast != .increased
+            ? 0.72 : (suppressed ? 0.72 : 1))
+        .help(helpText)
+        .contextMenu { agencyMenu }
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                    .fill(Theme.selectionBG)
+            } else if row.isContextOnly {
+                RoundedRectangle(cornerRadius: Theme.radiusRow, style: .continuous)
+                    .fill(Theme.codeFill.opacity(0.55))
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var edgeColor: Color {
+        if row.confidence == .heuristic {
+            return accessibilityContrast == .increased ? Theme.ink : Theme.faint
+        }
+        return row.provider == .codex ? Theme.codexModel : row.tier.color
+    }
+
+    private var identitySubtitle: some View {
+        HStack(spacing: Theme.micro) {
+            if row.spawnDepth == 0 {
+                if row.hasChildren {
+                    Text(lineageSummary)
+                        .font(Theme.Typography.metadata)
+                        .foregroundStyle(secondary.opacity(0.9))
+                        .lineLimit(1)
+                        .layoutPriority(2)
+                } else {
+                    Text(row.title)
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(secondary)
+                        .lineLimit(1)
+                }
+            } else {
+                Text(row.edgeKind?.label ?? "Spawned session")
+                    .font(Theme.Typography.metadataMedium)
+                    .foregroundStyle(edgeColor)
+                Text("· \(row.title)")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(secondary)
+                    .lineLimit(1)
+                Text("· \(row.model ?? row.tier.label)")
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(secondary.opacity(0.8))
+                if let duration = row.duration {
+                    Text("· \(shortDuration(duration))")
+                        .font(Theme.Typography.metadata)
+                        .foregroundStyle(secondary.opacity(0.8))
+                }
+                if row.isContextOnly, let parent = row.parentTitle {
+                    Text("· in \(parent)")
+                        .font(Theme.Typography.metadata)
+                        .foregroundStyle(secondary)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var lineageSummary: String {
+        let counts = row.descendantCounts
+        var parts: [String] = []
+        if counts.subagents > 0 { parts.append("\(counts.subagents) subagent\(counts.subagents == 1 ? "" : "s")") }
+        if counts.remoteTasks > 0 { parts.append("\(counts.remoteTasks) remote") }
+        if counts.codex > 0 { parts.append("\(counts.codex) codex") }
+        let remainder = counts.imports + counts.heuristic
+        if remainder > 0 { parts.append("+\(remainder)") }
+        parts.append(fmtUSD(row.totalDescendantCost))
+        return parts.joined(separator: " · ")
+    }
+
+    private var helpText: String {
+        var parts = ["Session \(row.sessionID)"]
+        if let detail = row.edgeDetail { parts.append(detail) }
+        if row.confidence == .heuristic {
+            parts.append("Heuristic link — not deterministic parentage")
+        }
+        if let note = row.parentMissingNote { parts.append(note) }
+        if let note = row.transcriptNote { parts.append(note) }
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func stateCell(_ state: AttentionState) -> some View {
+        if row.isMetadataOnly {
+            Text("Metadata")
+                .font(Theme.Typography.metadataMedium)
+                .foregroundStyle(secondary)
+        } else if state.needsAttention {
+            AttentionStatusPill(state: state)
+        } else {
+            Text(state == .running ? "Running" : "Idle")
+                .font(Theme.Typography.metadataMedium)
+                .foregroundStyle(secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var agencyMenu: some View {
+        let state = services.agency.suppressionState
+        if state.isSnoozed(sessionID: row.sessionID, at: now) {
+            Button("Un-snooze") {
+                services.agency.perform(.unsnooze(sessionID: row.sessionID), now: now)
+            }
+        } else {
+            Button("Snooze 1h") {
+                services.agency.perform(.snooze(
+                    sessionID: row.sessionID,
+                    until: now.addingTimeInterval(60 * 60)), now: now)
+            }
+        }
+        if state.isMuted(projectKey: row.project) {
+            Button("Unmute project") {
+                services.agency.perform(.unmute(projectKey: row.project), now: now)
+            }
+        } else {
+            Button("Mute project") {
+                services.agency.perform(.mute(projectKey: row.project), now: now)
+            }
+        }
+    }
+
+    private func shortDuration(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval))
+        if seconds >= 3_600 { return "\(seconds / 3_600)h \((seconds % 3_600) / 60)m" }
+        if seconds >= 60 { return "\(seconds / 60)m" }
+        return "\(seconds)s"
+    }
+}
 
 private struct SessionRow: View {
     let session: SessionSummary
@@ -1154,10 +1509,11 @@ struct SessionsRenderContent: View {
     let items: [SessionsRenderItem]
     let selectedID: String
     let transcriptEvents: [TranscriptEvent]
+    var lineageRows: [SessionLineageDisplayRow] = []
 
     @State private var activeOnly = false
     @State private var heavyOnly = false
-    @State private var topLevelOnly = true
+    @State private var flatMode = false
     @State private var liveInTerminalOnly = false
     @State private var providerFilter: Provider?
 
@@ -1165,7 +1521,7 @@ struct SessionsRenderContent: View {
 
     private var visibleItems: [SessionsRenderItem] {
         items.filter { item in
-            (!topLevelOnly || !item.session.isSubagent)
+            (flatMode || !item.session.isSubagent)
                 && (!liveInTerminalOnly || liveIDs.contains(item.id))
                 && (!activeOnly || item.session.isActive)
                 && (!heavyOnly || item.session.isContextHeavy)
@@ -1235,8 +1591,11 @@ struct SessionsRenderContent: View {
                     }
 
                     FlowLayout(spacing: Theme.rhythm, lineSpacing: Theme.rhythm) {
-                        FilterChip(label: "Top-level", isOn: topLevelOnly) {
-                            topLevelOnly.toggle()
+                        FilterChip(label: "Lineage", isOn: !flatMode) {
+                            flatMode = false
+                        }
+                        FilterChip(label: "Flat", isOn: flatMode) {
+                            flatMode = true
                         }
                         FilterChip(label: "Live in terminal", isOn: liveInTerminalOnly) {
                             liveInTerminalOnly.toggle()
@@ -1259,7 +1618,9 @@ struct SessionsRenderContent: View {
                     }
 
                     HStack {
-                        Text("\(visibleItems.count) sessions")
+                        Text(lineageRows.isEmpty || flatMode
+                             ? "\(visibleItems.count) sessions"
+                             : "\(items.count) session files · \(max(0, lineageRows.count - 1)) linked children")
                             .font(Theme.Typography.metadata)
                             .foregroundStyle(Theme.muted)
                         Spacer()
@@ -1283,15 +1644,28 @@ struct SessionsRenderContent: View {
             Divider()
 
             VStack(spacing: Theme.micro / 2) {
-                ForEach(visibleItems) { item in
-                    SessionRow(
-                        session: item.session,
-                        isSelected: item.id == selectedID,
-                        stateOverride: item.state,
-                        suppressedOverride: item.suppressed,
-                        now: services.now,
-                        isCrossMachine: renderIsCrossMachine,
-                        onSelect: {})
+                if !lineageRows.isEmpty && !flatMode {
+                    ForEach(lineageRows) { row in
+                        SessionLineageRow(
+                            row: row,
+                            isExpanded: true,
+                            isSelected: row.sessionID == selectedID,
+                            stateOverride: row.sessionID == selectedID ? .blocked : .idle,
+                            now: services.now,
+                            isCrossMachine: renderIsCrossMachine,
+                            onDisclosure: {}, onSelect: {})
+                    }
+                } else {
+                    ForEach(visibleItems) { item in
+                        SessionRow(
+                            session: item.session,
+                            isSelected: item.id == selectedID,
+                            stateOverride: item.state,
+                            suppressedOverride: item.suppressed,
+                            now: services.now,
+                            isCrossMachine: renderIsCrossMachine,
+                            onSelect: {})
+                    }
                 }
             }
             .padding(.horizontal, Theme.codePadding)

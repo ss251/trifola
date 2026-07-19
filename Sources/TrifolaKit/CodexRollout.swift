@@ -60,6 +60,7 @@ struct CodexImportManifest: Sendable, Equatable {
     var importedThreadIDs: Set<String> = []
     var contentHashes: Set<String> = []
     var sourcePaths: Set<String> = []
+    var records: [CodexImportRecord] = []
 
     static func load(from url: URL?) -> CodexImportManifest {
         guard let url,
@@ -74,15 +75,23 @@ struct CodexImportManifest: Sendable, Equatable {
         }
         var manifest = CodexImportManifest()
         for record in records {
-            if let value = clean(record["imported_thread_id"] as? String) {
-                manifest.importedThreadIDs.insert(value)
+            let threadID = clean(record["imported_thread_id"] as? String)
+            let contentHash = clean(record["content_sha256"] as? String)?
+                .lowercased()
+            let sourcePath = clean(record["source_path"] as? String)
+            if let threadID { manifest.importedThreadIDs.insert(threadID) }
+            if let contentHash { manifest.contentHashes.insert(contentHash) }
+            if let sourcePath { manifest.sourcePaths.insert(sourcePath) }
+            if let threadID, let sourcePath {
+                manifest.records.append(CodexImportRecord(
+                    sourcePath: sourcePath,
+                    contentSHA256: contentHash,
+                    importedThreadID: threadID))
             }
-            if let value = clean(record["content_sha256"] as? String) {
-                manifest.contentHashes.insert(value.lowercased())
-            }
-            if let value = clean(record["source_path"] as? String) {
-                manifest.sourcePaths.insert(value)
-            }
+        }
+        manifest.records.sort {
+            ($0.sourcePath, $0.importedThreadID)
+                < ($1.sourcePath, $1.importedThreadID)
         }
         return manifest
     }
@@ -295,11 +304,33 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
     var markedImported = false
     var importedContentHash: String?
     var importedSourcePath: String?
+    var parentThreadID: String?
+    var forkedFromID: String?
+    var sourceDepth: Int?
+    var agentNickname: String?
+    var originator: String?
+    var entrypoint: String?
+    var startedAt: Date?
     var bytesIngested: UInt64 = 0
     var pending = Data()
 
     public init(defaultID: String) {
         sid = defaultID
+    }
+
+    /// The lineage-only view of the first session metadata record. Kept beside
+    /// the accumulator so cached indexes surface tree fields without rereading
+    /// every rollout.
+    public var threadMetadata: CodexThreadMetadata {
+        CodexThreadMetadata(
+            threadID: sid,
+            parentThreadID: parentThreadID,
+            forkedFromID: forkedFromID,
+            sourceDepth: sourceDepth,
+            agentNickname: agentNickname,
+            originator: originator,
+            entrypoint: entrypoint,
+            startedAt: startedAt)
     }
 
     public mutating func ingest(_ data: Data) {
@@ -442,6 +473,7 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
 
         switch outerType {
         case "session_meta":
+            if !sawSessionMeta { startedAt = timestamp }
             consumeSessionMeta(payload)
         case "turn_context":
             consumeTurnContext(payload)
@@ -479,6 +511,24 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
         }
         if let value = clean(payload["cwd"] as? String) { cwd = value }
         historyMode = CodexHistoryMode(payload["history_mode"] as? String)
+        startedAt = parseDate(payload["timestamp"] as? String) ?? startedAt
+        forkedFromID = clean(payload["forked_from_id"] as? String)
+        parentThreadID = clean(payload["parent_thread_id"] as? String)
+        originator = clean(payload["originator"] as? String)
+        entrypoint = clean(payload["entrypoint"] as? String)
+        if let source = payload["source"] as? [String: Any] {
+            originator = originator ?? clean(source["originator"] as? String)
+            entrypoint = entrypoint ?? clean(source["entrypoint"] as? String)
+            let subagent = source["subagent"] as? [String: Any]
+            let spawn = (subagent?["thread_spawn"] as? [String: Any])
+                ?? (source["thread_spawn"] as? [String: Any])
+            if let spawn {
+                parentThreadID = clean(spawn["parent_thread_id"] as? String)
+                    ?? parentThreadID
+                sourceDepth = Self.int(spawn["depth"])
+                agentNickname = clean(spawn["agent_nickname"] as? String)
+            }
+        }
         markedImported = markedImported
             || Self.marksImport(payload["thread_source"])
             || Self.marksImport(payload["source"])
@@ -486,6 +536,12 @@ public struct CodexRolloutAccumulator: Sendable, Codable {
             .lowercased()
         importedSourcePath = clean(payload["source_path"] as? String)
         observe(parseDate(payload["timestamp"] as? String))
+    }
+
+    private static func int(_ value: Any?) -> Int? {
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? String { return Int(value) }
+        return nil
     }
 
     private mutating func consumeTurnContext(_ payload: [String: Any]) {

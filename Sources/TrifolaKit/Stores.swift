@@ -70,6 +70,7 @@ public struct SessionAccumulator: Sendable, Codable {
     var model: String?
     var cwd = ""
     var sid: String
+    var startedAt: Date?
     var last: Date?
     var count = 0
     /// One deduped assistant message's billed usage, tagged with the NORMALIZED
@@ -292,7 +293,10 @@ public struct SessionAccumulator: Sendable, Codable {
         if obj["type"] as? String == "summary" {
             considerHandle(obj["summary"] as? String, rank: 2)
         }
-        if let d = parseDate(obj["timestamp"] as? String) { if last == nil || d > last! { last = d } }
+        if let d = parseDate(obj["timestamp"] as? String) {
+            if startedAt == nil || d < startedAt! { startedAt = d }
+            if last == nil || d > last! { last = d }
+        }
         // Slash-command census, Shape B (task #41) — system lines whose top-level
         // `content` string carries a `<command-name>` tag (CLI built-ins like
         // /doctor, /login mostly land here). Independent of the user-message
@@ -738,6 +742,18 @@ enum SessionParserState: Sendable, Codable {
             accumulator.importedSourcePath)
     }
 
+    var codexThreadMetadata: CodexThreadMetadata? {
+        guard case .codex(let accumulator) = self else { return nil }
+        return accumulator.threadMetadata
+    }
+
+    var startedAt: Date? {
+        switch self {
+        case .claude(let accumulator): return accumulator.startedAt
+        case .codex(let accumulator): return accumulator.startedAt
+        }
+    }
+
     var claudeUsageByKey: [String: SessionAccumulator.KeyedUsage]? {
         guard case .claude(let accumulator) = self else { return nil }
         return accumulator.usageByKey
@@ -927,6 +943,20 @@ public struct SessionIndex: Sendable {
     public init() {}
 
     public var summaries: [SessionSummary] { entries.values.map(\.summary) }
+
+    var codexThreadMetadata: [CodexThreadMetadata] {
+        entries.values.compactMap(\.acc.codexThreadMetadata).sorted {
+            $0.threadID < $1.threadID
+        }
+    }
+
+
+    var sessionStartedAt: [String: Date] {
+        Dictionary(entries.values.compactMap { entry in
+            guard let startedAt = entry.acc.startedAt else { return nil }
+            return (SessionLineage.key(entry.summary), startedAt)
+        }, uniquingKeysWith: { min($0, $1) })
+    }
 
     /// One unit of parse work for the parallel scan.
     struct WorkItem: Sendable {
@@ -1353,12 +1383,14 @@ public struct SessionIndex: Sendable {
 @MainActor
 public final class SessionStore: ObservableObject {
     @Published public private(set) var sessions: [SessionSummary] = []
+    @Published public private(set) var lineageEvidence = SessionLineageEvidence.empty
     /// Name sources outside the transcripts (live PID registry + /rename history).
     private let nameResolver: SessionNameResolver
     /// Codex's separate bounded MRU thread-name index. Kept provider-scoped when
     /// applied so an identical Claude/Codex transport id cannot cross-name rows.
     private let codexNameResolver: CodexSessionNameResolver
     private let paths: ClaudePaths
+    private let codexPaths: CodexPaths
     @Published public private(set) var lastRefresh: Date = Date()
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var scanProgress: SessionScanProgress = .idle
@@ -1401,6 +1433,7 @@ public final class SessionStore: ObservableObject {
     public init(paths: ClaudePaths = .process,
                 codexPaths: CodexPaths = .process) {
         self.paths = paths
+        self.codexPaths = codexPaths
         self.nameResolver = SessionNameResolver(claudeDir: paths.root.path)
         self.codexNameResolver = CodexSessionNameResolver(
             indexURL: codexPaths.sessionIndexJSONL)
@@ -1494,6 +1527,13 @@ public final class SessionStore: ObservableObject {
         let localSources = sources
         let snapshot = index
         let latestProgress = Locked(scanProgress)
+        let lineageProjectsURL = paths.projects
+        let lineageManifestURL = codexPaths.externalAgentImportsJSON
+        async let filesystemLineage = Task.detached(priority: .utility) {
+            SessionLineageEvidenceReader.read(
+                claudeProjectsRoot: lineageProjectsURL,
+                codexImportManifestURL: lineageManifestURL)
+        }.value
         let result = await Task.detached(priority: .userInitiated) { [weak self] in
             let publish: @Sendable (SessionIndex, SessionScanProgress) -> Void = {
                 [weak self] partial, progress in
@@ -1512,6 +1552,12 @@ public final class SessionStore: ObservableObject {
         }.value
 
         index = result
+        var refreshedLineage = await filesystemLineage
+        refreshedLineage.codexThreads = result.codexThreadMetadata
+        refreshedLineage.sessionStartedAt = result.sessionStartedAt
+        if lineageEvidence != refreshedLineage {
+            lineageEvidence = refreshedLineage
+        }
         appliedCount = result.entries.count
         // Merge in any read-only remote mirrors (Cross-Machine Fleet). The remote
         // scan + pure merge run off-main; if no remotes are configured/synced this is

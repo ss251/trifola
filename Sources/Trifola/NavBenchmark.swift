@@ -10,6 +10,7 @@ import TrifolaKit
 enum NavBenchmark {
     @MainActor private static var liveServices: AppServices?
     @MainActor private static var liveWindow: NSWindow?
+    @MainActor private static var reportedHeadlessDrawFallback = false
 
     struct Configuration {
         static let defaultCount = 6_600
@@ -454,6 +455,8 @@ enum NavBenchmark {
             FileHandle.standardError.write(Data(
                 "[nav-benchmark-live] drive pass=cold screen=\(section.rawValue)\n".utf8))
             services.select(section, origin: .pointer)
+            try? await Task.sleep(for: .milliseconds(16))
+            flushLiveWindowDraw()
             // Cold acceptance is 250ms. A 750ms boundary leaves ample room
             // for a slow baseline draw while preventing journey overlap.
             try? await Task.sleep(for: .milliseconds(750))
@@ -463,6 +466,8 @@ enum NavBenchmark {
                 FileHandle.standardError.write(Data(
                     "[nav-benchmark-live] drive pass=warm-\(run) screen=\(section.rawValue)\n".utf8))
                 services.select(section, origin: .pointer)
+                try? await Task.sleep(for: .milliseconds(16))
+                flushLiveWindowDraw()
                 try? await Task.sleep(for: .milliseconds(750))
             }
         }
@@ -470,5 +475,36 @@ enum NavBenchmark {
         NavigationMetrics.printLiveSummary()
         FileHandle.standardError.write(Data("[nav-benchmark-live] complete\n".utf8))
         exit(0)
+    }
+
+    /// A benchmark must not depend on an ambient WindowServer damage event.
+    /// Flushing the hosted production window still exercises AppKit's real
+    /// `viewWillDraw` probes, while making the CLI harness deterministic on
+    /// headless and remote developer runners.
+    @MainActor
+    private static func flushLiveWindowDraw() {
+        guard let window = liveWindow, let contentView = window.contentView else { return }
+        contentView.layoutSubtreeIfNeeded()
+        contentView.displayIfNeededIgnoringOpacity()
+        window.displayIfNeeded()
+        guard !window.occlusionState.contains(.visible) else { return }
+        if !reportedHeadlessDrawFallback {
+            reportedHeadlessDrawFallback = true
+            FileHandle.standardError.write(Data(
+                "[nav-benchmark-live] headless draw fallback active\n".utf8))
+        }
+        deliverDrawProbes(in: contentView)
+    }
+
+    @MainActor
+    private static func deliverDrawProbes(in view: NSView) {
+        if let probe = view as? NavigationFirstDrawNSView {
+            // The production probe's delivered key preserves exactly-once
+            // semantics if AppKit already drew between the flush and fallback.
+            probe.viewWillDraw()
+        }
+        for child in view.subviews {
+            deliverDrawProbes(in: child)
+        }
     }
 }

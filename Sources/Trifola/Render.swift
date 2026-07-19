@@ -1683,6 +1683,71 @@ enum SessionsRender {
         ]
     }
 
+    private static func seededLineageRows() -> [SessionLineageDisplayRow] {
+        let parentKey = "claude:local:sess-checkout-8f21"
+        let parentTitle = "Release checkout redesign"
+        let counts = SessionLineageCounts(
+            subagents: 1, remoteTasks: 1, codex: 1, imports: 1, heuristic: 1)
+        func child(
+            _ id: String, provider: Provider, title: String,
+            edge: LineageEdgeKind, confidence: LineageConfidence = .deterministic,
+            age: TimeInterval, duration: TimeInterval?, cost: Double,
+            metadataOnly: Bool = false, detail: String? = nil
+        ) -> SessionLineageDisplayRow {
+            SessionLineageDisplayRow(
+                id: "\(edge.label):\(id)", sessionID: id, provider: provider,
+                project: "checkout-web", cwd: "/Users/dev/Developer/checkout-web",
+                title: title, tier: provider == .codex ? .codex : .sonnet,
+                model: provider == .codex ? "gpt-5.4" : "claude-sonnet-4-6",
+                lastActivity: now.addingTimeInterval(-age), duration: duration,
+                cost: cost, machineID: Machine.localID, isRemote: false,
+                isActive: false, isContextHeavy: false,
+                isMetadataOnly: metadataOnly,
+                transcriptNote: metadataOnly
+                    ? "Only spawn metadata is stored locally for this task." : nil,
+                edgeKind: edge, confidence: confidence, edgeDetail: detail,
+                spawnDepth: 1, displayDepth: 1,
+                parentKey: parentKey, parentTitle: parentTitle,
+                parentMissingNote: nil, hasChildren: false,
+                descendantCounts: SessionLineageCounts(), totalDescendantCost: 0,
+                isContextOnly: false)
+        }
+        return [
+            SessionLineageDisplayRow(
+                id: parentKey, sessionID: "sess-checkout-8f21", provider: .claude,
+                project: "checkout-web", cwd: "/Users/dev/Developer/checkout-web",
+                title: parentTitle, tier: .opus, model: "claude-opus-4-8",
+                lastActivity: now.addingTimeInterval(-7 * 60), duration: nil,
+                cost: 24.38, machineID: Machine.localID, isRemote: false,
+                isActive: false, isContextHeavy: true, isMetadataOnly: false,
+                transcriptNote: nil, edgeKind: nil, confidence: nil,
+                edgeDetail: nil, spawnDepth: 0, displayDepth: 0,
+                parentKey: nil, parentTitle: nil, parentMissingNote: nil,
+                hasChildren: true, descendantCounts: counts,
+                totalDescendantCost: 12.74, isContextOnly: false),
+            child("sess-checkout-8f21/agent-review", provider: .claude,
+                  title: "Review migration plan", edge: .subagent,
+                  age: 11 * 60, duration: 4 * 60, cost: 2.18),
+            child("session_remote_42", provider: .claude,
+                  title: "Cloud compatibility sweep", edge: .remoteTask,
+                  age: 9 * 60, duration: nil, cost: 0, metadataOnly: true,
+                  detail: "Ultraplan remote task"),
+            child("codex-spawn-92a1", provider: .codex,
+                  title: "Validate rollback SQL", edge: .codexSpawn,
+                  age: 8 * 60, duration: 6 * 60, cost: 6.42,
+                  detail: "Verifier"),
+            child("codex-import-77d0", provider: .codex,
+                  title: "Imported plan context", edge: .importBridge,
+                  age: 7 * 60, duration: nil, cost: 0, metadataOnly: true,
+                  detail: "Imported from Claude session sess-che"),
+            child("codex-exec-heuristic", provider: .codex,
+                  title: "Migration smoke tests", edge: .orchestrated,
+                  confidence: .heuristic, age: 6 * 60,
+                  duration: 3 * 60, cost: 4.14,
+                  detail: "linked by workspace + timing"),
+        ]
+    }
+
     fileprivate static func transcriptEvents() -> [TranscriptEvent] {
         let receipt = #"""
         {
@@ -1716,7 +1781,8 @@ enum SessionsRender {
         let content = SessionsRenderContent(
             items: seededItems(),
             selectedID: "sess-checkout-8f21",
-            transcriptEvents: transcriptEvents())
+            transcriptEvents: transcriptEvents(),
+            lineageRows: seededLineageRows())
             .frame(width: 1180, height: 760, alignment: .topLeading)
             .environmentObject(services)
         writePNG(content, to: path, dark: dark,

@@ -236,6 +236,15 @@ private struct GeneralSettings: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
+            Section("Session lineage") {
+                TapToggle("Show heuristic workspace + timing links", isOn: preferenceBinding(
+                    get: { $0.showHeuristicLineageLinks },
+                    set: { $0.showHeuristicLineageLinks = $1 }))
+                Text("Deterministic subagent, remote-task, Codex-tree, and import links always remain visible. Inferred cross-provider links are subdued and labeled; turn this off to hide them entirely.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Terminal workspace jumps") {
                 LabeledContent("Accessibility") {
                     Text(workspaceAccess.status.label)
@@ -276,6 +285,17 @@ private struct GeneralSettings: View {
                 on: .appBecameActive) else { return }
                 workspaceAccess.refreshStatus()
             }
+    }
+
+    private func preferenceBinding<Value>(
+        get: @escaping (AppPreferences) -> Value,
+        set: @escaping (inout AppPreferences, Value) -> Void
+    ) -> Binding<Value> {
+        Binding(get: { get(preferences.value) }, set: { newValue in
+            var copy = preferences.value
+            set(&copy, newValue)
+            preferences.value = copy
+        })
     }
 }
 

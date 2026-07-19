@@ -16,6 +16,7 @@ struct SettingsPreferencesTests {
         #expect(preferences.hasCompletedFirstLaunchWelcome == false)
         #expect(preferences.hasSeenTerminalAutomationPrimer == false)
         #expect(preferences.hasOpenedAccessibilitySettings == false)
+        #expect(preferences.showHeuristicLineageLinks == true)
     }
 
     @Test func roundTripsThroughAppSupportStyleStore() throws {
@@ -46,6 +47,7 @@ struct SettingsPreferencesTests {
         #expect(!decoded.hasCompletedFirstLaunchWelcome)
         #expect(!decoded.hasSeenTerminalAutomationPrimer)
         #expect(!decoded.hasOpenedAccessibilitySettings)
+        #expect(decoded.showHeuristicLineageLinks)
     }
 
     @Test func defaultStoreNeverWritesIntoClaudeConfig() {
