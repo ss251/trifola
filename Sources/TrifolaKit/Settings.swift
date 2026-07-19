@@ -79,6 +79,9 @@ public struct AppPreferences: Codable, Sendable, Equatable {
     /// locally — the app itself ships no such name. Empty match = disabled.
     public var customTierMatch: String
     public var customTierLabel: String
+    /// Heuristic cross-provider lineage is useful but never factual. Shown by
+    /// default, independently hideable without suppressing deterministic edges.
+    public var showHeuristicLineageLinks: Bool
 
     public init(quietHours: QuietHours = QuietHours(),
                 defaultSnoozeDurationMinutes: Int = 60,
@@ -89,7 +92,8 @@ public struct AppPreferences: Codable, Sendable, Equatable {
                 hasSeenTerminalAutomationPrimer: Bool = false,
                 hasOpenedAccessibilitySettings: Bool = false,
                 customTierMatch: String = "",
-                customTierLabel: String = "Custom") {
+                customTierLabel: String = "Custom",
+                showHeuristicLineageLinks: Bool = true) {
         self.quietHours = quietHours
         self.defaultSnoozeDurationMinutes = max(1, defaultSnoozeDurationMinutes)
         self.claudeQuotaAccessEnabled = claudeQuotaAccessEnabled
@@ -103,6 +107,7 @@ public struct AppPreferences: Codable, Sendable, Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let label = customTierLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         self.customTierLabel = label.isEmpty ? "Custom" : label
+        self.showHeuristicLineageLinks = showHeuristicLineageLinks
     }
 
     /// Convenience for computing an expiry without duplicating minute-to-second
@@ -118,6 +123,7 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         case hasCompletedFirstLaunchWelcome, hasSeenTerminalAutomationPrimer
         case hasOpenedAccessibilitySettings
         case customTierMatch, customTierLabel
+        case showHeuristicLineageLinks
     }
 
     public init(from decoder: Decoder) throws {
@@ -146,6 +152,8 @@ public struct AppPreferences: Codable, Sendable, Equatable {
             String.self, forKey: .customTierLabel) ?? "Custom")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         customTierLabel = label.isEmpty ? "Custom" : label
+        showHeuristicLineageLinks = try values.decodeIfPresent(
+            Bool.self, forKey: .showHeuristicLineageLinks) ?? true
     }
 
     /// The user-tier snapshot this preference value describes (nil = disabled).

@@ -3,6 +3,21 @@
 All notable changes to trifola are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Session lineage browser** — Sessions now nests deterministically joined Claude subagents,
+  remote/cloud tasks, Codex spawns and forks, and Claude→Codex imports beneath their parent. Missing
+  transcripts and parents remain visible with honest explanations; deep trees flatten visually
+  without losing their recorded depth.
+- **Explicit heuristic lineage** — cross-provider workspace/timing links are subdued, labeled
+  “linked by workspace + timing,” and independently hideable in Settings (shown by default).
+
+### Changed
+- **Lineage-first Sessions** — the former Top-level toggle is replaced by a default Lineage view
+  and an all-files Flat mode. Child search results retain parent context, disclosure state survives
+  refreshes, and the off-main navigation snapshot carries only bounded display values.
+
 ## [0.4.0] - 2026-07-18
 
 ### Fixed

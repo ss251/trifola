@@ -116,6 +116,34 @@ small dedicated observable, so selecting a destination invalidates the navigatio
 heavyweight store graph. Destination switches paint within a frame and hydrate from ready
 snapshots; a benchmark harness (`--benchmark-nav-live`) drives the real selection-to-draw path.
 
+### Session lineage resolution
+
+The Sessions browser treats spawn ownership as a presentation join, never an accounting rewrite.
+`SessionLineage` receives the immutable session summaries plus lineage-only evidence captured beside
+the index generation, then produces a cycle-safe, orphan-safe forest off the main actor. The input
+session count, token totals, and costs are unchanged; metadata-only children carry zero usage and an
+explicit transcript-availability explanation.
+
+Edges are applied in evidence priority order:
+
+1. Claude `Agent`/`Task` results joined to `subagents/agent-<id>.jsonl` (`subagent`).
+2. Claude `remote-agents/remote-agent-*.meta.json` sidecars (`remoteTask`).
+3. Codex `thread_spawn`, `parent_thread_id`, and `forked_from_id` metadata (`codexSpawn` / `codexFork`).
+4. Codex `external_agent_session_imports.json` source/import pairs (`importBridge`).
+5. Cross-provider, non-interactive runs sharing workspace and timing (`orchestrated`).
+
+The first four are `deterministic`. The last is the only `heuristic` edge and is always labeled
+“linked by workspace + timing”; Settings can hide heuristic links without affecting deterministic
+lineage. `bridgeSessionId`, `origin.kind: "peer"`, and `senderTaskId` are deliberately not edges.
+Missing-parent children remain top-level with a parent-missing note. Cycles lose the edge that would
+close the loop, so every session remains visible. Spawn depth is retained, while visual indentation
+caps at two levels.
+
+`NavigationSnapshotStore` resolves and projects the forest in detached work. The published Sessions
+snapshot contains at most 400 `SessionLineageDisplayRow` values rather than a `[SessionSummary]`
+corpus array. Lineage search returns matching descendants with their ancestor context and forced
+expansion keys; Flat mode retains cross-file search/sort behavior over all transcript sessions.
+
 ### MCP server
 
 A source-safe surface (`session_brief`, `context_tax`, `reroutes`, `cost_today`,
