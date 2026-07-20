@@ -1813,7 +1813,7 @@ enum SessionsRender {
 // MARK: - Populated conversation-search render (`--render-search`)
 
 /// The production snippet-row component in an explicit populated search state.
-/// All strings are synthetic; both providers and the exact scope disclosure are
+/// All strings are synthetic; every provider and the exact scope disclosure are
 /// visible without reading a real transcript corpus.
 enum SearchRender {
     private static let now = SessionsRender.now

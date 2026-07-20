@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// trifola — `npx trifola`: reads local Claude Code and Codex configuration
-// roots (respecting $CLAUDE_CONFIG_DIR and $CODEX_HOME),
+// trifola — `npx trifola`: reads local Claude Code, Codex, and Grok Build
+// configuration roots (respecting $CLAUDE_CONFIG_DIR, $CODEX_HOME, and $GROK_HOME),
 // never uploads anything, and prints an anonymized share-card finding —
 // dead skills, prompt tax, and re-sent context — priced at API-equivalent
 // rates ported from the trifola macOS app's TrifolaKit (see cli/src/pricing.ts,

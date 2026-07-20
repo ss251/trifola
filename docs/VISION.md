@@ -2,8 +2,8 @@
 
 **trifola sells calibration.** A new coding-agent power user normally buys it with 6–12 months
 of wasted spend, dead skills, misrouted frontier runs, and silently mis-inheriting subagents.
-trifola installs that calibration in 60 seconds, against *your own* `~/.claude` and `~/.codex`,
-with receipts.
+trifola installs that calibration in 60 seconds, against *your own* `~/.claude`, `~/.codex`,
+and `~/.grok`, with receipts.
 
 The attention board — *which agent needs you now* — is the hook. The durable core is the layer
 a first-party vendor structurally won't build: **the cost/routing audit and judgment over your
@@ -22,8 +22,8 @@ This list is a contract. Scope creep is how tools in this space die.
   trifola attributes spend to a **cause**, or it isn't worth shipping.
 - **Not a general log viewer or an IDE.** It surfaces judgment, not raw transcripts.
 - **Not a task runner or an agent launcher-of-record.** It observes; it doesn't own your agents.
-- **Not a parity mirage.** trifola reads Claude Code and Codex natively — but per-provider depth
-  differs, and the gaps stay *labeled* rather than papered over. A Codex session is never shown
+- **Not a parity mirage.** trifola reads Claude Code, Codex, and Grok Build natively — but
+  per-provider depth differs, and the gaps stay *labeled* rather than papered over. A Codex session is never shown
   BLOCKED (its approval prompts are not persisted to disk, so disk cannot know); fallback-priced
   model ids are marked "est. rate"; Claude-specific analyses (skill tax, settings-vs-resolved
   routing) count only Claude sessions. Honesty about the seams IS the feature. Further agents

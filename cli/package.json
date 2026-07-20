@@ -1,7 +1,7 @@
 {
   "name": "trifola",
   "version": "0.4.0",
-  "description": "Finding generator and exact conversation search for your Claude Code and Codex corpus. Reads ~/.claude and ~/.codex locally; uploads nothing.",
+  "description": "Finding generator and exact conversation search for your Claude Code, Codex, and Grok Build corpus. Reads ~/.claude, ~/.codex, and ~/.grok locally; uploads nothing.",
   "type": "module",
   "bin": {
     "trifola": "dist/trifola.js"
@@ -40,6 +40,7 @@
   "keywords": [
     "claude-code",
     "openai-codex",
+    "grok-build",
     "cli",
     "audit",
     "cost",

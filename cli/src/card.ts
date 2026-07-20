@@ -56,7 +56,7 @@ export function renderCard(finding: Finding): string {
   lines.push(`  ${teal(bold(fmtUSD(finding.usageValueUsd)))} API-equivalent across the scanned corpus`);
   lines.push(dim(`  Claude ${fmtUSD(finding.usageValueByProvider.claude)} · Codex ${fmtUSD(finding.usageValueByProvider.codex)} · Grok ${fmtUSD(finding.usageValueByProvider.grok)}`));
   if (finding.partialUsageSessionsByProvider.grok > 0) {
-    lines.push(dim(`  Grok: ${fmtCount(finding.partialUsageSessionsByProvider.grok)} session${finding.partialUsageSessionsByProvider.grok === 1 ? "" : "s"} include billing-partial per-turn usage`));
+    lines.push(dim(`  Grok: ${fmtCount(finding.partialUsageSessionsByProvider.grok)} session${finding.partialUsageSessionsByProvider.grok === 1 ? " includes" : "s include"} billing-partial per-turn usage`));
   }
   lines.push("");
   lines.push(bold(cream("PROMPT TAX")));

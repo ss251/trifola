@@ -1,7 +1,7 @@
 # Architecture
 
-trifola is a native macOS (SwiftUI, Swift 6) reader over `~/.claude` **and** `~/.codex`. Zero
-external dependencies. The design splits cleanly into three layers.
+trifola is a native macOS (SwiftUI, Swift 6) reader over `~/.claude`, `~/.codex`, **and**
+`~/.grok`. Zero external dependencies. The design splits cleanly into three layers.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -25,7 +25,7 @@ external dependencies. The design splits cleanly into three layers.
 
 ## Engine
 
-### Dual-provider ingestion
+### Multi-provider ingestion
 
 One incremental index, N `SessionSource`s. Each source owns its root, its filename filter, and
 its parser; everything downstream consumes the same provider-tagged `SessionSummary`.
@@ -46,7 +46,13 @@ its parser; everything downstream consumes the same provider-tagged `SessionSumm
     observed model retroactively owns it, so spend lands on a real id, not a placeholder bucket.
   - Threads Codex re-imported *from* Claude (its import manifest) are dropped at the source so
     the same conversation is never counted twice.
-- **FSEvents** watches both roots; changes debounce into incremental rescans (off-main,
+- **Grok source** — `$GROK_HOME/sessions/<session-id>/`, a directory-backed record split across
+  three files: `summary.json` owns metadata (cwd, title, model, fork/subagent lineage),
+  `chat_history.jsonl` owns visible prose, and `updates.jsonl` owns ACP per-turn/per-model usage.
+  The accumulator keeps an independent incremental offset per file, and a
+  `turn_completed.usage.costIsPartial` marker surfaces as a per-session billing-partial
+  disclosure instead of being silently summed as final.
+- **FSEvents** watches every provider root; changes debounce into incremental rescans (off-main,
   cancellable, prefilter-before-parse, append-only parse cache keyed by file + offset). The
   on-disk index cache is version-laddered — any summary-shaping change bumps the version and
   forces a loud one-time reparse instead of silently serving stale shapes.
@@ -60,6 +66,9 @@ provider is parsed — the classifier itself is provider-free.
 - Codex: `task_complete` → WAITING, recent runtime records → RUNNING, staleness → IDLE — and a
   `canObserveBlocking` capability gates both BLOCKED paths, because Codex approval prompts are
   **never persisted**: disk cannot know, so trifola never claims. Encoded as a tested invariant.
+- Grok: turn records in the `updates.jsonl` tail drive the same completed/recent/stale ladder;
+  approval prompts are likewise never persisted, so the `canObserveBlocking` gate keeps Grok
+  sessions honest too — BLOCKED is never claimed.
 
 ### The provider boundary
 
@@ -72,9 +81,10 @@ fixture tests to leave Claude-only findings unmoved.
 ### Pricing
 
 A per-model, date-era rate catalog (Sonnet 5's introductory era is encoded, not hardcoded),
-bundled at build time and **verified against the official Anthropic and OpenAI pricing pages** —
-the seed states its verification date. Cache splits: 5-minute writes at 1.25×, 1-hour at 2×, warm
-reads at 0.1×. Ids without an official per-model rate price through a tier fallback and are
+bundled at build time and **verified against the official Anthropic, OpenAI, and xAI pricing
+pages** — the seed states its verification date. Cache splits: 5-minute writes at 1.25×, 1-hour
+at 2×, warm reads at 0.1× — except xAI, whose cached-input prices are model-specific, so Grok
+rows carry the published cached rate verbatim. Ids without an official per-model rate price through a tier fallback and are
 *marked* "est. rate" in the UI rather than implying a source exists. Cache **leak** (avoidable)
 and unavoidable **first-touch** are tracked separately and never summed into one dishonest
 number. An opt-in models.dev refresh can extend the catalog; it never overwrites a bundled row.
@@ -129,10 +139,12 @@ Edges are applied in evidence priority order:
 1. Claude `Agent`/`Task` results joined to `subagents/agent-<id>.jsonl` (`subagent`).
 2. Claude `remote-agents/remote-agent-*.meta.json` sidecars (`remoteTask`).
 3. Codex `thread_spawn`, `parent_thread_id`, and `forked_from_id` metadata (`codexSpawn` / `codexFork`).
-4. Codex `external_agent_session_imports.json` source/import pairs (`importBridge`).
-5. Cross-provider, non-interactive runs sharing workspace and timing (`orchestrated`).
+4. Grok `summary.json` fork/resume/subagent metadata, with parent-side `subagent_spawned`
+   records filling gaps (`grokSpawn` / `grokFork`).
+5. Codex `external_agent_session_imports.json` source/import pairs (`importBridge`).
+6. Cross-provider, non-interactive runs sharing workspace and timing (`orchestrated`).
 
-The first four are `deterministic`. The last is the only `heuristic` edge and is always labeled
+The first five are `deterministic`. The last is the only `heuristic` edge and is always labeled
 “linked by workspace + timing”; Settings can hide heuristic links without affecting deterministic
 lineage. A heuristic parent whose known start is later than the child is rejected; when that start is
 unknown, the observed-activity window remains the timing authority. `bridgeSessionId`,
@@ -157,12 +169,12 @@ A source-safe surface (`session_brief`, `context_tax`, `reroutes`, `cost_today`,
 `quota_windows`) so a *running* session can introspect its own state. Identity is explicit: tools
 resolve the session registered for the connection; without one, callers pass `session_id` or opt
 in with `use_newest: true` — omission alone is an error, never a silent guess. It never mutates
-`~/.claude` or `~/.codex`; the shared scanner maintains an app-local session index.
+`~/.claude`, `~/.codex`, or `~/.grok`; the shared scanner maintains an app-local session index.
 
 ## The durability battle: the upstream formats
 
-Both providers' on-disk formats are unversioned, undocumented, and change. The engine treats them
-as hostile inputs:
+All three providers' on-disk formats are unversioned, undocumented, and change. The engine treats
+them as hostile inputs:
 
 - **Lenient, field-level parsing** — one bad field degrades to zero; never drop a record, never
   crash a scan. Malformed or adversarial records (negative counters, impossible cache figures,
@@ -171,8 +183,8 @@ as hostile inputs:
   signal.
 - **Dedup as a correctness invariant** with tests — the whole trust story is the numbers being
   right, including on session resume, sidechains, and cross-provider re-imports.
-- `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, nested sessions, and `subagents/*.jsonl` layouts are
-  handled so totals don't silently under-count.
+- `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GROK_HOME`, nested sessions, and `subagents/*.jsonl`
+  layouts are handled so totals don't silently under-count.
 
 ## Performance is a feature
 
@@ -187,5 +199,5 @@ row count, to standard error. Destination navigation is budgeted and benchmarked
 
 The `TrifolaKit` test suite runs against **synthetic** fixtures with known expected findings —
 which simultaneously serve as the personal-data strip, the CI-vs-version matrix, and the demo-mode
-corpus for marketing assets. No real `~/.claude` or `~/.codex` data ever enters the repo; a
-personal-identifier lint gates every commit in CI.
+corpus for marketing assets. No real `~/.claude`, `~/.codex`, or `~/.grok` data ever enters the
+repo; a personal-identifier lint gates every commit in CI.
