@@ -1384,6 +1384,7 @@ public struct SessionIndex: Sendable {
 public final class SessionStore: ObservableObject {
     @Published public private(set) var sessions: [SessionSummary] = []
     @Published public private(set) var lineageEvidence = SessionLineageEvidence.empty
+    public private(set) var lineageEvidenceRevision = 0
     /// Name sources outside the transcripts (live PID registry + /rename history).
     private let nameResolver: SessionNameResolver
     /// Codex's separate bounded MRU thread-name index. Kept provider-scoped when
@@ -1557,6 +1558,7 @@ public final class SessionStore: ObservableObject {
         refreshedLineage.sessionStartedAt = result.sessionStartedAt
         if lineageEvidence != refreshedLineage {
             lineageEvidence = refreshedLineage
+            lineageEvidenceRevision += 1
         }
         appliedCount = result.entries.count
         // Merge in any read-only remote mirrors (Cross-Machine Fleet). The remote

@@ -219,9 +219,10 @@ public struct LineageSessionReference: Identifiable, Sendable, Hashable {
         return max(0, lastActivity.timeIntervalSince(startedAt))
     }
 
-    public init(summary: SessionSummary, startedAt: Date? = nil) {
+    public init(summary: SessionSummary, startedAt: Date? = nil,
+                stableKey: String? = nil) {
         id = summary.id
-        stableKey = SessionLineage.key(summary)
+        self.stableKey = stableKey ?? SessionLineage.key(summary)
         provider = summary.provider
         project = summary.project
         cwd = summary.cwd
@@ -317,6 +318,40 @@ public struct SessionLineageForest: Sendable, Equatable {
     }
 }
 
+public struct SessionLineageResolution: Sendable {
+    public let forest: SessionLineageForest
+
+    private struct SessionIdentity: Sendable, Hashable {
+        let provider: Provider
+        let machineID: String
+        let id: String
+        let filePath: String
+
+        init(_ summary: SessionSummary) {
+            provider = summary.provider
+            machineID = summary.machineID
+            id = summary.id
+            filePath = summary.filePath
+        }
+    }
+
+    private let keysBySession: [SessionIdentity: String]
+
+    fileprivate init(
+        forest: SessionLineageForest,
+        keyedSessions: [(summary: SessionSummary, key: String)]
+    ) {
+        self.forest = forest
+        keysBySession = Dictionary(
+            keyedSessions.map { (SessionIdentity($0.summary), $0.key) },
+            uniquingKeysWith: { first, _ in first })
+    }
+
+    public func key(for summary: SessionSummary) -> String? {
+        keysBySession[SessionIdentity(summary)]
+    }
+}
+
 public enum SessionLineage {
     private struct Candidate: Sendable {
         let parentKey: String?
@@ -337,34 +372,91 @@ public enum SessionLineage {
         evidence: SessionLineageEvidence = .empty,
         includeHeuristicLinks: Bool = true
     ) -> SessionLineageForest {
+        resolveWithIndex(
+            sessions: sessions,
+            evidence: evidence,
+            includeHeuristicLinks: includeHeuristicLinks).forest
+    }
+
+    public static func resolveWithIndex(
+        sessions: [SessionSummary],
+        evidence: SessionLineageEvidence = .empty,
+        includeHeuristicLinks: Bool = true
+    ) -> SessionLineageResolution {
+        try! buildResolution(
+            sessions: sessions,
+            evidence: evidence,
+            includeHeuristicLinks: includeHeuristicLinks,
+            checkCancellation: false)
+    }
+
+    public static func resolveWithIndexCancellable(
+        sessions: [SessionSummary],
+        evidence: SessionLineageEvidence = .empty,
+        includeHeuristicLinks: Bool = true
+    ) throws -> SessionLineageResolution {
+        try buildResolution(
+            sessions: sessions,
+            evidence: evidence,
+            includeHeuristicLinks: includeHeuristicLinks,
+            checkCancellation: true)
+    }
+
+    private static func buildResolution(
+        sessions: [SessionSummary],
+        evidence: SessionLineageEvidence,
+        includeHeuristicLinks: Bool,
+        checkCancellation: Bool
+    ) throws -> SessionLineageResolution {
+        func checkForCancellation() throws {
+            if checkCancellation {
+                try Task.checkCancellation()
+            }
+        }
+
+        try checkForCancellation()
         let codexByID = Dictionary(
             evidence.codexThreads.map { ($0.threadID, $0) },
             uniquingKeysWith: { first, _ in first })
         var nodes: [String: MutableNode] = [:]
         var summaryByKey: [String: SessionSummary] = [:]
-        for summary in sessions {
-            let key = key(summary)
+        // Path standardization dominates key(): compute every session's key
+        // exactly once and thread the pair through every later join.
+        var keyedSessions: [(summary: SessionSummary, key: String)] = []
+        keyedSessions.reserveCapacity(sessions.count)
+        for (index, summary) in sessions.enumerated() {
+            if index.isMultiple(of: 256) { try checkForCancellation() }
+            keyedSessions.append((summary, key(summary)))
+        }
+        for (summary, key) in keyedSessions {
             summaryByKey[key] = summary
             nodes[key] = MutableNode(
                 session: LineageSessionReference(
                     summary: summary,
                     startedAt: evidence.sessionStartedAt[key]
                         ?? (summary.provider == .codex
-                            ? codexByID[summary.id]?.startedAt : nil)),
+                            ? codexByID[summary.id]?.startedAt : nil),
+                    stableKey: key),
                 candidate: nil)
         }
 
         let lookupByProviderMachineID = Dictionary(
-            sessions.map { (lookupKey($0.provider, $0.machineID, $0.id), key($0)) },
+            keyedSessions.map {
+                (lookupKey($0.summary.provider, $0.summary.machineID,
+                           $0.summary.id), $0.key)
+            },
             uniquingKeysWith: { first, _ in first })
         let keyByProviderID = Dictionary(
-            sessions.map { ("\($0.provider.rawValue):\($0.id)", key($0)) },
+            keyedSessions.map {
+                ("\($0.summary.provider.rawValue):\($0.summary.id)", $0.key)
+            },
             uniquingKeysWith: { existing, candidate in
                 existing.contains(":\(Machine.localID):") ? existing : candidate
             })
         let keyByPath = Dictionary(
-            sessions.filter { !$0.filePath.isEmpty }.map {
-                (URL(fileURLWithPath: $0.filePath).standardizedFileURL.path, key($0))
+            keyedSessions.filter { !$0.summary.filePath.isEmpty }.map {
+                (URL(fileURLWithPath: $0.summary.filePath).standardizedFileURL.path,
+                 $0.key)
             }, uniquingKeysWith: { first, _ in first })
         func actualKey(provider: Provider, machine: String, id: String) -> String? {
             lookupByProviderMachineID[lookupKey(provider, machine, id)]
@@ -381,7 +473,9 @@ public enum SessionLineage {
         }
 
         // 1. Claude Agent/Task result joined to its directory child.
-        for child in sessions where child.provider == .claude && child.isSubagent {
+        for (child, childKey) in keyedSessions
+        where child.provider == .claude && child.isSubagent {
+            try checkForCancellation()
             guard let parentID = child.parentSessionID else { continue }
             let parentDirectory = URL(fileURLWithPath: child.filePath)
                 .deletingLastPathComponent().deletingLastPathComponent()
@@ -401,7 +495,7 @@ public enum SessionLineage {
                     parentKey: verified ? parentKey : nil,
                     missingParentID: parentKey == nil ? parentID : nil,
                     kind: .subagent, confidence: .deterministic,
-                    detail: nil, priority: 1), to: key(child))
+                    detail: nil, priority: 1), to: childKey)
             } else {
                 // The parent transcript exists but records no matching spawn.
                 // Never mis-attach — but never pretend this is an ordinary
@@ -410,13 +504,14 @@ public enum SessionLineage {
                     parentKey: nil, missingParentID: nil,
                     kind: .subagent, confidence: .deterministic,
                     detail: "subagent file — parent \(parentID) has no matching spawn record",
-                    priority: 1), to: key(child))
+                    priority: 1), to: childKey)
             }
         }
 
         // 2. Remote/cloud task sidecars. A missing local transcript becomes a
         // metadata-only child; an exact task/session id reuses the real row.
         for remote in evidence.remoteTasks {
+            try checkForCancellation()
             let parentKey = anyKey(provider: .claude, id: remote.parentSessionID)
             let parent = parentKey.flatMap { summaryByKey[$0] }
             let actualKey = remote.sessionID.flatMap {
@@ -455,6 +550,7 @@ public enum SessionLineage {
 
         // 3. Codex-native spawn/fork tree.
         for metadata in evidence.codexThreads {
+            try checkForCancellation()
             guard let childKey = anyKey(
                 provider: .codex, id: metadata.threadID),
                   let child = summaryByKey[childKey] else { continue }
@@ -483,6 +579,7 @@ public enum SessionLineage {
         // 4. Claude → Codex import manifest bridge. Imported rollouts remain
         // source-deduplicated, so most children are intentionally metadata-only.
         for record in evidence.importRecords {
+            try checkForCancellation()
             let parentKey = keyByPath[
                 URL(fileURLWithPath: record.sourcePath).standardizedFileURL.path]
             let parent = parentKey.flatMap { summaryByKey[$0] }
@@ -521,18 +618,28 @@ public enum SessionLineage {
         // 5. The only heuristic: cross-provider, non-interactive Codex child,
         // workspace-compatible and temporally inside the parent's observed tail.
         if includeHeuristicLinks {
-            let claudeParents = sessions.filter { $0.provider == .claude }
-            var claudeByExactWorkspace: [String: [SessionSummary]] = [:]
-            var claudeByWorkspaceName: [String: [SessionSummary]] = [:]
-            for parent in claudeParents where !parent.cwd.isEmpty {
+            struct HeuristicParent {
+                let key: String
+                let cwd: String
+                let lastActivity: Date?
+            }
+            var claudeByExactWorkspace: [String: [HeuristicParent]] = [:]
+            var claudeByWorkspaceName: [String: [HeuristicParent]] = [:]
+            for (parent, parentKey) in keyedSessions
+            where parent.provider == .claude && !parent.cwd.isEmpty {
+                try checkForCancellation()
                 let path = URL(fileURLWithPath: parent.cwd).standardizedFileURL.path
+                let entry = HeuristicParent(
+                    key: parentKey, cwd: parent.cwd,
+                    lastActivity: parent.lastActivity)
                 claudeByExactWorkspace["\(parent.machineID):\(path)", default: []]
-                    .append(parent)
+                    .append(entry)
                 let name = URL(fileURLWithPath: path).lastPathComponent
                 claudeByWorkspaceName["\(parent.machineID):\(name)", default: []]
-                    .append(parent)
+                    .append(entry)
             }
             for metadata in evidence.codexThreads where metadata.isNonInteractive {
+                try checkForCancellation()
                 guard let childKey = anyKey(
                     provider: .codex, id: metadata.threadID),
                       let child = summaryByKey[childKey],
@@ -553,11 +660,11 @@ public enum SessionLineage {
                         })
                 }
                 let candidates = Dictionary(
-                    pool.map { (key($0), $0) }, uniquingKeysWith: { first, _ in first })
+                    pool.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
                     .values.filter {
                         activeWindowContains(
                             started,
-                            parentStart: evidence.sessionStartedAt[key($0)],
+                            parentStart: evidence.sessionStartedAt[$0.key],
                             parentLastActivity: $0.lastActivity)
                     }.sorted {
                     abs(($0.lastActivity ?? .distantPast).timeIntervalSince(started))
@@ -565,7 +672,7 @@ public enum SessionLineage {
                 }
                 guard let parent = candidates.first else { continue }
                 offer(Candidate(
-                    parentKey: key(parent), missingParentID: nil,
+                    parentKey: parent.key, missingParentID: nil,
                     kind: .orchestrated, confidence: .heuristic,
                     detail: "linked by workspace + timing", priority: 5),
                     to: childKey)
@@ -582,6 +689,7 @@ public enum SessionLineage {
             ($0.1.priority, $0.0) < ($1.1.priority, $1.0)
         }
         for (child, candidate) in candidateOrder {
+            try checkForCancellation()
             guard let parent = candidate.parentKey, nodes[parent] != nil,
                   parent != child else { continue }
             var cursor: String? = parent
@@ -599,16 +707,22 @@ public enum SessionLineage {
         }
         let roots = nodes.keys.filter { acceptedParents[$0] == nil }
 
-        func materialize(_ nodeKey: String, depth: Int) -> LineageNode {
+        func materialize(_ nodeKey: String, depth: Int) throws -> LineageNode {
+            try checkForCancellation()
             let value = nodes[nodeKey]!
             let candidate = value.candidate
-            let children = (childrenByParent[nodeKey] ?? []).sorted {
+            let childKeys = (childrenByParent[nodeKey] ?? []).sorted {
                 let lhs = nodes[$0]!.session
                 let rhs = nodes[$1]!.session
                 let ld = lhs.startedAt ?? lhs.lastActivity ?? .distantPast
                 let rd = rhs.startedAt ?? rhs.lastActivity ?? .distantPast
                 return ld == rd ? lhs.stableKey < rhs.stableKey : ld < rd
-            }.map { materialize($0, depth: depth + 1) }
+            }
+            var children: [LineageNode] = []
+            children.reserveCapacity(childKeys.count)
+            for childKey in childKeys {
+                children.append(try materialize(childKey, depth: depth + 1))
+            }
             let missing: String? = {
                 guard acceptedParents[nodeKey] == nil, let candidate else { return nil }
                 if let id = candidate.missingParentID {
@@ -630,15 +744,39 @@ public enum SessionLineage {
                 edgeDetail: acceptedParents[nodeKey] == nil ? nil : candidate?.detail)
         }
 
-        let materializedRoots = roots.map { materialize($0, depth: 0) }.sorted {
-            let ld = $0.session.lastActivity ?? .distantPast
-            let rd = $1.session.lastActivity ?? .distantPast
-            return ld == rd ? $0.id < $1.id : ld > rd
+        // Sort root KEYS before materializing (sorting materialized nodes
+        // deep-copies whole subtrees), and look each root up exactly once —
+        // dictionary probes inside the comparator hash long keys per compare.
+        struct RootOrder {
+            let key: String
+            let last: Date
+            let stable: String
         }
-        return SessionLineageForest(
+        var rootOrder: [RootOrder] = []
+        rootOrder.reserveCapacity(roots.count)
+        for rootKey in roots {
+            try checkForCancellation()
+            let session = nodes[rootKey]!.session
+            rootOrder.append(RootOrder(
+                key: rootKey,
+                last: session.lastActivity ?? .distantPast,
+                stable: session.stableKey))
+        }
+        rootOrder.sort { lhs, rhs in
+            lhs.last == rhs.last ? lhs.stable < rhs.stable : lhs.last > rhs.last
+        }
+        var materializedRoots: [LineageNode] = []
+        materializedRoots.reserveCapacity(rootOrder.count)
+        for root in rootOrder {
+            materializedRoots.append(try materialize(root.key, depth: 0))
+        }
+        let forest = SessionLineageForest(
             roots: materializedRoots,
             transcriptSessionCount: sessions.count,
             metadataOnlyCount: nodes.values.filter(\.session.isMetadataOnly).count)
+        return SessionLineageResolution(
+            forest: forest,
+            keyedSessions: keyedSessions)
     }
 
     public static func key(_ summary: SessionSummary) -> String {

@@ -157,6 +157,39 @@ struct SessionLineageTests {
         #expect(Set(forest.roots.map(\.id)).count == 2)
     }
 
+    @Test("indexed resolution reuses each session's stable key")
+    func indexedResolutionCarriesStableKeys() throws {
+        let first = session(
+            "resumed-id", filePath: "/Users/dev/.sessions/first.jsonl")
+        let second = session(
+            "resumed-id", filePath: "/Users/dev/.sessions/second.jsonl")
+        let resolution = SessionLineage.resolveWithIndex(
+            sessions: [first, second])
+
+        #expect(resolution.key(for: first) == SessionLineage.key(first))
+        #expect(resolution.key(for: second) == SessionLineage.key(second))
+        #expect(resolution.forest.allNodes.count == 2)
+        #expect(resolution.forest == SessionLineage.resolve(
+            sessions: [first, second]))
+    }
+
+    @Test("cancellable indexed resolution stops canceled work")
+    func indexedResolutionCooperatesWithCancellation() async {
+        let task = Task {
+            try SessionLineage.resolveWithIndexCancellable(
+                sessions: (0..<1_000).map { session("session-\($0)") })
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected lineage resolution cancellation")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test("a heuristic link is refused when the would-be parent started after the child")
     func heuristicRespectsParentStart() throws {
         let parent = session("late-driver", lastOffset: 2_400)
