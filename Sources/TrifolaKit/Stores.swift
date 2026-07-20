@@ -1453,7 +1453,7 @@ public final class SessionStore: ObservableObject {
     public func refresh() { Task { await refreshNow() } }
 
     /// Refresh in three moves so the UI never sits on zeros:
-    ///  1. warm-start: hydrate instantly from the on-disk index cache (once),
+    ///  1. warm-start: hydrate from the on-disk index cache (once),
     ///  2. progressive: publish partial results while the parallel scan runs,
     ///  3. final: publish the complete index and persist it for the next launch.
     private let storeStart = Date()

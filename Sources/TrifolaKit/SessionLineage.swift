@@ -786,6 +786,8 @@ public enum SessionLineage {
 
     private static let processWorkingDirectory = FileManager.default.currentDirectoryPath
 
+    /// Normalizes path strings lexically so hot-path lineage key derivation
+    /// never performs per-key filesystem metadata reads.
     static func standardizedPath(_ path: String) -> String {
         let expanded = (path as NSString).expandingTildeInPath
         let absolute = expanded.hasPrefix("/")
