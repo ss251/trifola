@@ -20,6 +20,16 @@ struct ProviderSessionOpenPolicyTests {
             isRemote: true) == .transcript)
     }
 
+    @Test("Grok always routes to its read-only transcript")
+    func grokNeverUsesClaudeRegistry() {
+        #expect(ProviderSessionOpenPolicy.route(
+            provider: .grok,
+            isRemote: false) == .transcript)
+        #expect(ProviderSessionOpenPolicy.route(
+            provider: .grok,
+            isRemote: true) == .transcript)
+    }
+
     @Test("remote Claude sessions retain their transcript fallback")
     func remoteClaudeUsesTranscript() {
         #expect(ProviderSessionOpenPolicy.route(

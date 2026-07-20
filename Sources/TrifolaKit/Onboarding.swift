@@ -45,13 +45,21 @@ public struct FirstLaunchWelcomeCopy: Sendable, Equatable {
     public let localPaths: String
 
     public init(corpusPresence: ProviderCorpusPresence) {
-        switch corpusPresence.onboardingState {
-        case .claudeOnly:
-            localPaths = "~/.claude"
-        case .codexOnly:
-            localPaths = "~/.codex"
-        case .both, .none:
-            localPaths = "~/.claude and ~/.codex"
+        let providers = corpusPresence.providers.isEmpty
+            ? Set(Provider.allCases) : corpusPresence.providers
+        let paths = Provider.allCases.compactMap { provider -> String? in
+            guard providers.contains(provider) else { return nil }
+            switch provider {
+            case .claude: return "~/.claude"
+            case .codex: return "~/.codex"
+            case .grok: return "~/.grok"
+            }
+        }
+        switch paths.count {
+        case 1: localPaths = paths[0]
+        case 2: localPaths = paths.joined(separator: " and ")
+        default: localPaths = paths.dropLast().joined(separator: ", ")
+            + ", and " + paths.last!
         }
     }
 

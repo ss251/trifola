@@ -32,6 +32,14 @@ struct ProviderMark: View {
             case .openAIBlossom:
                 OpenAIBlossomShape()
                     .fill(fill, style: FillStyle(eoFill: true, antialiased: true))
+            case .grokMark:
+                // PROVISIONAL — deliberately a neutral monogram, not an
+                // approximation of xAI's mark. Replace only with verbatim path
+                // geometry regenerated from an official published SVG.
+                Text("G")
+                    .font(.system(size: size * 0.76, weight: .semibold,
+                                  design: .rounded))
+                    .foregroundStyle(fill)
             }
         }
         .frame(width: size, height: size)

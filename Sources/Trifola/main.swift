@@ -461,6 +461,58 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-quota") {
     exit(0)
 }
 
+// Machine-readable, privacy-bounded parity contract for the independent Node
+// parser. It exposes aggregate counts and usage only—never titles, paths, ids,
+// prompts, or transcript prose.
+if CommandLine.arguments.contains("--grok-parity") {
+    let paths = ClaudePaths.process
+    let sessions = SessionStore.cachedScan(
+        paths.projects, cacheURL: paths.sessionIndexCacheURL)
+    // Keep the app-owned search index on the exact same corpus generation the
+    // parity script is about to compare. This is the normal app update path,
+    // made synchronous only for the headless acceptance contract.
+    _ = SearchIndex.update(
+        SearchIndex.reference(to: paths.searchIndexCacheURL),
+        sessions: sessions)
+    let grokSessions = sessions.filter { $0.provider == .grok }
+    var usageByDayModel: [String: [String: SessionUsage]] = [:]
+    for session in grokSessions {
+        for (day, models) in session.usageByModelDay {
+            for (model, usage) in models {
+                usageByDayModel[day, default: [:]][model] =
+                    (usageByDayModel[day]?[model] ?? SessionUsage()) + usage
+            }
+        }
+    }
+    let catalog = PricingCatalog.current
+    var modelDays: [String: [String: [String: Any]]] = [:]
+    for (day, models) in usageByDayModel {
+        for (model, usage) in models where usage.total > 0 {
+            let cents = Int((usage.cost(
+                rate: catalog.resolvedRate(model: model, onDay: day)) * 100).rounded())
+            modelDays[day, default: [:]][model] = [
+                "inputTokens": usage.inputTokens,
+                "cacheReadTokens": usage.cacheReadTokens,
+                "cacheCreateTokens": usage.cacheCreateTokens,
+                "cacheCreate1hTokens": usage.cacheCreate1hTokens,
+                "outputTokens": usage.outputTokens,
+                "cents": cents,
+            ]
+        }
+    }
+    let payload: [String: Any] = [
+        "sessionCount": grokSessions.count,
+        "totalTokens": grokSessions.reduce(0) { $0 + $1.usage.total },
+        "partialSessions": grokSessions.filter(\.usageIsPartial).count,
+        "pricing": catalog.sourceLabel,
+        "modelDays": modelDays,
+    ]
+    let data = try! JSONSerialization.data(
+        withJSONObject: payload, options: [.sortedKeys])
+    print(String(decoding: data, as: UTF8.self))
+    exit(0)
+}
+
 // `--spend-by-model <day> [<day>…]` prints the fleet's per-MODEL spend for the
 // given LOCAL days ("yyyy-MM-dd"; defaults to yesterday + today) — token pile and
 // catalog-priced dollars per model id. The reconcile surface against CodexBar's

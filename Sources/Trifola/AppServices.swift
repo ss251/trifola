@@ -86,6 +86,7 @@ final class AppServices: ObservableObject {
     let navigationSnapshots = NavigationSnapshotStore()
     let claudePaths: ClaudePaths
     let codexPaths: CodexPaths
+    let grokPaths: GrokPaths
     let sessions: SessionStore
     let audit: RoutingAudit
     let stack = StackStore()
@@ -211,7 +212,8 @@ final class AppServices: ObservableObject {
     private var forwarders: Set<AnyCancellable> = []
 
     init(claudePaths: ClaudePaths = .process,
-         codexPaths: CodexPaths = .process) {
+         codexPaths: CodexPaths = .process,
+         grokPaths: GrokPaths = .process) {
         let permissionFlowGate = PermissionFlowSessionGate()
         self.permissionFlowGate = permissionFlowGate
         self.workspaceAccess = WorkspaceAccessCoordinator(
@@ -220,13 +222,16 @@ final class AppServices: ObservableObject {
             sessionGate: permissionFlowGate)
         self.claudePaths = claudePaths
         self.codexPaths = codexPaths
-        self.sessions = SessionStore(paths: claudePaths, codexPaths: codexPaths)
+        self.grokPaths = grokPaths
+        self.sessions = SessionStore(paths: claudePaths, codexPaths: codexPaths,
+                                     grokPaths: grokPaths)
         self.audit = RoutingAudit(paths: claudePaths)
         self.skills = SkillsStore(paths: claudePaths)
         self.quota = QuotaStore(paths: claudePaths)
         self.providerCorpusPresence = ProviderCorpusPresence.detect(
             claudePaths: claudePaths,
-            codexPaths: codexPaths)
+            codexPaths: codexPaths,
+            grokPaths: grokPaths)
 
         self.pendingRestoredSessionID = persistedInspectorID.isEmpty
             ? nil : persistedInspectorID
@@ -406,9 +411,13 @@ final class AppServices: ObservableObject {
         // too (when present) so Codex rollouts refresh live, not just on the next
         // Claude-triggered pass. Codex archives older rollouts as .jsonl.zst.
         let codexPrefix = codexPaths.sessions.standardizedFileURL.path + "/"
+        let grokPrefix = grokPaths.sessions.standardizedFileURL.path + "/"
         var watchPaths = [claudePaths.root.path]
         if FileManager.default.fileExists(atPath: codexPaths.root.path) {
             watchPaths.append(codexPaths.root.path)
+        }
+        if FileManager.default.fileExists(atPath: grokPaths.root.path) {
+            watchPaths.append(grokPaths.root.path)
         }
         let watcher = FSEventsWatcher(paths: watchPaths) { [weak self] paths in
             var sessionPaths: Set<String> = [], settingsDirty = false
@@ -418,6 +427,10 @@ final class AppServices: ObservableObject {
                     sessionPaths.insert(standardized)
                 } else if standardized.hasPrefix(codexPrefix)
                             && (standardized.hasSuffix(".jsonl") || standardized.hasSuffix(".jsonl.zst")) {
+                    sessionPaths.insert(standardized)
+                } else if standardized.hasPrefix(grokPrefix)
+                            && ["summary.json", "chat_history.jsonl", "updates.jsonl"]
+                                .contains(URL(fileURLWithPath: standardized).lastPathComponent) {
                     sessionPaths.insert(standardized)
                 } else if standardized == settingsPath {
                     settingsDirty = true
@@ -653,9 +666,11 @@ final class AppServices: ObservableObject {
 
         let claudePaths = self.claudePaths
         let codexPaths = self.codexPaths
+        let grokPaths = self.grokPaths
         let corpusPresence = await Task.detached(priority: .utility) {
             ProviderCorpusPresence.detect(
-                claudePaths: claudePaths, codexPaths: codexPaths)
+                claudePaths: claudePaths, codexPaths: codexPaths,
+                grokPaths: grokPaths)
         }.value
         if providerCorpusPresence != corpusPresence {
             providerCorpusPresence = corpusPresence
@@ -845,7 +860,11 @@ final class AppServices: ObservableObject {
             provider: session.provider,
             isRemote: session.isRemote) == .transcript {
             // Same route, two different truths — name the right one.
-            return .transcript(session.provider == .codex ? .codexSession : .remoteSession)
+            switch session.provider {
+            case .codex: return .transcript(.codexSession)
+            case .grok: return .transcript(.grokSession)
+            case .claude: return .transcript(.remoteSession)
+            }
         }
         return sessionOpenActions[session.id] ?? .resolving
     }
@@ -909,9 +928,15 @@ final class AppServices: ObservableObject {
         guard ProviderSessionOpenPolicy.route(
             provider: session.provider,
             isRemote: session.isRemote) == .claudeRegistry else {
-            let message = session.provider == .codex
-                ? "Codex terminal handoff is not available yet — showing rollout transcript"
-                : "Remote session — showing transcript"
+            let message: String
+            switch session.provider {
+            case .codex:
+                message = "Codex terminal handoff is not available yet — showing rollout transcript"
+            case .grok:
+                message = "Grok terminal handoff is not available yet — showing session transcript"
+            case .claude:
+                message = "Remote session — showing transcript"
+            }
             showTranscript(session, message: message,
                            openMainWindow: openMainWindow)
             return

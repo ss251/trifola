@@ -212,7 +212,9 @@ struct SessionsScreen: View {
                         }
                         // .codex is excluded: the Codex PROVIDER chip above already
                         // covers it — two identical "Codex" chips confused the owner.
-                        ForEach(ModelTier.allCases.filter { $0 != .other && $0 != .codex },
+                        ForEach(ModelTier.allCases.filter {
+                            $0 != .other && $0 != .codex && $0 != .grok
+                        },
                                 id: \.self) { tier in
                             FilterChip(label: tier.label, isOn: tierFilter == tier) {
                                 updateFilter(
@@ -625,7 +627,9 @@ struct SearchResultRow: View {
             HStack(alignment: .top, spacing: Theme.intraCell) {
                 Circle()
                     .fill(result.candidate.provider == .codex
-                          ? Theme.codexModel : ModelTier.opus.color)
+                          ? Theme.codexModel
+                          : (result.candidate.provider == .grok
+                             ? Theme.grokModel : ModelTier.opus.color))
                     .frame(width: 7, height: 7)
                     .padding(.top, 5)
                     .accessibilityHidden(true)
@@ -756,6 +760,8 @@ private func lineageIcon(_ kind: LineageEdgeKind?) -> String {
     case .remoteTask: return "cloud"
     case .codexSpawn: return "arrow.triangle.branch"
     case .codexFork: return "arrow.triangle.pull"
+    case .grokSpawn: return "person.2.badge.gearshape"
+    case .grokFork: return "arrow.triangle.pull"
     case .importBridge: return "square.and.arrow.down"
     case .orchestrated: return "link"
     case nil: return "circle"
@@ -932,6 +938,7 @@ struct SessionLineageRow: View {
         if counts.subagents > 0 { parts.append("\(counts.subagents) subagent\(counts.subagents == 1 ? "" : "s")") }
         if counts.remoteTasks > 0 { parts.append("\(counts.remoteTasks) remote") }
         if counts.codex > 0 { parts.append("\(counts.codex) codex") }
+        if counts.grok > 0 { parts.append("\(counts.grok) grok") }
         let remainder = counts.imports + counts.heuristic
         if remainder > 0 { parts.append("+\(remainder)") }
         parts.append(fmtUSD(row.totalDescendantCost))
@@ -1350,6 +1357,11 @@ private struct SessionInspector: View {
             Text("Public API rates applied to recorded usage · not your bill or subscription charge.")
                 .font(Theme.Typography.metadata)
                 .foregroundStyle(Theme.faint)
+            if session.usageIsPartial {
+                Text("Grok reports this per-turn usage as billing-partial; the API estimate may change when xAI finalizes it.")
+                    .font(Theme.Typography.metadata)
+                    .foregroundStyle(Theme.amber)
+            }
         }
         .padding(.vertical, Theme.codePadding)
     }

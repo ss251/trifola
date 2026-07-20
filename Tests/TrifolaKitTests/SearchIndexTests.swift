@@ -65,7 +65,7 @@ struct SearchIndexTests {
         #expect(!SearchText.tokens(in: "密").contains("密"))
     }
 
-    @Test("indexes Claude and Codex user/assistant prose but excludes tool output")
+    @Test("indexes Claude, Codex, and Grok prose but excludes tool output")
     func providerProjectionAndToolExclusion() throws {
         try withTempDirectory { root in
             let claude = root.appendingPathComponent("claude.jsonl")
@@ -80,17 +80,30 @@ struct SearchIndexTests {
                 #"{"timestamp":"2026-07-11T09:10:05Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"agent-1","type":"agent_message","message":"Budget notes are ready"}}}"#,
                 #"{"timestamp":"2026-07-11T09:10:07Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"result-1","type":"function_call_output","output":"codex tool needle"}}}"#,
             ], to: codex)
+            let grok = root.appendingPathComponent("chat_history.jsonl")
+            try write([
+                #"{"type":"user","content":[{"type":"text","text":"Investigate the violet monogram"}]}"#,
+                #"{"type":"assistant","content":"The Grok adapter is searchable","model_id":"grok-4.5"}"#,
+                #"{"type":"user","synthetic_reason":"fork_context","content":[{"type":"text","text":"grok synthetic needle"}]}"#,
+            ], to: grok)
 
             let sessions = [
                 summary(id: "claude", file: claude),
                 summary(id: "codex", file: codex, provider: .codex),
+                summary(id: "grok", file: grok, provider: .grok),
             ]
             let index = SearchIndex.update(try index(in: root), sessions: sessions).index
             #expect(index.query(SearchQuery("keychain quota"),
                                 scope: .conversationText).map(\.id) == ["claude"])
             #expect(index.query(SearchQuery("rollover budget"),
                                 scope: .conversationText).map(\.id) == ["codex"])
+            #expect(index.query(SearchQuery("violet monogram"),
+                                scope: .conversationText).map(\.id) == ["grok"])
+            #expect(index.query(SearchQuery("Grok adapter"),
+                                scope: .conversationText).map(\.id) == ["grok"])
             #expect(index.query(SearchQuery("tool needle"),
+                                scope: .conversationText).isEmpty)
+            #expect(index.query(SearchQuery("synthetic needle"),
                                 scope: .conversationText).isEmpty)
         }
     }

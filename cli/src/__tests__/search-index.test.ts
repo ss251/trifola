@@ -28,6 +28,17 @@ function codexRollout(root: string, name: string, records: unknown[]): string {
   return filePath;
 }
 
+function grokSession(root: string, name: string, records: unknown[]): string {
+  const directory = path.join(root, ".grok", "sessions", "%2FUsers%2Fdev%2Fwork", name);
+  writeFile(path.join(directory, "summary.json"), JSON.stringify({
+    info: { id: name, cwd: "/Users/dev/work/grok-demo" },
+    generated_title: "Grok search fixture",
+  }));
+  const filePath = path.join(directory, "chat_history.jsonl");
+  writeFile(filePath, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  return filePath;
+}
+
 async function execute(
   root: string,
   cache: string,
@@ -67,7 +78,7 @@ function digest(filePath: string): string {
 }
 
 describe("search index tiers", () => {
-  test("Codex documents join Claude in scan and warm Tier 2 with provider labels", { skip: !sqlite }, async () => {
+  test("Codex and Grok documents join Claude in scan and warm Tier 2 with provider labels", { skip: !sqlite }, async () => {
     await withTempDir("trifola-index-codex-", async (root) => {
       const cache = path.join(root, "cache");
       transcript(root, "claude", [
@@ -78,9 +89,13 @@ describe("search index tiers", () => {
         { type: "event_msg", payload: { type: "user_message", message: "Shared parityneedle from Codex" } },
         { type: "response_item", payload: { type: "function_call", arguments: "excludedtoolneedle" } },
       ]);
+      grokSession(root, "grok", [
+        { type: "user", content: [{ type: "text", text: "Shared parityneedle from Grok" }] },
+        { type: "tool_result", content: "excludedtoolneedle" },
+      ]);
       const cold = await execute(root, cache, ["parityneedle"]);
       const warm = await execute(root, cache, ["parityneedle"]);
-      assert.deepEqual(new Set(cold.matches.map((match) => match.provider)), new Set(["claude", "codex"]));
+      assert.deepEqual(new Set(cold.matches.map((match) => match.provider)), new Set(["claude", "codex", "grok"]));
       const byProvider = (matches: SearchMatch[]) => matches.map(stableMatch)
         .sort((left, right) => left.provider.localeCompare(right.provider));
       assert.deepEqual(byProvider(warm.matches), byProvider(cold.matches));
@@ -178,7 +193,8 @@ describe("search index tiers", () => {
       const rebuilt = await execute(root, cache, ["needle"]);
       assert.equal(rebuilt.result.engine, "scan");
       assert.equal(rebuilt.result.indexBuilt, true);
-      assert.match(rebuilt.notices.join("\n"), /schema 1 does not match v3 — rebuilding/);
+      assert.match(rebuilt.notices.join("\n"),
+        new RegExp(`schema 1 does not match v${SEARCH_SCHEMA_VERSION} — rebuilding`));
       const verified = new DatabaseSync(databasePath, { readOnly: true });
       assert.equal(Number(verified.prepare("PRAGMA user_version").get().user_version), SEARCH_SCHEMA_VERSION);
       verified.close();

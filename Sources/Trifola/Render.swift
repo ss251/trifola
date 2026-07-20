@@ -462,7 +462,7 @@ enum BrandAssetRender {
             .kern: 2.6,
         ]).draw(at: NSPoint(x: 377, y: 349))
 
-        let claim = "The command center for your coding-agent fleet —\nClaude Code and Codex"
+        let claim = "The command center for your coding-agent fleet —\nClaude Code, Codex, and Grok Build"
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 8
         NSAttributedString(string: claim, attributes: [
@@ -1298,7 +1298,7 @@ enum OnboardingRender {
             RenderCaption("First launch · live Fleet Board remains visible")
             onboardingWindow(
                 stage: .welcome(ProviderCorpusPresence(
-                    providers: [.claude, .codex])),
+                    providers: Set(Provider.allCases))),
                 seeded: seeded)
             RenderCaption("First exact terminal jump · app primer before macOS")
             onboardingWindow(
@@ -1497,7 +1497,8 @@ enum ParityRender {
             onboardingState("No corpus", providers: [])
             onboardingState("Claude only", providers: [.claude])
             onboardingState("Codex only", providers: [.codex])
-            onboardingState("Both providers", providers: [.claude, .codex])
+            onboardingState("Grok only", providers: [.grok])
+            onboardingState("All providers", providers: Set(Provider.allCases))
         }
         writePNG(content, to: path, dark: dark, width: 920)
     }
@@ -1610,9 +1611,11 @@ enum SessionsRender {
                              age: TimeInterval, usage: SessionUsage,
                              context: Int, messages: Int,
                              prompt: String, suppressed: Bool = false,
-                             subagentOf: String? = nil) -> SessionsRenderItem {
+                             subagentOf: String? = nil,
+                             provider: Provider = .claude) -> SessionsRenderItem {
         let session = SessionSummary(
             id: id,
+            provider: provider,
             project: project,
             cwd: "/tmp/trifola-render/\(project)",
             model: tier.rawValue,
@@ -1620,7 +1623,9 @@ enum SessionsRender {
             messageCount: messages,
             usage: usage,
             contextWeight: context,
-            filePath: subagentOf.map {
+            filePath: provider == .grok
+                ? "/Users/dev/.grok/sessions/%2FUsers%2Fdev%2FDeveloper%2F\(project)/\(id)/chat_history.jsonl"
+                : subagentOf.map {
                 "/tmp/trifola-render/\($0)/subagents/agent-\(id).jsonl"
             } ?? "/tmp/trifola-render/\(id).jsonl",
             lastUserMessage: prompt,
@@ -1652,6 +1657,14 @@ enum SessionsRender {
                                               cacheReadTokens: 1_260_000),
                  context: 126_000, messages: 37,
                  prompt: "Add retry jitter and run the integration suite"),
+            item(id: "grok-build-5e01", project: "agent-runtime",
+                 name: "Trace Grok build orchestration", tier: .grok, state: .running,
+                 age: 32, usage: SessionUsage(inputTokens: 360_000,
+                                              outputTokens: 24_000,
+                                              cacheReadTokens: 920_000),
+                 context: 118_000, messages: 31,
+                 prompt: "Verify the Grok ingestion path and nested worker lineage",
+                 provider: .grok),
             item(id: "sess-docs-220d", project: "docs-site",
                  name: "Refresh launch guide", tier: .haiku, state: .idle,
                  age: 42 * 60, usage: SessionUsage(inputTokens: 210_000,
@@ -1687,7 +1700,8 @@ enum SessionsRender {
         let parentKey = "claude:local:sess-checkout-8f21"
         let parentTitle = "Release checkout redesign"
         let counts = SessionLineageCounts(
-            subagents: 1, remoteTasks: 1, codex: 1, imports: 1, heuristic: 1)
+            subagents: 1, remoteTasks: 1, codex: 1, grok: 1,
+            imports: 1, heuristic: 1)
         func child(
             _ id: String, provider: Provider, title: String,
             edge: LineageEdgeKind, confidence: LineageConfidence = .deterministic,
@@ -1697,8 +1711,10 @@ enum SessionsRender {
             SessionLineageDisplayRow(
                 id: "\(edge.label):\(id)", sessionID: id, provider: provider,
                 project: "checkout-web", cwd: "/Users/dev/Developer/checkout-web",
-                title: title, tier: provider == .codex ? .codex : .sonnet,
-                model: provider == .codex ? "gpt-5.4" : "claude-sonnet-4-6",
+                title: title, tier: provider == .codex ? .codex
+                    : provider == .grok ? .grok : .sonnet,
+                model: provider == .codex ? "gpt-5.4"
+                    : provider == .grok ? "grok-4.5-build" : "claude-sonnet-4-6",
                 lastActivity: now.addingTimeInterval(-age), duration: duration,
                 cost: cost, machineID: Machine.localID, isRemote: false,
                 isActive: false, isContextHeavy: false,
@@ -1736,6 +1752,10 @@ enum SessionsRender {
                   title: "Validate rollback SQL", edge: .codexSpawn,
                   age: 8 * 60, duration: 6 * 60, cost: 6.42,
                   detail: "Verifier"),
+            child("grok-worker-8bc2", provider: .grok,
+                  title: "Inspect build telemetry", edge: .grokSpawn,
+                  age: 7.5 * 60, duration: 5 * 60, cost: 1.82,
+                  detail: "Researcher"),
             child("codex-import-77d0", provider: .codex,
                   title: "Imported plan context", edge: .importBridge,
                   age: 7 * 60, duration: nil, cost: 0, metadataOnly: true,
@@ -1793,7 +1813,7 @@ enum SessionsRender {
 // MARK: - Populated conversation-search render (`--render-search`)
 
 /// The production snippet-row component in an explicit populated search state.
-/// All strings are synthetic; both providers and the exact scope disclosure are
+/// All strings are synthetic; every provider and the exact scope disclosure are
 /// visible without reading a real transcript corpus.
 enum SearchRender {
     private static let now = SessionsRender.now
@@ -1836,6 +1856,11 @@ enum SearchRender {
                 project: "account-service", age: 27 * 60, role: "Assistant",
                 text: "The quota guard now reports a bounded Keychain write failure.",
                 terms: ["quota", "Keychain"], phrase: false),
+            result(
+                id: "search-grok-2b", provider: .grok,
+                project: "agent-runtime", age: 52 * 60, role: "Assistant",
+                text: "Grok traced the Keychain quota boundary without including tool output.",
+                terms: ["Keychain", "quota"], phrase: false),
             result(
                 id: "search-claude-3", provider: .claude,
                 project: "release-tools", age: 3 * 3_600, role: "Assistant",

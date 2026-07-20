@@ -435,6 +435,13 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
         provider: Provider = .claude,
         tailBytes: Int = 256_000
     ) -> AttentionSignals? {
+        let effectivePath: String
+        if provider == .grok {
+            effectivePath = URL(fileURLWithPath: path).deletingLastPathComponent()
+                .appendingPathComponent("updates.jsonl").path
+        } else {
+            effectivePath = path
+        }
         let lines: [Data]?
         if provider == .codex, path.hasSuffix(".jsonl.zst") {
             guard let data = CodexRolloutFile.data(at: URL(fileURLWithPath: path)) else {
@@ -445,7 +452,7 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
                 Data(data.suffix(bounded)),
                 droppingPartialHead: data.count > bounded)
         } else {
-            lines = readTailLines(path: path, tailBytes: tailBytes)
+            lines = readTailLines(path: effectivePath, tailBytes: tailBytes)
         }
         guard let lines else { return nil }
         switch provider {
@@ -453,6 +460,8 @@ public struct AttentionSignals: Sendable, Equatable, Hashable {
             return extract(fromTailLines: lines)
         case .codex:
             return CodexRolloutAccumulator.attentionSignals(fromTailLines: lines)
+        case .grok:
+            return GrokSessionAccumulator.attentionSignals(fromTailLines: lines)
         }
     }
 

@@ -50,6 +50,10 @@ struct CorpusProjectionTests {
             inputTokens: 200_000,
             outputTokens: 40_000,
             cacheReadTokens: 100_000)
+        let grokUsage = SessionUsage(
+            inputTokens: 50_000,
+            outputTokens: 10_000,
+            cacheReadTokens: 75_000)
         let sharedModel = "gpt-5.6-sol"
         let sessions = [
             session("claude", provider: .claude, project: "one",
@@ -57,6 +61,9 @@ struct CorpusProjectionTests {
                     usageDay: "2027-01-15"),
             session("codex", provider: .codex, project: "two",
                     model: sharedModel, age: 3_700, usage: codexUsage,
+                    usageDay: "2027-01-15"),
+            session("grok", provider: .grok, project: "three",
+                    model: sharedModel, age: 7_300, usage: grokUsage,
                     usageDay: "2027-01-15"),
         ]
 
@@ -66,20 +73,18 @@ struct CorpusProjectionTests {
             CorpusProjection(sessions: sessions, now: now)
         }.value
 
-        #expect(projection.totalUsage == claudeUsage + codexUsage)
+        #expect(projection.totalUsage == claudeUsage + codexUsage + grokUsage)
         #expect(abs(projection.totalCost - sessions.reduce(0) { $0 + $1.cost }) < 1e-12)
         #expect(abs(projection.totalCacheSavings
                     - sessions.reduce(0) { $0 + $1.cacheSavingsDollars }) < 1e-12)
-        #expect(projection.distinctProjectCount == 2)
-        #expect(projection.topModelsByID.map(\.provider) == [.codex, .claude]
-                || projection.topModelsByID.map(\.provider) == [.claude, .codex])
-        #expect(projection.topModelsByID.count == 2)
+        #expect(projection.distinctProjectCount == 3)
+        #expect(projection.topModelsByID.count == 3)
         #expect(Set(projection.topModelsByID.map(\.provider)) == Set(Provider.allCases))
         #expect(projection.topModelsByID.allSatisfy { $0.model == sharedModel })
         #expect(projection.activityHistogram24h.count == 24)
         #expect(projection.activityHistogram24h[23] == 1)
         #expect(projection.activityHistogram24h[22] == 1)
-        #expect(projection.activityHistogram24h.reduce(0, +) == 2)
+        #expect(projection.activityHistogram24h.reduce(0, +) == 3)
     }
 
     @Test func activeContextAndProjectRowsHaveTotalStableOrdering() {

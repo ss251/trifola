@@ -88,7 +88,7 @@ public struct PricingCatalog: Sendable {
     /// Normalized model id → pricing (possibly multi-era).
     public let models: [String: ModelPricing]
     /// The seed's provenance date (Anthropic pricing docs fetch date).
-    public static let bundledDate = "2026-07-13"
+    public static let bundledDate = "2026-07-21"
     /// When the optional models.dev refresh last succeeded; nil = seed only.
     public let refreshedAt: Date?
     /// How many models the refresh ADDED beyond the bundled seed.
@@ -123,6 +123,18 @@ public struct PricingCatalog: Sendable {
     public static let bundledCodexModelIDs = Set(
         bundledCodexRates.map { $0.id }
     )
+
+    // Verified against docs.x.ai/developers/pricing on 2026-07-21. xAI's
+    // cached-input rates are model-specific (not the Anthropic/OpenAI 0.10×
+    // convention), so these rows retain the published cached price verbatim.
+    private static let bundledGrokRates: [
+        (ids: [String], input: Double, cached: Double, output: Double)
+    ] = [
+        (["grok-4.5", "grok-4.5-build", "grok-4.5-latest", "grok-build-latest"],
+         2, 0.30, 6),
+        (["grok-build-0.1"], 1, 0.20, 2),
+        (["grok-4.3"], 1.25, 0.20, 2.50),
+    ]
 
     public init(models: [String: ModelPricing], refreshedAt: Date? = nil,
                 refreshedAdded: Int = 0) {
@@ -222,6 +234,15 @@ public struct PricingCatalog: Sendable {
         // converts inclusive input into fresh + cache-read slices before cost.
         for seed in bundledCodexRates {
             put([seed.id], seed.input, seed.output)
+        }
+        for seed in bundledGrokRates {
+            let rate = ModelRate(
+                input: seed.input, output: seed.output,
+                cacheRead: seed.cached,
+                cacheWrite5m: seed.input * 1.25,
+                cacheWrite1h: seed.input * 2)
+            let pricing = ModelPricing(rate: rate)
+            for id in seed.ids { m[id] = pricing }
         }
         return PricingCatalog(models: m)
     }()

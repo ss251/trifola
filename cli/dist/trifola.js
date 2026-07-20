@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// trifola — `npx trifola`: reads local Claude Code and Codex configuration
-// roots (respecting $CLAUDE_CONFIG_DIR and $CODEX_HOME),
+// trifola — `npx trifola`: reads local Claude Code, Codex, and Grok Build
+// configuration roots (respecting $CLAUDE_CONFIG_DIR, $CODEX_HOME, and $GROK_HOME),
 // never uploads anything, and prints an anonymized share-card finding —
 // dead skills, prompt tax, and re-sent context — priced at API-equivalent
 // rates ported from the trifola macOS app's TrifolaKit (see cli/src/pricing.ts,
@@ -12,10 +12,11 @@ process.stdout.on("error", (err) => {
         process.exit(0);
     throw err;
 });
-import { resolveClaudeDir, resolveCodexDir, skillsDirOf, projectsDirOf } from "./config.js";
+import { resolveClaudeDir, resolveCodexDir, resolveGrokDir, skillsDirOf, projectsDirOf } from "./config.js";
 import { scanUserSkills } from "./skills.js";
-import { scanProjects, withCodexCorpus } from "./transcripts.js";
+import { scanProjects, withCodexCorpus, withGrokCorpus } from "./transcripts.js";
 import { scanCodexSessions } from "./codex.js";
+import { scanGrokSessions } from "./grok.js";
 import { buildFinding } from "./ledger.js";
 import { renderCard, renderJSON, HELP_TEXT } from "./card.js";
 import { spin } from "./spinner.js";
@@ -26,7 +27,7 @@ import { runTieredSearch } from "./search-index.js";
 async function runSearch(argv) {
     const request = parseSearchArgs(argv);
     const claudeDir = resolveClaudeDir();
-    const spinner = spin("searching Claude Code + Codex conversation text…");
+    const spinner = spin("searching Claude Code + Codex + Grok conversation text…");
     if (!request.json) {
         process.stdout.write(`trifola search — ${SEARCH_SCOPE}\n`);
     }
@@ -36,7 +37,7 @@ async function runSearch(argv) {
             process.stdout.write(JSON.stringify(match) + "\n");
             return;
         }
-        process.stdout.write(`${match.provider === "codex" ? "Codex" : "Claude"} · ${match.title} · ${match.project} · ${relativeAge(match.lastActivity)}\n` +
+        process.stdout.write(`${match.provider === "codex" ? "Codex" : match.provider === "grok" ? "Grok" : "Claude"} · ${match.title} · ${match.project} · ${relativeAge(match.lastActivity)}\n` +
             `  ${match.role === "user" ? "You" : "Assistant"}: ${markedSnippet(match)}\n`);
     };
     const summary = await runTieredSearch(projectsDirOf(claudeDir), request, {
@@ -63,7 +64,7 @@ async function runSearch(argv) {
                 : request.terms.length === 0 || summary.emitted > 0
                     ? "complete"
                     : "no-matches",
-            providers: ["claude", "codex"],
+            providers: ["claude", "codex", "grok"],
             scope: "conversation-text",
             engine: summary.engine,
             tier: summary.tier,
@@ -77,10 +78,10 @@ async function runSearch(argv) {
         }) + "\n");
     }
     else if (summary.scannedFiles === 0) {
-        process.stdout.write("No Claude Code sessions or Codex rollouts found under the configured roots.\n");
+        process.stdout.write("No Claude Code sessions, Codex rollouts, or Grok sessions found under the configured roots.\n");
     }
     else if (summary.emitted === 0 && request.terms.length > 0) {
-        process.stdout.write("No matches in Claude Code or Codex conversation text.\n");
+        process.stdout.write("No matches in Claude Code, Codex, or Grok conversation text.\n");
     }
     if (!request.json)
         process.stdout.write(`Warning: ${RAW_WARNING}.\n`);
@@ -97,6 +98,7 @@ async function run(argv) {
     const asJson = argv.includes("--json");
     const claudeDir = resolveClaudeDir();
     const codexDir = resolveCodexDir();
+    const grokDir = resolveGrokDir();
     const spinner = spin("reading your skill catalog…");
     const skills = scanUserSkills(skillsDirOf(claudeDir));
     const claudeCorpus = scanProjects(projectsDirOf(claudeDir), (done, total) => {
@@ -105,7 +107,10 @@ async function run(argv) {
     const codexCorpus = scanCodexSessions(codexDir, (done, total) => {
         spinner.update(`reading ${fmtCount(done + 1)} of ${fmtCount(total)} Codex rollouts · nothing leaves this machine`);
     });
-    const corpus = withCodexCorpus(claudeCorpus, codexCorpus);
+    const grokCorpus = scanGrokSessions(grokDir, (done, total) => {
+        spinner.update(`reading ${fmtCount(done + 1)} of ${fmtCount(total)} Grok sessions · nothing leaves this machine`);
+    });
+    const corpus = withGrokCorpus(withCodexCorpus(claudeCorpus, codexCorpus), grokCorpus);
     spinner.update("pricing at public API rates…");
     const finding = buildFinding(skills, corpus);
     spinner.done();

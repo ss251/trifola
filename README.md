@@ -1,11 +1,11 @@
 <div align="center">
 
-<img src="docs/assets/banner.png" alt="Trifola — the command center for your Claude Code and Codex fleet" width="680">
+<img src="docs/assets/banner.png" alt="Trifola — the command center for your Claude Code, Codex, and Grok Build fleet" width="680">
 
 # trifola
 
-**The command center for your whole coding-agent fleet — Claude Code and Codex.**
-Reads your local `~/.claude` and `~/.codex`, keeps transcript analysis local, and tells you what
+**The command center for your whole coding-agent fleet — Claude Code, Codex, and Grok Build.**
+Reads your local `~/.claude`, `~/.codex`, and `~/.grok`, keeps transcript analysis local, and tells you what
 your agents cost you, where the spend is being wasted, and which one is blocked waiting on
 you — across every machine.
 
@@ -23,7 +23,7 @@ you — across every machine.
 
 _A truffle pig for your agent fleet: it sniffs out the valuable — and the
 wasteful — hidden in data Claude Code already writes to disk. (Demo data — trifola
-renders every screenshot from synthetic fixtures; your real `~/.claude` and `~/.codex` never leave your machine.)_
+renders every screenshot from synthetic fixtures; your real `~/.claude`, `~/.codex`, and `~/.grok` never leave your machine.)_
 
 </div>
 
@@ -44,12 +44,12 @@ and nothing on your machine surfaces either:
   needs-approval / silently-stalled** the moment it happens — in the menu bar, all day,
   and across every machine you run on.
 
-It analyzes what Claude Code and Codex already write to `~/.claude` and `~/.codex`. **No Trifola account, no
+It analyzes what Claude Code, Codex, and Grok Build already write to `~/.claude`, `~/.codex`, and `~/.grok`. **No Trifola account, no
 Trifola cloud, no telemetry. Source-auditable.** Event-driven (FSEvents) — no transcript polling loop.
 
 ## What it does
 
-- 🔎 **Conversation search** — exact remembered words across Claude Code and Codex user prompts
+- 🔎 **Conversation search** — exact remembered words across Claude Code, Codex, and Grok Build user prompts
   and assistant prose, with truthful snippets reread from disk. Tool calls/results and thinking
   are excluded; no fuzzy or semantic matching.
 - 🟢 **Attention board** — every session as BLOCKED / WAITING / RUNNING / IDLE, worst-first,
@@ -106,12 +106,10 @@ npx trifola search keychain quota
 
 (Or straight from the clone, zero dependencies: `node cli/dist/trifola.js`.)
 
-The CLI search is intentionally Claude Code-only. It streams exact phrase matches first, then
-all-term matches, and accepts `--limit N` (default 10) or newline-delimited `--json`. Search covers
-conversation text only: user prompts and assistant prose. Tool calls/results, thinking, and system
-records are excluded. Tokenization uses Unicode word boundaries; unspaced CJK text is generally one
-long token in v1, so remembered substrings inside that run may not match. JSON and text results contain
-real local conversation text—review them before sharing.
+The CLI search covers Claude Code, Codex, and Grok Build conversation text: user prompts and
+assistant prose only, exact words only. Options, search tiers, and index storage are documented in
+the [CLI README](cli/README.md). JSON and text results contain real local conversation
+text—review them before sharing.
 
 > **On signing:** trifola is an indie project without a paid Apple Developer certificate, so
 > pre-built downloads aren't notarized. **Building from source (above) runs with no warnings.**

@@ -1,13 +1,12 @@
 import Foundation
 
-/// The complete provider-presence state used by first-run and empty-state copy.
-/// Keeping this pure prevents a Codex-only corpus from inheriting Claude-only
-/// assumptions in whichever UI surface presents it.
+/// Provider onboarding is deliberately set-driven: adding a fourth provider
+/// cannot fall through a boolean tuple and silently inherit another runtime's
+/// copy.
 public enum ProviderOnboardingState: Sendable, Equatable {
     case none
-    case claudeOnly
-    case codexOnly
-    case both
+    case single(Provider)
+    case multiple(Set<Provider>)
 }
 
 public struct ProviderOnboardingCopy: Sendable, Equatable {
@@ -22,32 +21,48 @@ public struct ProviderOnboardingCopy: Sendable, Equatable {
 
 public extension ProviderCorpusPresence {
     var onboardingState: ProviderOnboardingState {
-        switch (hasClaude, hasCodex) {
-        case (false, false): return .none
-        case (true, false): return .claudeOnly
-        case (false, true): return .codexOnly
-        case (true, true): return .both
+        switch providers.count {
+        case 0: return .none
+        case 1: return .single(providers.first!)
+        default: return .multiple(providers)
         }
     }
 
     var onboardingCopy: ProviderOnboardingCopy {
+        let present = Provider.allCases.filter(providers.contains)
+        let missing = Provider.allCases.filter { !providers.contains($0) }
         switch onboardingState {
         case .none:
             return ProviderOnboardingCopy(
                 headline: "Waiting for your first coding session",
-                detail: "Trifola reads local Claude Code transcripts and Codex rollouts. Start either provider and its sessions will appear automatically; nothing leaves this Mac.")
-        case .claudeOnly:
+                detail: "Trifola reads local Claude Code transcripts, Codex rollouts, and Grok Build sessions. Start any provider and its sessions will appear automatically; nothing leaves this Mac.")
+        case .single(let provider):
             return ProviderOnboardingCopy(
-                headline: "Claude Code sessions are ready",
-                detail: "Your local Claude Code corpus is available. Codex rollouts will join the same read-only view automatically when present.")
-        case .codexOnly:
+                headline: "\(Self.onboardingLabel(provider)) sessions are ready",
+                detail: "Your local \(Self.onboardingLabel(provider)) corpus is available. \(Self.providerList(missing)) sessions will join the same read-only view automatically when present.")
+        case .multiple:
+            let labels = Self.providerList(present)
+            let detail = missing.isEmpty
+                ? "All local corpora are available in one read-only view; nothing leaves this Mac."
+                : "These local corpora are available in one read-only view. \(Self.providerList(missing)) sessions will join automatically when present."
             return ProviderOnboardingCopy(
-                headline: "Codex sessions are ready",
-                detail: "Your local Codex rollouts are available. Claude Code sessions will join the same read-only view automatically when present.")
-        case .both:
-            return ProviderOnboardingCopy(
-                headline: "Claude Code and Codex are ready",
-                detail: "Both local corpora are available in one read-only view; nothing leaves this Mac.")
+                headline: "\(labels) are ready",
+                detail: detail)
         }
+    }
+
+    private static func providerList(_ providers: [Provider]) -> String {
+        let labels = providers.map(Self.onboardingLabel)
+        switch labels.count {
+        case 0: return "Other provider"
+        case 1: return labels[0]
+        case 2: return labels.joined(separator: " and ")
+        default: return labels.dropLast().joined(separator: ", ")
+            + ", and " + labels.last!
+        }
+    }
+
+    private static func onboardingLabel(_ provider: Provider) -> String {
+        provider == .claude ? "Claude Code" : provider.label
     }
 }

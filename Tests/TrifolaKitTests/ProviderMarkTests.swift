@@ -10,6 +10,7 @@ struct ProviderMarkTests {
         let expected: [Provider: ProviderMarkKind] = [
             .claude: .claudeStarburst,
             .codex: .openAIBlossom,
+            .grok: .grokMark,
         ]
         #expect(Set(expected.keys) == Set(Provider.allCases),
                 "Update ProviderMarkTests and Provider.markKind when adding a provider")
@@ -19,7 +20,7 @@ struct ProviderMarkTests {
             // Exhaustive switch inside markKind already fails the build if a
             // case is missing; this asserts the mapping stays intentional.
             switch provider.markKind {
-            case .claudeStarburst, .openAIBlossom:
+            case .claudeStarburst, .openAIBlossom, .grokMark:
                 break
             }
         }
@@ -30,6 +31,7 @@ struct ProviderMarkTests {
         let expected: [Provider: String] = [
             .claude: "Claude",
             .codex: "OpenAI Codex",
+            .grok: "xAI Grok",
         ]
         #expect(Set(expected.keys) == Set(Provider.allCases))
         for provider in Provider.allCases {
@@ -43,7 +45,7 @@ struct ProviderMarkTests {
     func markKindUniverseMatchesShapes() {
         // If a new shape case is added without a provider mapping, the
         // allCases table documents the gap for the next agent.
-        #expect(ProviderMarkKind.allCases.count == 2)
+        #expect(ProviderMarkKind.allCases.count == 3)
         #expect(Set(Provider.allCases.map(\.markKind)) == Set(ProviderMarkKind.allCases))
     }
 }

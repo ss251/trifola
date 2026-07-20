@@ -12,6 +12,19 @@ import Testing
 @Suite("Pricing catalog")
 struct PricingCatalogTests {
 
+    @Test func grokRatesUseXAIsExactCachedInputPrices() throws {
+        let cat = PricingCatalog.bundled
+        let grok45 = try #require(cat.rate(model: "grok-4.5"))
+        #expect(grok45.input == 2)
+        #expect(grok45.output == 6)
+        #expect(grok45.cacheRead == 0.30)
+        #expect(cat.rate(model: "grok-4.5-build")?.cacheRead == 0.30)
+        #expect(cat.rate(model: "grok-build-0.1")?.cacheRead == 0.20)
+        #expect(cat.rate(model: "grok-4.3")?.cacheRead == 0.20)
+        let future = cat.resolvedRate(model: "grok-future")
+        #expect(future.input == 2 && future.output == 6)
+    }
+
     @Test func legacyCodexModelsCarryTheirOfficialRatesNotTheTierFallback() {
         let cat = PricingCatalog.bundled
         // gpt-5-codex is off OpenAI's main pricing page but officially

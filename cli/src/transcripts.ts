@@ -17,12 +17,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { normalizeModel, addUsageInPlace, emptyUsage, type UsageTotals } from "./pricing.js";
 import type { CodexScanStats } from "./codex.js";
+import type { GrokScanStats } from "./grok.js";
 
-export type Provider = "claude" | "codex";
+export type Provider = "claude" | "codex" | "grok";
 
 export interface ProviderNumbers<T> {
   claude: T;
   codex: T;
+  grok: T;
 }
 
 // MARK: - Per-file accumulator state
@@ -246,6 +248,8 @@ export interface CorpusStats {
   totalUsageByProvider: ProviderNumbers<UsageTotals>;
   /** Provider-specific deduped billed-usage entry counts. */
   usageEntriesByProvider: ProviderNumbers<number>;
+  /** Grok sessions whose latest turn usage is explicitly not billing-final. */
+  partialUsageSessionsByProvider: ProviderNumbers<number>;
   /** Archives honestly omitted because this Node lacks built-in zstd. */
   skippedCompressed: number;
 }
@@ -259,11 +263,12 @@ function newCorpusStats(): CorpusStats {
     unsupportedPricingModeEntries: 0,
     totalUsage: emptyUsage(),
     usageByDayModel: new Map(),
-    sessionsByProvider: { claude: 0, codex: 0 },
-    filesByProvider: { claude: 0, codex: 0 },
-    usageByProviderDayModel: { claude: new Map(), codex: new Map() },
-    totalUsageByProvider: { claude: emptyUsage(), codex: emptyUsage() },
-    usageEntriesByProvider: { claude: 0, codex: 0 },
+    sessionsByProvider: { claude: 0, codex: 0, grok: 0 },
+    filesByProvider: { claude: 0, codex: 0, grok: 0 },
+    usageByProviderDayModel: { claude: new Map(), codex: new Map(), grok: new Map() },
+    totalUsageByProvider: { claude: emptyUsage(), codex: emptyUsage(), grok: emptyUsage() },
+    usageEntriesByProvider: { claude: 0, codex: 0, grok: 0 },
+    partialUsageSessionsByProvider: { claude: 0, codex: 0, grok: 0 },
     skippedCompressed: 0,
   };
 }
@@ -327,14 +332,17 @@ export function withCodexCorpus(claude: CorpusStats, codex: CodexScanStats): Cor
     usageByProviderDayModel: {
       claude: cloneUsageMap(claude.usageByProviderDayModel.claude),
       codex: cloneUsageMap(codex.usageByDayModel),
+      grok: cloneUsageMap(claude.usageByProviderDayModel.grok),
     },
     totalUsageByProvider: {
       claude: { ...claude.totalUsageByProvider.claude },
       codex: { ...codex.totalUsage },
+      grok: { ...claude.totalUsageByProvider.grok },
     },
     usageEntriesByProvider: {
       claude: claude.usageEntriesByProvider.claude,
       codex: codex.totalDedupedEntries,
+      grok: claude.usageEntriesByProvider.grok,
     },
     skippedCompressed: codex.skippedCompressed,
   };
@@ -343,6 +351,43 @@ export function withCodexCorpus(claude: CorpusStats, codex: CodexScanStats): Cor
   result.totalDedupedEntries += codex.totalDedupedEntries;
   addUsageInPlace(result.totalUsage, codex.totalUsage);
   mergeUsageMaps(result.usageByDayModel, codex.usageByDayModel);
+  return result;
+}
+
+/** Merge Grok's directory-backed scan after Claude + Codex. Grok contributes
+ * usage and sessions but never participates in Claude's skill-fire census. */
+export function withGrokCorpus(corpus: CorpusStats, grok: GrokScanStats): CorpusStats {
+  const result: CorpusStats = {
+    ...corpus,
+    skillFireCounts: new Map(corpus.skillFireCounts),
+    totalUsage: { ...corpus.totalUsage },
+    usageByDayModel: cloneUsageMap(corpus.usageByDayModel),
+    sessionsByProvider: { ...corpus.sessionsByProvider, grok: grok.sessionCount },
+    filesByProvider: { ...corpus.filesByProvider, grok: grok.fileCount },
+    usageByProviderDayModel: {
+      claude: cloneUsageMap(corpus.usageByProviderDayModel.claude),
+      codex: cloneUsageMap(corpus.usageByProviderDayModel.codex),
+      grok: cloneUsageMap(grok.usageByDayModel),
+    },
+    totalUsageByProvider: {
+      claude: { ...corpus.totalUsageByProvider.claude },
+      codex: { ...corpus.totalUsageByProvider.codex },
+      grok: { ...grok.totalUsage },
+    },
+    usageEntriesByProvider: {
+      ...corpus.usageEntriesByProvider,
+      grok: grok.totalDedupedEntries,
+    },
+    partialUsageSessionsByProvider: {
+      ...corpus.partialUsageSessionsByProvider,
+      grok: grok.partialUsageSessions,
+    },
+  };
+  result.sessionCount += grok.sessionCount;
+  result.fileCount += grok.fileCount;
+  result.totalDedupedEntries += grok.totalDedupedEntries;
+  addUsageInPlace(result.totalUsage, grok.totalUsage);
+  mergeUsageMaps(result.usageByDayModel, grok.usageByDayModel);
   return result;
 }
 

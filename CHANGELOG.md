@@ -6,6 +6,13 @@ All notable changes to trifola are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Grok Build as a third session provider** — Trifola now ingests directory-backed
+  `~/.grok` sessions across the macOS app and npm CLI, joining authoritative summary metadata,
+  visible chat prose, and ACP per-turn usage with independent incremental offsets. Grok titles,
+  exact model unions, xAI list-rate estimates, billing-partial disclosure, conversation search,
+  fork/spawn lineage, first-run onboarding, live watching, provider totals, and app/CLI parity all
+  share the same typed provider seams. The Grok mark is a clearly provisional neutral monogram
+  until verbatim official SVG geometry can be sourced.
 - **Provider identity icons** — Claude sessions show Anthropic’s starburst asterisk and Codex
   sessions show OpenAI’s hexagonal blossom knot as path-based SwiftUI marks (`ProviderMark`).
   Session rows (lineage + flat), filter chips, the session inspector, fleet board tokens, and Live

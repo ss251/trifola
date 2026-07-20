@@ -48,6 +48,8 @@ public enum SearchText {
             return events(in: data, provider: provider, includeValidFinalLine: true).events
         case .codex:
             return CodexRolloutTranscriptParser.events(at: url, maximumEvents: .max)
+        case .grok:
+            return GrokTranscriptParser.events(at: url, maximumEvents: .max)
         }
     }
 
@@ -89,6 +91,9 @@ public enum SearchText {
         case .codex:
             return CodexRolloutTranscriptParser.events(
                 fromLine: line, fallbackID: "search-codex-L\(lineNumber)")
+        case .grok:
+            return GrokTranscriptParser.events(
+                fromLine: line, fallbackID: "search-grok-L\(lineNumber)")
         }
     }
 }
@@ -220,7 +225,7 @@ public final class SearchIndexReadLease: @unchecked Sendable {
 /// A path-backed SQLite FTS5 index. Values are cheap, Sendable handles: every
 /// query opens its own read connection while update owns a separate WAL writer.
 public struct SearchIndex: Sendable {
-    public static let currentVersion = 3
+    public static let currentVersion = 4
     public static let defaultBatchSize = 200
 
     public let databaseURL: URL

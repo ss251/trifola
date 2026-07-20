@@ -158,15 +158,21 @@ struct CodexParityContentTests {
         let claude = ProviderCorpusPresence(providers: [.claude])
         let codex = ProviderCorpusPresence(providers: [.codex])
         let both = ProviderCorpusPresence(providers: [.claude, .codex])
+        let grok = ProviderCorpusPresence(providers: [.grok])
+        let all = ProviderCorpusPresence(providers: [.claude, .codex, .grok])
 
         #expect(none.onboardingState == .none)
-        #expect(claude.onboardingState == .claudeOnly)
-        #expect(codex.onboardingState == .codexOnly)
-        #expect(both.onboardingState == .both)
+        #expect(claude.onboardingState == .single(.claude))
+        #expect(codex.onboardingState == .single(.codex))
+        #expect(both.onboardingState == .multiple([.claude, .codex]))
+        #expect(grok.onboardingState == .single(.grok))
+        #expect(all.onboardingState == .multiple([.claude, .codex, .grok]))
         #expect(codex.onboardingCopy.headline == "Codex sessions are ready")
         #expect(!codex.onboardingCopy.headline.lowercased().contains("claude"))
         #expect(!codex.onboardingCopy.detail.lowercased().contains("first claude"))
         #expect(both.onboardingCopy.headline.contains("Claude Code and Codex"))
+        #expect(grok.onboardingCopy.headline == "Grok sessions are ready")
+        #expect(all.onboardingCopy.headline.contains("Claude Code, Codex, and Grok"))
     }
 
     @Test func rolloutTranscriptRendersMetaTurnsToolsOutputsAndTokens() {

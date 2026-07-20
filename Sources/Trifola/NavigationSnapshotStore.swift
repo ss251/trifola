@@ -32,10 +32,11 @@ struct SessionLineageCounts: Sendable, Equatable {
     var subagents = 0
     var remoteTasks = 0
     var codex = 0
+    var grok = 0
     var imports = 0
     var heuristic = 0
 
-    var total: Int { subagents + remoteTasks + codex + imports + heuristic }
+    var total: Int { subagents + remoteTasks + codex + grok + imports + heuristic }
 }
 
 /// Ready-to-paint Sessions value. It intentionally contains no transcript
@@ -723,6 +724,7 @@ final class NavigationSnapshotStore: ObservableObject {
             case .subagent: counts.subagents += 1
             case .remoteTask: counts.remoteTasks += 1
             case .codexSpawn, .codexFork: counts.codex += 1
+            case .grokSpawn, .grokFork: counts.grok += 1
             case .importBridge: counts.imports += 1
             case .orchestrated: counts.heuristic += 1
             case nil: break
@@ -769,6 +771,7 @@ final class NavigationSnapshotStore: ObservableObject {
                 case .subagent: result.subagents += 1
                 case .remoteTask: result.remoteTasks += 1
                 case .codexSpawn, .codexFork: result.codex += 1
+                case .grokSpawn, .grokFork: result.grok += 1
                 case .importBridge: result.imports += 1
                 case .orchestrated: result.heuristic += 1
                 case nil: break
@@ -777,6 +780,7 @@ final class NavigationSnapshotStore: ObservableObject {
                 result.subagents += nested.subagents
                 result.remoteTasks += nested.remoteTasks
                 result.codex += nested.codex
+                result.grok += nested.grok
                 result.imports += nested.imports
                 result.heuristic += nested.heuristic
             }

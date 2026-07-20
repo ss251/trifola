@@ -7,6 +7,7 @@ import TrifolaKit
 /// session that simply is not running) read as breakage.
 enum TranscriptOnlyReason: Equatable {
     case codexSession
+    case grokSession
     case remoteSession
     case notRunning
     case headless
@@ -52,6 +53,8 @@ enum SessionOpenActionPresentation: Equatable {
         switch self {
         case .transcript(.codexSession):
             return "Codex session — workspace jump isn't supported yet"
+        case .transcript(.grokSession):
+            return "Grok session — workspace jump isn't supported yet"
         case .transcript(.remoteSession):
             return "Remote session"
         case .transcript(.notRunning):
@@ -86,6 +89,8 @@ enum SessionOpenActionPresentation: Equatable {
             switch reason {
             case .codexSession:
                 return base + " — Codex threads can't be joined to the Claude live registry yet, so jumping to a terminal could target the wrong one"
+            case .grokSession:
+                return base + " — Grok sessions can't be joined to the Claude live registry, so jumping to a terminal could target the wrong one"
             case .remoteSession:
                 return base + " — this session runs on another machine"
             case .notRunning:
@@ -112,25 +117,28 @@ struct SessionActions: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            QuietTapButton(action: {
-                let cmd = SessionResume.command(sessionID: session.id, cwd: session.cwd)
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cmd, forType: .string)
-                flash("Resume command copied")
-            }) {
-                Label(compact ? "Copy" : "Copy resume", systemImage: "doc.on.doc")
-                    .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
+            if session.provider != .grok {
+                QuietTapButton(action: {
+                    let cmd = SessionResume.command(sessionID: session.id, cwd: session.cwd)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(cmd, forType: .string)
+                    flash("Resume command copied")
+                }) {
+                    Label(compact ? "Copy" : "Copy resume", systemImage: "doc.on.doc")
+                        .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
+                }
+                .accessibilityLabel("Copy resume command")
+                .accessibilityHint("Copy the claude resume command for this session")
+                .help("Copy `claude --resume \(session.shortID)…` to the clipboard")
             }
-            .accessibilityLabel("Copy resume command")
-            .accessibilityHint("Copy the claude resume command for this session")
-            .help("Copy `claude --resume \(session.shortID)…` to the clipboard")
 
-            if !compact {
+            if !compact || session.provider == .grok {
                 QuietTapButton(action: {
                     NSWorkspace.shared.activateFileViewerSelecting(
                         [URL(fileURLWithPath: session.filePath)])
                 }) {
                     Label("Reveal", systemImage: "folder")
+                        .labelStyle(compact ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
                 }
                 .help("Reveal the transcript .jsonl in Finder")
             }

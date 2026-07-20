@@ -32,8 +32,14 @@ struct FirstRunOnboardingTests {
     @Test("welcome and Automation copy name exact local access and honest denial fallback")
     func honestCopy() {
         let welcome = FirstLaunchWelcomeCopy(
+            corpusPresence: ProviderCorpusPresence(providers: [.claude, .codex, .grok]))
+        #expect(welcome.reads.contains("~/.claude, ~/.codex, and ~/.grok"))
+        let twoProviders = FirstLaunchWelcomeCopy(
             corpusPresence: ProviderCorpusPresence(providers: [.claude, .codex]))
-        #expect(welcome.reads.contains("~/.claude and ~/.codex"))
+        #expect(twoProviders.reads.contains("~/.claude and ~/.codex"))
+        let oneProvider = FirstLaunchWelcomeCopy(
+            corpusPresence: ProviderCorpusPresence(providers: [.claude]))
+        #expect(oneProvider.reads.contains("under ~/.claude."))
         #expect(FirstLaunchWelcomeCopy.never.contains("no cloud"))
         #expect(FirstLaunchWelcomeCopy.never.contains("no telemetry"))
         #expect(FirstLaunchWelcomeCopy.never.contains("never edits"))

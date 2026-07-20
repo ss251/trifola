@@ -1007,7 +1007,7 @@ struct IndexTests {
         let legacy = dir.appendingPathComponent("session-index.json")
         let database = dir.appendingPathComponent("session-index.sqlite3")
         let zone = TimeZone(identifier: "UTC")!
-        let payload = #"{"version":21,"timeZoneIdentifier":"\#(zone.identifier)","entries":[]}"#
+        let payload = #"{"version":22,"timeZoneIdentifier":"\#(zone.identifier)","entries":[]}"#
         try Data(payload.utf8)
             .write(to: legacy, options: .atomic)
 
