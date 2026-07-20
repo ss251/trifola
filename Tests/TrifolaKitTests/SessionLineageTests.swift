@@ -168,8 +168,7 @@ struct SessionLineageTests {
                 entrypoint: "sdk-cli",
                 startedAt: instant.addingTimeInterval(60))],
             sessionStartedAt: [
-                // The Claude session began half an hour AFTER the codex child.
-                SessionLineage.key(parent): instant.addingTimeInterval(1_860),
+                SessionLineage.key(parent): instant.addingTimeInterval(61),
             ])
 
         let forest = SessionLineage.resolve(
@@ -205,6 +204,7 @@ struct SessionLineageTests {
         let detached = try #require(node("claude-parent/agent-inner", in: forest))
         #expect(detached.spawnDepth == 0)
         #expect(detached.parentMissingNote?.contains("no matching spawn record") == true)
+        #expect(detached.edgeDetail == nil)
 
         // The anchored prefix strip derives "agent-inner" (not "inner"), so a
         // matching parent record verifies and attaches the child normally.

@@ -627,7 +627,7 @@ public enum SessionLineage {
                 spawnDepth: depth,
                 displayDepth: min(depth, 2),
                 parentMissingNote: missing,
-                edgeDetail: candidate?.detail)
+                edgeDetail: acceptedParents[nodeKey] == nil ? nil : candidate?.detail)
         }
 
         let materializedRoots = roots.map { materialize($0, depth: 0) }.sorted {
@@ -658,8 +658,8 @@ public enum SessionLineage {
     ) -> Bool {
         guard let parentLastActivity else { return false }
         // A parent cannot spawn work before it existed: when the parent's start
-        // is known it must precede the child (small clock-skew allowance).
-        if let parentStart, parentStart.timeIntervalSince(childStart) > 60 {
+        // is known it must precede the child.
+        if let parentStart, parentStart > childStart {
             return false
         }
         let delta = parentLastActivity.timeIntervalSince(childStart)
