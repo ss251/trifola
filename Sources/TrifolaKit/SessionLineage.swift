@@ -455,8 +455,7 @@ public enum SessionLineage {
             })
         let keyByPath = Dictionary(
             keyedSessions.filter { !$0.summary.filePath.isEmpty }.map {
-                (URL(fileURLWithPath: $0.summary.filePath).standardizedFileURL.path,
-                 $0.key)
+                (standardizedPath($0.summary.filePath), $0.key)
             }, uniquingKeysWith: { first, _ in first })
         func actualKey(provider: Provider, machine: String, id: String) -> String? {
             lookupByProviderMachineID[lookupKey(provider, machine, id)]
@@ -628,7 +627,7 @@ public enum SessionLineage {
             for (parent, parentKey) in keyedSessions
             where parent.provider == .claude && !parent.cwd.isEmpty {
                 try checkForCancellation()
-                let path = URL(fileURLWithPath: parent.cwd).standardizedFileURL.path
+                let path = standardizedPath(parent.cwd)
                 let entry = HeuristicParent(
                     key: parentKey, cwd: parent.cwd,
                     lastActivity: parent.lastActivity)
@@ -645,8 +644,7 @@ public enum SessionLineage {
                       let child = summaryByKey[childKey],
                       let started = metadata.startedAt else { continue }
                 guard nodes[childKey]?.candidate == nil else { continue }
-                let childPath = URL(fileURLWithPath: child.cwd)
-                    .standardizedFileURL.path
+                let childPath = standardizedPath(child.cwd)
                 let childName = URL(fileURLWithPath: childPath).lastPathComponent
                 var pool = claudeByExactWorkspace[
                     "\(child.machineID):\(childPath)"] ?? []
@@ -782,8 +780,21 @@ public enum SessionLineage {
     public static func key(_ summary: SessionSummary) -> String {
         let path = summary.filePath.isEmpty
             ? "<synthetic>"
-            : URL(fileURLWithPath: summary.filePath).standardizedFileURL.path
+            : standardizedPath(summary.filePath)
         return "\(lookupKey(summary.provider, summary.machineID, summary.id)):\(path)"
+    }
+
+    /// `URL(fileURLWithPath:)` stats the filesystem and `standardizedFileURL`
+    /// re-normalizes the string; per-key that made corpus-wide key maps cost
+    /// seconds. Absolute, already-clean paths — the overwhelming case — skip
+    /// Foundation entirely; anything else falls back to the exact URL result.
+    static func standardizedPath(_ path: String) -> String {
+        if path.hasPrefix("/"), !path.hasSuffix("/"),
+           !path.contains("//"), !path.contains("/./"),
+           !path.contains("/../"), path != "/..", path != "/." {
+            return path
+        }
+        return URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     private static func lookupKey(_ provider: Provider, _ machine: String,

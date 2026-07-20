@@ -65,6 +65,11 @@ enum SessionIndexDatabase {
         }
     }
 
+    private static func chunkCount(_ rows: Int) -> Int {
+        max(1, min(ProcessInfo.processInfo.activeProcessorCount,
+                   (rows + 511) / 512))
+    }
+
     static func load(from requested: URL, timeZone: TimeZone) -> SessionIndexCacheLoad {
         let url = databaseURL(for: requested)
         guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
@@ -92,24 +97,69 @@ enum SessionIndexDatabase {
                 SELECT path, file_size, modified_at, provider, machine_id, accumulator
                 FROM session_entries
                 """)
-            let decoder = JSONDecoder()
-            var index = SessionIndex()
+            // Row payloads decode in parallel: sequential JSONDecoder work on
+            // tens of thousands of accumulator blobs is what made a "warm"
+            // launch take tens of seconds. SQLite reads stay on this thread.
+            struct RawRow {
+                let path: String
+                let size: Int64
+                let mtime: Double
+                let provider: Provider
+                let machineID: String
+                let blob: Data
+            }
+            var raw: [RawRow] = []
             while rows.step() == SQLITE_ROW {
-                let path = rows.text(0)
                 guard let provider = Provider(rawValue: rows.text(3)) else {
                     return .rebuild("session-index contains an unknown provider")
                 }
-                let accumulator = try decoder.decode(
-                    SessionParserState.self, from: rows.data(5))
-                let machineID = rows.text(4)
-                index.entries[path] = SessionIndex.Entry(
-                    size: UInt64(bitPattern: rows.int64(1)),
-                    mtime: Date(timeIntervalSince1970: rows.double(2)),
-                    acc: accumulator,
+                raw.append(RawRow(
+                    path: rows.text(0),
+                    size: rows.int64(1),
+                    mtime: rows.double(2),
                     provider: provider,
-                    machineID: machineID,
-                    summary: accumulator.summary(
-                        filePath: path, machineID: machineID))
+                    machineID: rows.text(4),
+                    blob: rows.data(5)))
+            }
+            let decoded = Locked<[[(String, SessionIndex.Entry)]]>(
+                Array(repeating: [], count: raw.count == 0 ? 0 : chunkCount(raw.count)))
+            let failed = Locked<Error?>(nil)
+            if !raw.isEmpty {
+                let chunks = chunkCount(raw.count)
+                let stride = (raw.count + chunks - 1) / chunks
+                DispatchQueue.concurrentPerform(iterations: chunks) { chunk in
+                    let decoder = JSONDecoder()
+                    let lower = chunk * stride
+                    let upper = min(raw.count, lower + stride)
+                    var entries: [(String, SessionIndex.Entry)] = []
+                    entries.reserveCapacity(upper - lower)
+                    for i in lower..<upper {
+                        let row = raw[i]
+                        do {
+                            let accumulator = try decoder.decode(
+                                SessionParserState.self, from: row.blob)
+                            entries.append((row.path, SessionIndex.Entry(
+                                size: UInt64(bitPattern: row.size),
+                                mtime: Date(timeIntervalSince1970: row.mtime),
+                                acc: accumulator,
+                                provider: row.provider,
+                                machineID: row.machineID,
+                                summary: accumulator.summary(
+                                    filePath: row.path,
+                                    machineID: row.machineID))))
+                        } catch {
+                            failed.withLock { $0 = $0 ?? error }
+                            return
+                        }
+                    }
+                    decoded.withLock { $0[chunk] = entries }
+                }
+            }
+            if let error = failed.withLock({ $0 }) { throw error }
+            var index = SessionIndex()
+            index.entries.reserveCapacity(raw.count)
+            for chunk in decoded.withLock({ $0 }) {
+                for (path, entry) in chunk { index.entries[path] = entry }
             }
             index.reconcileCrossFileUsage()
             return .ready(index)
