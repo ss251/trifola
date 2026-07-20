@@ -70,6 +70,44 @@ struct GrokSessionTests {
         #expect(accumulator.spawnedChildren.first?.childSessionID == "grok-child")
     }
 
+    @Test func offsetLessTimestampBucketsLikeTheCLI() throws {
+        // Parity guard: the CLI's `new Date("2026-07-15T12:34:56")` parses an
+        // offset-less ISO string in local time; the shared parseDate (correct
+        // for Claude/Codex, which always emit `Z`) returns nil for it, which
+        // would bucket the turn's tokens under "" in the app and under a real
+        // local day in the CLI — a silent day/model parity break. The Grok
+        // parser must fall back to a local parse so the twins agree.
+        var accumulator = GrokSessionAccumulator(defaultID: "offset-less")
+        accumulator.ingestSummary(Data(#"""
+        {"info":{"id":"grok-tz","cwd":"/Users/dev/projects/tz"},
+         "created_at":"2026-07-15T00:00:00Z"}
+        """#.utf8), fallbackCWD: "/Users/dev/fallback")
+        let updates =
+            #"{"method":"_x.ai/session/update","timestamp":"2026-07-15T12:34:56","params":{"sessionId":"grok-tz","update":{"sessionUpdate":"turn_completed","prompt_id":"p1","usage":{"inputTokens":50,"outputTokens":5,"totalTokens":55,"cachedReadTokens":0,"modelCalls":1,"modelUsage":{"grok-4.5":{"inputTokens":50,"outputTokens":5,"totalTokens":55,"cachedReadTokens":0,"modelCalls":1}}}}}}"#
+            + "\n"
+        accumulator.ingestUpdates(Data(updates.utf8))
+
+        let expectedDay: String = {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = .current
+            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+            f.isLenient = true
+            let parsed = f.date(from: "2026-07-15T12:34:56")!
+            let day = DateFormatter()
+            day.locale = Locale(identifier: "en_US_POSIX")
+            day.timeZone = .current
+            day.dateFormat = "yyyy-MM-dd"
+            return day.string(from: parsed)
+        }()
+
+        let summary = accumulator.summary(
+            filePath: "/Users/dev/.grok/sessions/%2FUsers%2Fdev%2Fprojects/grok-tz/chat_history.jsonl")
+        // The turn landed on a real local day, never the empty "parse failed" key.
+        #expect(summary.usageByModelDay[""] == nil)
+        #expect(summary.usageByModelDay[expectedDay]?["grok-4.5"]?.total == 55)
+    }
+
     @Test func transcriptProjectionExtractsOnlyHumanAndAssistantProse() {
         let user = GrokTranscriptParser.events(
             fromLine: Data(#"{"type":"user","content":[{"type":"text","text":"needle phrase"}]}"#.utf8),

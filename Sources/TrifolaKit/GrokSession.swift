@@ -427,13 +427,36 @@ public struct GrokSessionAccumulator: Sendable, Codable {
     }
 
     private static func date(_ value: Any?) -> Date? {
-        if let value = value as? String { return parseDate(value) }
+        if let value = value as? String {
+            if let parsed = parseDate(value) { return parsed }
+            // Parity with the CLI's lenient `new Date(str)`: the shared
+            // parseDate requires an explicit timezone (correct for Claude/Codex,
+            // which always emit `Z`), but Grok's per-turn timestamps are usually
+            // epoch numbers and an offset-less ISO string would otherwise parse
+            // to nil here and to a local-time date in the CLI — splitting a
+            // turn's tokens into different day buckets and breaking the parity
+            // contract. Fall back to a local-time parse so the twins agree.
+            return offsetLessISO.date(from: value)
+        }
         if let value = value as? NSNumber {
             let raw = value.doubleValue
             return Date(timeIntervalSince1970: raw > 10_000_000_000 ? raw / 1_000 : raw)
         }
         return nil
     }
+
+    /// Offset-less ISO (`yyyy-MM-dd'T'HH:mm:ss`, optional fractional seconds)
+    /// read in the machine's current zone — matches JavaScript
+    /// `new Date("2026-07-15T12:34:56")`. `isLenient` absorbs a trailing
+    /// fractional component the fixed format doesn't name.
+    private static let offsetLessISO: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        f.isLenient = true
+        return f
+    }()
 }
 
 // MARK: - Visible/searchable transcript projection
