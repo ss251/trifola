@@ -7,8 +7,9 @@ import {
   parseCodexRollout,
   walkCodexRollouts,
 } from "./codex.js";
+import { parseGrokSession, readGrokSession, walkGrokSessions } from "./grok.js";
 
-export const SEARCH_SCOPE = "Claude Code + Codex conversation text (user prompts + assistant prose; tool output excluded)";
+export const SEARCH_SCOPE = "Claude Code + Codex + Grok conversation text (user prompts + assistant prose; tool output excluded)";
 export const RAW_WARNING = "don't share raw search output without reviewing conversation text";
 export const MAX_ORDERED_TOKENS_PER_DOCUMENT = 20_000;
 
@@ -66,12 +67,14 @@ export interface SearchDocument extends SearchDocumentSeed {
   consumedBytes: number;
 }
 
-export type SearchProvider = "claude" | "codex";
+export type SearchProvider = "claude" | "codex" | "grok";
 
 export interface SearchRoots {
   claude: string;
   codex: string;
   codexHome: string;
+  grok: string;
+  grokHome: string;
 }
 
 export interface SearchSourceFile {
@@ -137,7 +140,13 @@ export function searchClaudeProjects(
   onProgress?: (filesDone: number, totalFiles: number, pass: "phrase" | "terms") => void,
 ): SearchSummary {
   return searchCorpora(
-    { claude: projectsDir, codex: path.join(projectsDir, ".codex-disabled"), codexHome: path.dirname(projectsDir) },
+    {
+      claude: projectsDir,
+      codex: path.join(projectsDir, ".codex-disabled"),
+      codexHome: path.dirname(projectsDir),
+      grok: path.join(projectsDir, ".grok-disabled"),
+      grokHome: path.dirname(projectsDir),
+    },
     request,
     onMatch,
     onProgress,
@@ -204,6 +213,11 @@ export function readSearchDocument(
     if (!read.rollout) return null;
     return codexSearchDocument(read.rollout, filePath, projectsDir, seed);
   }
+  if (provider === "grok") {
+    const summaryPath = path.join(path.dirname(filePath), "summary.json");
+    const rollout = readGrokSession(summaryPath);
+    return rollout ? grokSearchDocument(rollout, filePath, projectsDir, seed) : null;
+  }
   let data: Buffer;
   try {
     data = fs.readFileSync(filePath);
@@ -222,6 +236,14 @@ export function parseSearchBuffer(
 ): SearchDocument {
   if (seed?.provider === "codex") {
     return codexSearchDocument(parseCodexRollout(data, path.basename(filePath).replace(/\.jsonl(?:\.zst)?$/, "")), filePath, projectsDir, seed);
+  }
+  if (seed?.provider === "grok") {
+    return grokSearchDocument(
+      parseGrokSession(null, data, null, seed.sessionId || path.basename(path.dirname(filePath)), path.join(path.dirname(filePath), "summary.json")),
+      filePath,
+      projectsDir,
+      seed,
+    );
   }
   let sessionId = seed?.sessionId ?? path.basename(filePath, ".jsonl");
   let title = seed?.title ?? "";
@@ -360,9 +382,10 @@ export function containsPhrase(tokens: string[], phrase: string[]): boolean {
 }
 
 function scanFile(source: SearchSourceFile, request: SearchRequest): FileMatch | null {
-  const document = source.provider === "codex"
-    ? readSearchDocument(source.filePath, source.root, { provider: "codex", sessionId: "", title: "", cwd: "", lastActivity: null })
-    : readSearchDocument(source.filePath, source.root);
+  const seed = source.provider === "claude"
+    ? undefined
+    : { provider: source.provider, sessionId: "", title: "", cwd: "", lastActivity: null };
+  const document = readSearchDocument(source.filePath, source.root, seed);
   if (!document) return null;
   const match = searchMatchForDocument(document, request, "scan");
   return match ? { match, exactPhrase: match.exactPhrase } : null;
@@ -378,7 +401,39 @@ export function collectSearchFiles(roots: SearchRoots): SearchSourceFile[] {
     if (!read.rollout || codexRolloutIsImported(read.rollout, manifest)) continue;
     output.push({ filePath, provider: "codex", root: roots.codex });
   }
+  for (const summaryPath of walkGrokSessions(roots.grokHome)) {
+    const chatPath = path.join(path.dirname(summaryPath), "chat_history.jsonl");
+    try {
+      const stat = fs.lstatSync(chatPath);
+      if (stat.isFile() && !stat.isSymbolicLink()) {
+        output.push({ filePath: chatPath, provider: "grok", root: roots.grok });
+      }
+    } catch { /* metadata-only sessions have no searchable prose */ }
+  }
   return output;
+}
+
+function grokSearchDocument(
+  rollout: ReturnType<typeof parseGrokSession>,
+  filePath: string,
+  sessionsDir: string,
+  seed?: SearchDocumentSeed,
+): SearchDocument {
+  const cwd = rollout.cwd || seed?.cwd || "";
+  const project = cwd ? path.basename(cwd) : "—";
+  const fallbackTitle = rollout.events.find((event) => event.role === "user")?.text
+    .replace(/\s+/g, " ").trim().slice(0, 90) || project || rollout.sessionId;
+  return {
+    provider: "grok",
+    sessionId: rollout.sessionId || seed?.sessionId || path.basename(path.dirname(filePath)),
+    title: seed?.title || rollout.title || fallbackTitle,
+    cwd,
+    project,
+    filePath,
+    lastActivity: rollout.lastActivity ?? seed?.lastActivity ?? null,
+    events: rollout.events,
+    consumedBytes: rollout.consumedBytes,
+  };
 }
 
 function codexSearchDocument(

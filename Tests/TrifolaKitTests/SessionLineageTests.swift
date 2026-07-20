@@ -19,7 +19,8 @@ struct SessionLineageTests {
             provider: provider,
             project: "repo",
             cwd: cwd,
-            model: provider == .codex ? "gpt-5.4" : "claude-sonnet-4-6",
+            model: provider == .codex ? "gpt-5.4"
+                : provider == .grok ? "grok-4.5" : "claude-sonnet-4-6",
             lastActivity: instant.addingTimeInterval(lastOffset),
             messageCount: 2,
             usage: SessionUsage(inputTokens: 1_000, outputTokens: 100,
@@ -28,6 +29,32 @@ struct SessionLineageTests {
             filePath: filePath ?? "/Users/dev/.sessions/\(id).jsonl",
             name: id,
             subagentInvocations: invocations)
+    }
+
+    @Test("Grok summary forks and parent-side spawns nest deterministically")
+    func grokDeterministicEdges() throws {
+        let parent = session("grok-parent", provider: .grok)
+        let fork = session("grok-fork", provider: .grok)
+        let spawned = session("grok-spawned", provider: .grok)
+        let evidence = SessionLineageEvidence(
+            grokThreads: [
+                GrokThreadMetadata(sessionID: "grok-parent"),
+                GrokThreadMetadata(
+                    sessionID: "grok-fork", parentSessionID: "grok-parent",
+                    sessionKind: "subagent_resume", forkedAt: instant),
+            ],
+            grokSpawns: [GrokSpawnMetadata(
+                childSessionID: "grok-spawned", parentSessionID: "grok-parent",
+                parentPromptID: "prompt-1", subagentType: "researcher",
+                description: "Check the parser", model: "grok-4.5-build",
+                spawnedAt: instant)])
+        let forest = SessionLineage.resolve(
+            sessions: [parent, fork, spawned], evidence: evidence)
+        #expect(node("grok-fork", in: forest)?.edgeKind == .grokFork)
+        #expect(node("grok-spawned", in: forest)?.edgeKind == .grokSpawn)
+        #expect(node("grok-spawned", in: forest)?.edgeDetail == "Check the parser")
+        #expect(forest.roots.count == 1)
+        #expect(forest.roots.first?.session.id == "grok-parent")
     }
 
     private func node(_ id: String, in forest: SessionLineageForest) -> LineageNode? {

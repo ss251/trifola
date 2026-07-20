@@ -27,6 +27,16 @@ export function resolveCodexDir(env = process.env, home = os.homedir()) {
     const resolvedHome = env.HOME?.trim() || home;
     return path.join(resolvedHome, ".codex");
 }
+/** Resolve Grok Build's approved local-state root. Mirrors GrokPaths.resolve. */
+export function resolveGrokDir(env = process.env, home = os.homedir()) {
+    const override = env.GROK_HOME;
+    if (override && override.trim().length > 0) {
+        const value = override.trim();
+        return path.resolve(value === "~" ? home : value.startsWith("~/") ? path.join(home, value.slice(2)) : value);
+    }
+    const resolvedHome = env.HOME?.trim() || home;
+    return path.join(resolvedHome, ".grok");
+}
 /** The user-lane skills catalog directory — `<claudeDir>/skills`. */
 export function skillsDirOf(claudeDir) {
     return path.join(claudeDir, "skills");

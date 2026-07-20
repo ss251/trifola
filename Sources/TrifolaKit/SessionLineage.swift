@@ -80,15 +80,21 @@ public struct CodexImportRecord: Sendable, Hashable, Codable {
 /// Immutable evidence captured beside one session-index generation.
 public struct SessionLineageEvidence: Sendable, Equatable {
     public var codexThreads: [CodexThreadMetadata]
+    public var grokThreads: [GrokThreadMetadata]
+    public var grokSpawns: [GrokSpawnMetadata]
     public var remoteTasks: [RemoteAgentSidecar]
     public var importRecords: [CodexImportRecord]
     public var sessionStartedAt: [String: Date]
 
     public init(codexThreads: [CodexThreadMetadata] = [],
+                grokThreads: [GrokThreadMetadata] = [],
+                grokSpawns: [GrokSpawnMetadata] = [],
                 remoteTasks: [RemoteAgentSidecar] = [],
                 importRecords: [CodexImportRecord] = [],
                 sessionStartedAt: [String: Date] = [:]) {
         self.codexThreads = codexThreads
+        self.grokThreads = grokThreads
+        self.grokSpawns = grokSpawns
         self.remoteTasks = remoteTasks
         self.importRecords = importRecords
         self.sessionStartedAt = sessionStartedAt
@@ -173,6 +179,8 @@ public enum LineageEdgeKind: Sendable, Hashable, Codable {
     case remoteTask
     case codexSpawn
     case codexFork
+    case grokSpawn
+    case grokFork
     case importBridge
     case orchestrated
 
@@ -182,6 +190,8 @@ public enum LineageEdgeKind: Sendable, Hashable, Codable {
         case .remoteTask: return "Remote task"
         case .codexSpawn: return "Codex spawn"
         case .codexFork: return "Codex fork"
+        case .grokSpawn: return "Grok subagent"
+        case .grokFork: return "Grok fork / resume"
         case .importBridge: return "Imported into Codex"
         case .orchestrated: return "linked by workspace + timing"
         }
@@ -250,7 +260,7 @@ public struct LineageSessionReference: Identifiable, Sendable, Hashable {
         self.cwd = cwd
         self.title = title
         model = nil
-        tier = provider == .codex ? .codex : .other
+        tier = provider == .codex ? .codex : provider == .grok ? .grok : .other
         lastActivity = startedAt
         self.startedAt = startedAt
         cost = 0
@@ -573,6 +583,45 @@ public enum SessionLineage {
                 kind: kind, confidence: .deterministic,
                 detail: metadata.agentNickname,
                 priority: 3), to: childKey)
+        }
+
+        // 3b. Grok-native fork/resume tree. Child summary metadata is the
+        // authoritative edge; parent-side `subagent_spawned` fills gaps and
+        // contributes the human subagent description when available.
+        let grokSpawnByChild = Dictionary(
+            evidence.grokSpawns.map { ($0.childSessionID, $0) },
+            uniquingKeysWith: { first, _ in first })
+        for metadata in evidence.grokThreads {
+            try checkForCancellation()
+            guard let parentID = metadata.parentSessionID,
+                  let childKey = anyKey(provider: .grok, id: metadata.sessionID),
+                  let child = summaryByKey[childKey] else { continue }
+            let parentKey = actualKey(provider: .grok, machine: child.machineID,
+                                      id: parentID)
+            let nativeKind = metadata.sessionKind?.lowercased() ?? ""
+            let kind: LineageEdgeKind = nativeKind.contains("fork")
+                || nativeKind.contains("resume") ? .grokFork : .grokSpawn
+            let spawn = grokSpawnByChild[metadata.sessionID]
+            offer(Candidate(
+                parentKey: parentKey,
+                missingParentID: parentKey == nil ? parentID : nil,
+                kind: kind, confidence: .deterministic,
+                detail: spawn?.description ?? metadata.contextSource,
+                priority: 3), to: childKey)
+        }
+
+        for spawn in evidence.grokSpawns {
+            try checkForCancellation()
+            guard let childKey = anyKey(provider: .grok, id: spawn.childSessionID),
+                  let child = summaryByKey[childKey] else { continue }
+            let parentKey = actualKey(provider: .grok, machine: child.machineID,
+                                      id: spawn.parentSessionID)
+            offer(Candidate(
+                parentKey: parentKey,
+                missingParentID: parentKey == nil ? spawn.parentSessionID : nil,
+                kind: .grokSpawn, confidence: .deterministic,
+                detail: spawn.description ?? spawn.subagentType,
+                priority: 2), to: childKey)
         }
 
         // 4. Claude → Codex import manifest bridge. Imported rollouts remain

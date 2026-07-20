@@ -39,6 +39,7 @@ export interface Finding {
   usageValueByProvider: ProviderNumbers<number>;
   totalInputTokensByProvider: ProviderNumbers<number>;
   usageEntriesByProvider: ProviderNumbers<number>;
+  partialUsageSessionsByProvider: ProviderNumbers<number>;
   sessionsByProvider: ProviderNumbers<number>;
   subagentRunsByProvider: ProviderNumbers<number>;
   /** Fresh-input premium above an all-cache-read floor, USD. */
@@ -92,8 +93,8 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
       firstTouchUsd += firstTouchDollarsOfUsage(usage, rate);
     }
   }
-  const usageValueByProvider: ProviderNumbers<number> = { claude: 0, codex: 0 };
-  for (const provider of ["claude", "codex"] as const) {
+  const usageValueByProvider: ProviderNumbers<number> = { claude: 0, codex: 0, grok: 0 };
+  for (const provider of ["claude", "codex", "grok"] as const) {
     for (const [day, byModel] of corpus.usageByProviderDayModel[provider]) {
       for (const [model, usage] of byModel) {
         usageValueByProvider[provider] += costOfUsage(usage, resolvedRate(model, day));
@@ -103,8 +104,8 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
 
   const totalUsage = corpus.totalUsage;
   const totalInput = totalUsage.inputTokens + totalUsage.cacheCreateTokens + totalUsage.cacheReadTokens;
-  const totalInputTokensByProvider: ProviderNumbers<number> = { claude: 0, codex: 0 };
-  for (const provider of ["claude", "codex"] as const) {
+  const totalInputTokensByProvider: ProviderNumbers<number> = { claude: 0, codex: 0, grok: 0 };
+  for (const provider of ["claude", "codex", "grok"] as const) {
     const usage = corpus.totalUsageByProvider[provider];
     totalInputTokensByProvider[provider] = usage.inputTokens + usage.cacheCreateTokens + usage.cacheReadTokens;
   }
@@ -120,6 +121,7 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
     subagentRunsByProvider: {
       claude: corpus.filesByProvider.claude - corpus.sessionsByProvider.claude,
       codex: corpus.filesByProvider.codex - corpus.sessionsByProvider.codex,
+      grok: corpus.filesByProvider.grok - corpus.sessionsByProvider.grok,
     },
     taxUsd,
     taxUsdPerSession,
@@ -127,6 +129,7 @@ export function buildFinding(catalog: readonly Skill[], corpus: CorpusStats): Fi
     usageValueByProvider,
     totalInputTokensByProvider,
     usageEntriesByProvider: { ...corpus.usageEntriesByProvider },
+    partialUsageSessionsByProvider: { ...corpus.partialUsageSessionsByProvider },
     freshInputPremiumUsd,
     firstTouchUsd,
     cacheHitRatePct,

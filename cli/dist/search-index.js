@@ -3,10 +3,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { MAX_ORDERED_TOKENS_PER_DOCUMENT, parseSearchBuffer, readSearchDocument, searchCorpora, searchMatchForDocument, tokenizeSearchText, collectSearchFiles, } from "./search.js";
-import { resolveCodexDir, codexSessionsDirOf } from "./config.js";
+import { resolveCodexDir, resolveGrokDir, codexSessionsDirOf } from "./config.js";
 import { detectZstd, walkCodexRollouts } from "./codex.js";
 export const SEARCH_SCHEMA_VERSION = 3;
 export const CLI_INDEX_FILENAME = "search-index.sqlite3";
+function rootForProvider(provider, roots) {
+    switch (provider) {
+        case "claude": return roots.claude;
+        case "codex": return roots.codex;
+        case "grok": return roots.grok;
+    }
+}
 const defaultLoader = createRequire(import.meta.url);
 export function detectNodeSqlite(loader = defaultLoader) {
     try {
@@ -43,10 +50,13 @@ export async function runTieredSearch(projectsDir, request, callbacks, options =
     const environment = options.environment ?? process.env;
     const home = options.home ?? os.homedir();
     const codexHome = resolveCodexDir(environment, home);
+    const grokHome = resolveGrokDir(environment, home);
     const roots = {
         claude: projectsDir,
         codex: codexSessionsDirOf(codexHome),
         codexHome,
+        grok: path.join(grokHome, "sessions"),
+        grokHome,
     };
     const compressed = walkCodexRollouts(roots.codex).filter((file) => file.endsWith(".jsonl.zst")).length;
     if (compressed > 0 && !detectZstd()) {
@@ -309,7 +319,13 @@ function openWritableIndex(sqlite, databasePath) {
 }
 export async function updateIndex(database, roots) {
     const resolvedRoots = typeof roots === "string"
-        ? { claude: roots, codex: path.join(roots, ".codex-disabled"), codexHome: path.dirname(roots) }
+        ? {
+            claude: roots,
+            codex: path.join(roots, ".codex-disabled"),
+            codexHome: path.dirname(roots),
+            grok: path.join(roots, ".grok-disabled"),
+            grokHome: path.dirname(roots),
+        }
         : roots;
     const existing = loadStoredFingerprints(database);
     const files = collectSearchFiles(resolvedRoots);
@@ -395,7 +411,7 @@ function prepareChange(source, metadata, old) {
     }
     const parsed = source.provider === "claude"
         ? readSearchDocument(filePath, source.root)
-        : readSearchDocument(filePath, source.root, { provider: "codex", sessionId: "", title: "", cwd: "", lastActivity: null });
+        : readSearchDocument(filePath, source.root, { provider: source.provider, sessionId: "", title: "", cwd: "", lastActivity: null });
     if (!parsed)
         return null;
     let data;
@@ -604,7 +620,7 @@ function queryIndex(database, roots, request, engine, onMatch) {
     for (const candidate of ranked) {
         if (emitted >= request.limit)
             break;
-        const parsed = readSearchDocument(candidate.filePath, candidate.provider === "claude" ? roots.claude : roots.codex, {
+        const parsed = readSearchDocument(candidate.filePath, rootForProvider(candidate.provider, roots), {
             provider: candidate.provider,
             sessionId: candidate.sessionId,
             title: candidate.title,

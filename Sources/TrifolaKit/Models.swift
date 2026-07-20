@@ -43,6 +43,7 @@ public enum TrifolaCommandLine {
         "--benchmark-search-append-interval",
         "--benchmark-search-json",
         "--help",
+        "--grok-parity",
         "--mcp",
         "--probe-ax",
         "--render-attention",
@@ -95,6 +96,7 @@ public enum TrifolaCommandLine {
         --benchmark-nav-runs N      Measure N passes after one warm-up (default 7)
         --benchmark-nav-json PATH   Write deterministic JSON (`-` prints it)
       --spend-by-model [day ...]    Print per-model spend for local yyyy-MM-dd days
+      --grok-parity                 Print aggregate Grok ingestion parity JSON
       --probe-ax <pid-or-app-name>  Dump a bounded, read-only Accessibility tree
       --render-icon <iconset-dir>   Export the iconset plus banner/social artwork
       --render-logo <output-dir>    Export the three launch identity studies
@@ -150,11 +152,13 @@ public enum BrandAssetManifest {
 public enum Provider: String, Sendable, Hashable, Codable, CaseIterable {
     case claude
     case codex
+    case grok
 
     public var label: String {
         switch self {
         case .claude: return "Claude"
         case .codex: return "Codex"
+        case .grok: return "Grok"
         }
     }
 
@@ -165,6 +169,7 @@ public enum Provider: String, Sendable, Hashable, Codable, CaseIterable {
         switch self {
         case .claude: return "Claude"
         case .codex: return "OpenAI Codex"
+        case .grok: return "xAI Grok"
         }
     }
 
@@ -174,6 +179,7 @@ public enum Provider: String, Sendable, Hashable, Codable, CaseIterable {
         switch self {
         case .claude: return .claudeStarburst
         case .codex: return .openAIBlossom
+        case .grok: return .grokMark
         }
     }
 }
@@ -183,10 +189,11 @@ public enum Provider: String, Sendable, Hashable, Codable, CaseIterable {
 public enum ProviderMarkKind: String, Sendable, Hashable, CaseIterable {
     case claudeStarburst
     case openAIBlossom
+    case grokMark
 }
 
 public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
-    case opus, sonnet, haiku, codex, user, other
+    case opus, sonnet, haiku, codex, grok, user, other
 
     /// An OPTIONAL user-defined tier. Configure it with `configureUserTier(_:)` to
     /// route model ids that contain a lowercased substring (e.g. a third-party or
@@ -228,6 +235,7 @@ public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
         let r = PricingCatalog.normalize(raw)
         if r.hasPrefix("gpt-") || r.hasPrefix("codex")
             || PricingCatalog.bundledCodexModelIDs.contains(r) { self = .codex }
+        else if r.hasPrefix("grok-") { self = .grok }
         else if r.contains("opus") { self = .opus }
         else if r.contains("sonnet") { self = .sonnet }
         else if r.contains("haiku") { self = .haiku }
@@ -246,6 +254,7 @@ public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
         case .sonnet: return "Sonnet"
         case .haiku: return "Haiku"
         case .codex: return "Codex"
+        case .grok: return "Grok"
         case .user: return userTier?.label ?? "Custom"
         case .other: return "Other"
         }
@@ -267,6 +276,7 @@ public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {
         case .sonnet: return (3, 15)    // Sonnet
         case .haiku:  return (1, 5)     // Haiku
         case .codex:  return (5, 30)    // gpt-5.6-sol representative
+        case .grok:   return (2, 6)     // grok-4.5 representative
         case .user:   return userTier?.rate ?? (5, 25)
         case .other:  return (5, 25)
         }
@@ -513,6 +523,11 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
     /// of the receipt's dedup note ("N raw → M unique, last-chunk-wins").
     /// 0 for synthetic/pre-W3 summaries.
     public let rawUsageBlocks: Int
+    /// True when the upstream provider explicitly says its token/cost totals
+    /// are not final. Grok's `turn_completed.usage.costIsPartial` is the first
+    /// source for this flag; tolerant decoding keeps older cached summaries
+    /// settled by default.
+    public let usageIsPartial: Bool
     /// Deduped billed entries whose `usage.speed` or `usage.service_tier`
     /// explicitly named a non-standard pricing mode. Trifola keeps standard
     /// rates for these entries today; the count lets a UI warn without guessing.
@@ -590,6 +605,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                 usageByModelDay: [String: [String: SessionUsage]] = [:],
                 messagesByModelDay: [String: [String: Int]] = [:],
                 rawUsageBlocks: Int = 0,
+                usageIsPartial: Bool = false,
                 unsupportedPricingEntryCount: Int = 0,
                 skillInvocations: [String: Int] = [:], commandInvocations: [String: Int] = [:],
                 agentCalls: Int = 0, subagentInvocations: [SubagentInvocation] = [],
@@ -621,6 +637,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         self.usageByModelDay = usageByModelDay
         self.messagesByModelDay = messagesByModelDay
         self.rawUsageBlocks = rawUsageBlocks
+        self.usageIsPartial = usageIsPartial
         self.unsupportedPricingEntryCount = unsupportedPricingEntryCount
         self.skillInvocations = skillInvocations
         self.commandInvocations = commandInvocations
@@ -661,6 +678,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
         usageByModelDay = try c.decodeIfPresent([String: [String: SessionUsage]].self, forKey: .usageByModelDay) ?? [:]
         messagesByModelDay = try c.decodeIfPresent([String: [String: Int]].self, forKey: .messagesByModelDay) ?? [:]
         rawUsageBlocks = try c.decodeIfPresent(Int.self, forKey: .rawUsageBlocks) ?? 0
+        usageIsPartial = try c.decodeIfPresent(Bool.self, forKey: .usageIsPartial) ?? false
         unsupportedPricingEntryCount = try c.decodeIfPresent(Int.self, forKey: .unsupportedPricingEntryCount) ?? 0
         skillInvocations = try c.decodeIfPresent([String: Int].self, forKey: .skillInvocations) ?? [:]
         commandInvocations = try c.decodeIfPresent([String: Int].self, forKey: .commandInvocations) ?? [:]
@@ -691,6 +709,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                        usageByDay: usageByDay,
                        usageByModel: usageByModel, usageByModelDay: usageByModelDay,
                        messagesByModelDay: messagesByModelDay, rawUsageBlocks: rawUsageBlocks,
+                       usageIsPartial: usageIsPartial,
                        unsupportedPricingEntryCount: unsupportedPricingEntryCount,
                        skillInvocations: skillInvocations, commandInvocations: commandInvocations,
                        agentCalls: agentCalls, subagentInvocations: subagentInvocations,
@@ -761,6 +780,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable, Codable {
                               usageByDay: usageByDay,
                               usageByModel: usageByModel, usageByModelDay: usageByModelDay,
                               messagesByModelDay: messagesByModelDay, rawUsageBlocks: rawUsageBlocks,
+                              usageIsPartial: usageIsPartial,
                               unsupportedPricingEntryCount: unsupportedPricingEntryCount,
                               skillInvocations: skillInvocations, commandInvocations: commandInvocations,
                               agentCalls: agentCalls, subagentInvocations: subagentInvocations,

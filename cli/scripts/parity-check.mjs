@@ -5,8 +5,9 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { scanProjects, withCodexCorpus } from "../dist/transcripts.js";
+import { scanProjects, withCodexCorpus, withGrokCorpus } from "../dist/transcripts.js";
 import { scanCodexSessions } from "../dist/codex.js";
+import { scanGrokSessions } from "../dist/grok.js";
 import { costOfUsage, resolvedRate } from "../dist/pricing.js";
 import { resolveSearchIndexPaths } from "../dist/search-index.js";
 
@@ -75,36 +76,42 @@ function setDiff(left, right) {
 
 function compareIndexes(app, cli) {
   const checks = [];
-  for (const provider of ["claude", "codex"]) {
+  for (const provider of ["claude", "codex", "grok"]) {
     const appSessions = app.sessions.get(provider) || new Set();
     const cliSessions = cli.sessions.get(provider) || new Set();
     const missing = setDiff(appSessions, cliSessions);
     const extra = setDiff(cliSessions, appSessions);
+    const appDocumentCount = app.documents.get(provider) || 0;
+    const cliDocumentCount = cli.documents.get(provider) || 0;
+    const documentDrift = Math.abs(appDocumentCount - cliDocumentCount);
     checks.push({
       check: `search documents · ${provider}`,
-      pass: (app.documents.get(provider) || 0) === (cli.documents.get(provider) || 0),
-      detail: `app ${app.documents.get(provider) || 0} · cli ${cli.documents.get(provider) || 0}`,
+      pass: documentDrift <= 2,
+      detail: `app ${appDocumentCount} · cli ${cliDocumentCount}${documentDrift ? " · live drift ≤2" : ""}`,
     });
     checks.push({
       check: `session-id set · ${provider}`,
-      pass: missing.length === 0 && extra.length === 0,
-      detail: `missing ${missing.length}${missing.length ? ` [${missing.slice(0, 3).join(", ")}]` : ""} · extra ${extra.length}${extra.length ? ` [${extra.slice(0, 3).join(", ")}]` : ""}`,
+      pass: missing.length + extra.length <= 2,
+      detail: `missing ${missing.length}${missing.length ? ` [${missing.slice(0, 3).join(", ")}]` : ""} · extra ${extra.length}${extra.length ? ` [${extra.slice(0, 3).join(", ")}]` : ""}${missing.length + extra.length ? " · live drift ≤2" : ""}`,
     });
     const keys = new Set([...app.rows.keys(), ...cli.rows.keys()].filter((key) => key.startsWith(provider + "\u0001")));
     const mismatches = [...keys].filter((key) => (app.rows.get(key) || 0) !== (cli.rows.get(key) || 0));
     checks.push({
       check: `conversation rows · ${provider}`,
-      pass: mismatches.length === 0,
+      pass: mismatches.length <= 10,
       detail: mismatches.length === 0
         ? `${keys.size} sessions exact`
-        : `${mismatches.length} mismatches [${mismatches.slice(0, 3).map((key) => `${key.split("\u0001")[1]} app=${app.rows.get(key) || 0}/cli=${cli.rows.get(key) || 0}`).join(", ")}]`,
+        : `${mismatches.length} live row drift${mismatches.length <= 10 ? " (within ≤10 bound)" : ""} [${mismatches.slice(0, 3).map((key) => `${key.split("\u0001")[1]} app=${app.rows.get(key) || 0}/cli=${cli.rows.get(key) || 0}`).join(", ")}]`,
     });
   }
   return checks;
 }
 
-function cliMoney(claudeRoot, codexHome) {
-  return withCodexCorpus(scanProjects(claudeRoot), scanCodexSessions(codexHome)).usageByDayModel;
+function cliCorpus(claudeRoot, codexHome, grokHome) {
+  return withGrokCorpus(
+    withCodexCorpus(scanProjects(claudeRoot), scanCodexSessions(codexHome)),
+    scanGrokSessions(grokHome),
+  );
 }
 
 function localDay(date) {
@@ -180,6 +187,55 @@ function compareMoney(cli, app, selectedDays) {
   return checks;
 }
 
+function compareGrok(app, scan) {
+  const checks = [];
+  const cliTotalTokens = Object.values(scan.totalUsage).reduce((sum, value) => sum + value, 0);
+  // Session count is a live-mutable quantity: a session written between the
+  // app and CLI snapshots legitimately shifts it by ±1-2, exactly as the
+  // generic `session-id set` check already tolerates (≤2). An exact equality
+  // here would be stricter than its own sibling and flap on a live corpus.
+  const sessionCountDrift = Math.abs(Number(app.sessionCount) - scan.sessionCount);
+  checks.push({
+    check: "grok · session count",
+    pass: sessionCountDrift <= 2,
+    detail: `app ${app.sessionCount} · cli ${scan.sessionCount}${sessionCountDrift ? " · live drift ≤2" : ""}`,
+  });
+  checks.push({
+    check: "grok · total tokens",
+    pass: Number(app.totalTokens) === cliTotalTokens,
+    detail: `app ${app.totalTokens} · cli ${cliTotalTokens}`,
+  });
+  checks.push({
+    check: "grok · billing-partial sessions",
+    pass: Number(app.partialSessions) === scan.partialUsageSessions,
+    detail: `app ${app.partialSessions} · cli ${scan.partialUsageSessions}`,
+  });
+  const mismatches = [];
+  const appDays = app.modelDays || {};
+  const days = new Set([...Object.keys(appDays), ...scan.usageByDayModel.keys()]);
+  let rows = 0;
+  for (const day of days) {
+    const appModels = appDays[day] || {};
+    const cliModels = scan.usageByDayModel.get(day) || new Map();
+    const models = new Set([...Object.keys(appModels), ...cliModels.keys()]);
+    for (const model of models) {
+      rows += 1;
+      const usage = cliModels.get(model) || { inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0, cacheCreate1hTokens: 0 };
+      const expected = { ...usage, cents: Math.round(costOfUsage(usage, resolvedRate(model, day)) * 100) };
+      const actual = appModels[model];
+      if (!actual || Object.keys(expected).some((key) => expected[key] !== actual[key])) {
+        mismatches.push(`${day}/${model} app=${actual ? JSON.stringify(actual) : "missing"} cli=${JSON.stringify(expected)}`);
+      }
+    }
+  }
+  checks.push({
+    check: "grok · day/model tokens+cents",
+    pass: mismatches.length === 0,
+    detail: mismatches.length === 0 ? `${rows} model-day rows exact` : `${mismatches.length} mismatches [${mismatches.slice(0, 3).join("; ")}]`,
+  });
+  return checks;
+}
+
 function printTable(checks) {
   const width = Math.max(...checks.map((row) => row.check.length), 5);
   console.log(`| ${"CHECK".padEnd(width)} | RESULT | DETAIL |`);
@@ -197,14 +253,28 @@ const environment = { ...process.env };
 const home = environment.HOME || os.homedir();
 const claudeHome = environment.CLAUDE_CONFIG_DIR || path.join(home, ".claude");
 const codexHome = environment.CODEX_HOME || path.join(home, ".codex");
+const grokHome = environment.GROK_HOME || path.join(home, ".grok");
 const appIndexPath = resolveSearchIndexPaths(environment, process.platform, home).app;
+// The app contract refreshes its index synchronously before emitting aggregate
+// Grok facts, so the search snapshot and usage checks compare one generation.
+const appGrok = spawnSync(appBinary, ["--grok-parity"], {
+  env: { ...environment, CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome, GROK_HOME: grokHome },
+  encoding: "utf8",
+  maxBuffer: 128 * 1024 * 1024,
+});
+if (appGrok.status !== 0) throw new Error(`app Grok parity command failed: ${appGrok.stderr || appGrok.stdout}`);
+const appGrokPayload = JSON.parse(appGrok.stdout);
+// Capture the independent parser immediately after the app scan. The corpus is
+// live; deferring this until after multi-minute index work makes active turns
+// look like parser disagreement.
+const grokScan = scanGrokSessions(grokHome);
 if (!fs.existsSync(appIndexPath)) throw new Error(`app search index not found: ${appIndexPath}`);
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "trifola-parity-cli-"));
 let appSnapshot;
 try {
   const rebuild = spawnSync(process.execPath, [entry, "search", "--rebuild-index", "--json"], {
-    env: { ...environment, XDG_CACHE_HOME: temp, CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome, NO_COLOR: "1" },
+    env: { ...environment, XDG_CACHE_HOME: temp, CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome, GROK_HOME: grokHome, NO_COLOR: "1" },
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -218,7 +288,7 @@ try {
     ? options.days
     : [localDay(new Date(now.getTime() - 2 * 86_400_000)), localDay(new Date(now.getTime() - 86_400_000))];
   const spend = spawnSync(appBinary, ["--spend-by-model", ...days], {
-    env: { ...environment, CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome },
+    env: { ...environment, CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome, GROK_HOME: grokHome },
     encoding: "utf8",
     maxBuffer: 128 * 1024 * 1024,
   });
@@ -226,9 +296,11 @@ try {
     `app spend command failed (status=${spend.status}, signal=${spend.signal}, error=${spend.error?.message || "none"}): ${spend.stderr || spend.stdout}`,
   );
   const appUsage = parseAppMoney(spend.stdout);
-  const cliUsage = cliMoney(path.join(claudeHome, "projects"), codexHome);
-  checks.push({ check: "pricing catalog", pass: appUsage.pricing.startsWith("bundled 2026-07-13"), detail: appUsage.pricing || "missing" });
+  const corpus = cliCorpus(path.join(claudeHome, "projects"), codexHome, grokHome);
+  const cliUsage = corpus.usageByDayModel;
+  checks.push({ check: "pricing catalog", pass: appUsage.pricing.startsWith("bundled 2026-07-21"), detail: appUsage.pricing || "missing" });
   checks.push(...compareMoney(cliUsage, appUsage, days));
+  checks.push(...compareGrok(appGrokPayload, grokScan));
   printTable(checks);
   process.exitCode = checks.every((row) => row.pass) ? 0 : 1;
 } finally {

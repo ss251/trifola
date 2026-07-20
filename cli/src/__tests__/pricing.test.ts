@@ -57,6 +57,16 @@ describe("resolvedRate — catalog + date-dependent Sonnet 5", () => {
     assert.deepEqual(resolvedRate("gpt-future"), rateFromInputOutput(5, 30));
   });
 
+  test("Grok catalog uses xAI's exact cached-input rates", () => {
+    assert.deepEqual(resolvedRate("grok-4.5"), {
+      input: 2, output: 6, cacheRead: 0.30, cacheWrite5m: 2.5, cacheWrite1h: 4,
+    });
+    assert.equal(resolvedRate("grok-4.5-build").cacheRead, 0.30);
+    assert.equal(resolvedRate("grok-build-0.1").cacheRead, 0.20);
+    assert.equal(resolvedRate("grok-4.3").cacheRead, 0.20);
+    assert.deepEqual(resolvedRate("grok-future"), rateFromInputOutput(2, 6));
+  });
+
   test("sonnet 5 is date dependent", () => {
     // Intro era (through 2026-08-31): $2 in / $10 out — NOT $3/$15.
     const intro = resolvedRate("claude-sonnet-5", "2026-07-06");

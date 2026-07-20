@@ -81,12 +81,14 @@ struct TranscriptView: View {
     private var header: some View {
         HStack(spacing: 6) {
             if previewEvents != nil {
-                Text(provider == .codex ? "Codex rollout" : "Tailing")
+                Text(provider == .codex ? "Codex rollout"
+                     : provider == .grok ? "Grok session" : "Tailing")
                     .font(.caption).foregroundStyle(Theme.green)
             } else {
                 switch store.state {
                 case .live:
-                    Text(provider == .codex ? "Codex rollout" : "Tailing")
+                    Text(provider == .codex ? "Codex rollout"
+                         : provider == .grok ? "Grok session" : "Tailing")
                         .font(.caption).foregroundStyle(Theme.green)
                 case .idle:
                     Text("Opening").font(.caption).foregroundStyle(Theme.muted)
@@ -221,7 +223,12 @@ private struct TranscriptRow: View {
     private var roleTag: String {
         switch event.kind {
         case .userPrompt: return "USER"
-        case .assistantText: return provider == .codex ? "CODEX" : "CLAUDE"
+        case .assistantText:
+            switch provider {
+            case .claude: return "CLAUDE"
+            case .codex: return "CODEX"
+            case .grok: return "GROK"
+            }
         case .thinking: return "THINK"
         case .toolUse: return "TOOL"
         case .toolResult(_, let isError): return isError ? "ERR" : "RESULT"

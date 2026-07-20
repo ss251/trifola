@@ -52,6 +52,19 @@ function put(ids: string[], input: number, output: number): void {
   for (const id of ids) BUNDLED[id] = pricing;
 }
 
+function putExact(ids: string[], input: number, cacheRead: number, output: number): void {
+  const pricing = singleEra({
+    input,
+    output,
+    cacheRead,
+    // Grok exposes no cache-creation fields. These values are inert for Grok
+    // usage, but retain the catalog's complete rate-card contract.
+    cacheWrite5m: input * 1.25,
+    cacheWrite1h: input * 2,
+  });
+  for (const id of ids) BUNDLED[id] = pricing;
+}
+
 // Opus 4.8 / 4.7 / 4.6 / 4.5 — in 5, out 25, cr 0.50, cw5m 6.25, cw1h 10.
 put(["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"], 5, 25);
 // Opus 4.1 / 4 (deprecated) — in 15, out 75, cr 1.50, cw5m 18.75, cw1h 30.
@@ -87,6 +100,11 @@ put(["gpt-5.4-nano"], 0.2, 1.25);
 put(["gpt-5.4-pro"], 30, 180);
 put(["gpt-5.3-codex", "gpt-5.2-codex"], 1.75, 14);
 put(["gpt-5-codex"], 1.25, 10);
+// xAI public list prices, verified 2026-07-21. Unlike Anthropic/OpenAI,
+// cached input is not uniformly 10% of fresh input, hence the exact rows.
+putExact(["grok-4.5", "grok-4.5-build", "grok-4.5-latest", "grok-build-latest"], 2, 0.30, 6);
+putExact(["grok-build-0.1"], 1, 0.20, 2);
+putExact(["grok-4.3"], 1.25, 0.20, 2.50);
 
 // MARK: - Normalization
 
@@ -144,10 +162,11 @@ function rateOnDay(pricing: ModelPricing, day: string | null | undefined): Model
 
 // MARK: - Tier fallback (models the bundled catalog doesn't know)
 
-type Tier = "opus" | "sonnet" | "haiku" | "codex" | "other";
+type Tier = "opus" | "sonnet" | "haiku" | "codex" | "grok" | "other";
 
 function tierOf(raw: string | null | undefined): Tier {
   const r = normalizeModel(raw);
+  if (r.startsWith("grok-")) return "grok";
   if (r.startsWith("gpt-") || r.startsWith("codex")) return "codex";
   if (r.includes("opus")) return "opus";
   if (r.includes("sonnet")) return "sonnet";
@@ -162,6 +181,7 @@ const TIER_RATES: Record<Tier, readonly [number, number]> = {
   sonnet: [3, 15],
   haiku: [1, 5],
   codex: [5, 30],
+  grok: [2, 6],
   other: [5, 25],
 };
 

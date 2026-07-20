@@ -48,6 +48,8 @@ public enum SearchText {
             return events(in: data, provider: provider, includeValidFinalLine: true).events
         case .codex:
             return CodexRolloutTranscriptParser.events(at: url, maximumEvents: .max)
+        case .grok:
+            return GrokTranscriptParser.events(at: url, maximumEvents: .max)
         }
     }
 
@@ -89,6 +91,9 @@ public enum SearchText {
         case .codex:
             return CodexRolloutTranscriptParser.events(
                 fromLine: line, fallbackID: "search-codex-L\(lineNumber)")
+        case .grok:
+            return GrokTranscriptParser.events(
+                fromLine: line, fallbackID: "search-grok-L\(lineNumber)")
         }
     }
 }

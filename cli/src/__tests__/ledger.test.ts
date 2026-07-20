@@ -36,11 +36,12 @@ function corpusWith(opts: { fired?: Record<string, number>; sessionCount?: numbe
     unsupportedPricingModeEntries: 0,
     totalUsage: emptyUsage(),
     usageByDayModel: new Map(),
-    sessionsByProvider: { claude: sessionCount, codex: 0 },
-    filesByProvider: { claude: sessionCount, codex: 0 },
-    usageByProviderDayModel: { claude: new Map(), codex: new Map() },
-    totalUsageByProvider: { claude: emptyUsage(), codex: emptyUsage() },
-    usageEntriesByProvider: { claude: 0, codex: 0 },
+    sessionsByProvider: { claude: sessionCount, codex: 0, grok: 0 },
+    filesByProvider: { claude: sessionCount, codex: 0, grok: 0 },
+    usageByProviderDayModel: { claude: new Map(), codex: new Map(), grok: new Map() },
+    totalUsageByProvider: { claude: emptyUsage(), codex: emptyUsage(), grok: emptyUsage() },
+    usageEntriesByProvider: { claude: 0, codex: 0, grok: 0 },
+    partialUsageSessionsByProvider: { claude: 0, codex: 0, grok: 0 },
     skippedCompressed: 0,
   };
 }

@@ -614,6 +614,11 @@ public struct SessionSource: Sendable, Equatable {
                              importManifestURL: manifest)
     }
 
+    public static func grok(root: URL,
+                            machineID: String = Machine.localID) -> SessionSource {
+        SessionSource(root: root, provider: .grok, machineID: machineID)
+    }
+
     func accepts(_ relativePath: String) -> Bool {
         switch provider {
         case .claude:
@@ -622,6 +627,10 @@ public struct SessionSource: Sendable, Equatable {
             let name = (relativePath as NSString).lastPathComponent
             return name.hasPrefix("rollout-")
                 && (name.hasSuffix(".jsonl") || name.hasSuffix(".jsonl.zst"))
+        case .grok:
+            // One index entry per session directory. The parser reads both
+            // sibling JSONL files; `summary.json` is the canonical key.
+            return (relativePath as NSString).lastPathComponent == "summary.json"
         }
     }
 }
@@ -638,6 +647,7 @@ public struct ProviderCorpusPresence: Sendable, Equatable {
     public var isEmpty: Bool { providers.isEmpty }
     public var hasClaude: Bool { providers.contains(.claude) }
     public var hasCodex: Bool { providers.contains(.codex) }
+    public var hasGrok: Bool { providers.contains(.grok) }
 
     public func contains(_ provider: Provider) -> Bool {
         providers.contains(provider)
@@ -647,12 +657,14 @@ public struct ProviderCorpusPresence: Sendable, Equatable {
     public static func detect(
         claudePaths: ClaudePaths = .process,
         codexPaths: CodexPaths = .process,
+        grokPaths: GrokPaths = .process,
         fileManager: FileManager = .default
     ) -> ProviderCorpusPresence {
         detect(sources: [
             .claude(root: claudePaths.projects),
             .codex(root: codexPaths.sessions,
                    importManifestURL: codexPaths.externalAgentImportsJSON),
+            .grok(root: grokPaths.sessions),
         ], fileManager: fileManager)
     }
 
@@ -720,11 +732,13 @@ struct PreparedSessionSource: Sendable {
 enum SessionParserState: Sendable, Codable {
     case claude(SessionAccumulator)
     case codex(CodexRolloutAccumulator)
+    case grok(GrokSessionAccumulator)
 
     var resumeOffset: UInt64 {
         switch self {
         case .claude(let accumulator): return accumulator.resumeOffset
         case .codex(let accumulator): return accumulator.resumeOffset
+        case .grok(let accumulator): return accumulator.resumeOffset
         }
     }
 
@@ -747,10 +761,21 @@ enum SessionParserState: Sendable, Codable {
         return accumulator.threadMetadata
     }
 
+    var grokThreadMetadata: GrokThreadMetadata? {
+        guard case .grok(let accumulator) = self else { return nil }
+        return accumulator.threadMetadata
+    }
+
+    var grokSpawnMetadata: [GrokSpawnMetadata] {
+        guard case .grok(let accumulator) = self else { return [] }
+        return accumulator.spawnedChildren
+    }
+
     var startedAt: Date? {
         switch self {
         case .claude(let accumulator): return accumulator.startedAt
         case .codex(let accumulator): return accumulator.startedAt
+        case .grok(let accumulator): return accumulator.startedAt
         }
     }
 
@@ -769,6 +794,12 @@ enum SessionParserState: Sendable, Codable {
             accumulator.pending = Data()
             accumulator.bytesIngested = offset
             self = .codex(accumulator)
+        case .grok(var accumulator):
+            // The generic path is never used for directory-backed Grok
+            // sessions; keep both stream offsets coherent if it is invoked.
+            accumulator.resetChatPendingForTail(at: offset)
+            accumulator.resetUpdatesPendingForTail(at: offset)
+            self = .grok(accumulator)
         }
     }
 
@@ -780,6 +811,11 @@ enum SessionParserState: Sendable, Codable {
         case .codex(var accumulator):
             accumulator.ingest(data)
             self = .codex(accumulator)
+        case .grok(var accumulator):
+            // Generic ingestion is transcript-shaped; Grok's normal parser
+            // calls the two explicit stream methods in `parseGrok` below.
+            accumulator.ingestChatHistory(data)
+            self = .grok(accumulator)
         }
     }
 
@@ -794,6 +830,17 @@ enum SessionParserState: Sendable, Codable {
                 ? summary : summary.taggedWith(machineID)
         case .codex(let accumulator):
             return accumulator.summary(filePath: filePath, machineID: machineID)
+        case .grok(let accumulator):
+            // Grok's index key is summary.json, but transcript/search readers
+            // need the visible chat stream. Cache rehydration and aggregate
+            // re-derivation both flow through this method, so normalize the
+            // backing path here rather than only in the initial scan.
+            let url = URL(fileURLWithPath: filePath)
+            let transcriptPath = url.lastPathComponent == "summary.json"
+                ? url.deletingLastPathComponent()
+                    .appendingPathComponent("chat_history.jsonl").path
+                : filePath
+            return accumulator.summary(filePath: transcriptPath, machineID: machineID)
         }
     }
 }
@@ -950,6 +997,19 @@ public struct SessionIndex: Sendable {
         }
     }
 
+    var grokThreadMetadata: [GrokThreadMetadata] {
+        entries.values.compactMap(\.acc.grokThreadMetadata).sorted {
+            $0.sessionID < $1.sessionID
+        }
+    }
+
+    var grokSpawnMetadata: [GrokSpawnMetadata] {
+        entries.values.flatMap(\.acc.grokSpawnMetadata).sorted {
+            ($0.parentSessionID, $0.childSessionID)
+                < ($1.parentSessionID, $1.childSessionID)
+        }
+    }
+
 
     var sessionStartedAt: [String: Date] {
         Dictionary(entries.values.compactMap { entry in
@@ -1018,36 +1078,43 @@ public struct SessionIndex: Sendable {
         var result = previous
         var work: [WorkItem] = []
         var actualChanges: Set<String> = []
+        var seenCanonicalPaths: Set<String> = []
 
         for requested in requestedPaths {
-            let path = URL(fileURLWithPath: requested).standardizedFileURL.path
-            let match = prepared.first { preparedSource in
+            let requestedPath = URL(fileURLWithPath: requested).standardizedFileURL.path
+            let match = prepared.compactMap { preparedSource
+                    -> (PreparedSessionSource, String)? in
                 let root = preparedSource.source.root.standardizedFileURL.path
                 let prefix = root.hasSuffix("/") ? root : root + "/"
-                guard path.hasPrefix(prefix) else { return false }
-                return preparedSource.source.accepts(String(path.dropFirst(prefix.count)))
-            }
-            guard let preparedSource = match else {
-                if result.entries.removeValue(forKey: path) != nil {
-                    actualChanges.insert(path)
+                guard requestedPath.hasPrefix(prefix) else { return nil }
+                let relative = String(requestedPath.dropFirst(prefix.count))
+                guard let canonical = canonicalRelativePath(
+                    relative, for: preparedSource.source) else { return nil }
+                return (preparedSource, prefix + canonical)
+            }.first
+            guard let (preparedSource, path) = match else {
+                if result.entries.removeValue(forKey: requestedPath) != nil {
+                    actualChanges.insert(requestedPath)
                 }
                 continue
             }
+            guard seenCanonicalPaths.insert(path).inserted else { continue }
 
             let source = preparedSource.source
             let root = source.root.standardizedFileURL.path
             let prefix = root.hasSuffix("/") ? root : root + "/"
             let relative = String(path.dropFirst(prefix.count))
-            guard let attributes = try? fm.attributesOfItem(atPath: path),
-                  source.provider != .codex
-                    || isSafeRegularFile(URL(fileURLWithPath: path), beneath: source.root) else {
+            let url = URL(fileURLWithPath: path)
+            guard let fingerprint = fingerprint(
+                    at: url, provider: source.provider, beneath: source.root,
+                    fileManager: fm) else {
                 if result.entries.removeValue(forKey: path) != nil {
                     actualChanges.insert(path)
                 }
                 continue
             }
-            let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-            let mtime = (attributes[.modificationDate] as? Date) ?? .distantPast
+            let size = fingerprint.size
+            let mtime = fingerprint.mtime
             let old = previous.entries[path]
             let sameSource = old?.provider == source.provider
                 && old?.machineID == source.machineID
@@ -1106,12 +1173,10 @@ public struct SessionIndex: Sendable {
             }
             for rel in files where source.accepts(rel) {
                 let url = source.root.appendingPathComponent(rel)
-                if source.provider == .codex,
-                   !isSafeRegularFile(url, beneath: source.root) {
-                    continue
-                }
                 let path = url.path
-                guard let attrs = try? fm.attributesOfItem(atPath: path) else {
+                guard let fingerprint = fingerprint(
+                        at: url, provider: source.provider,
+                        beneath: source.root, fileManager: fm) else {
                     // Preserve Claude's attempted-progress semantics when a file
                     // disappears between enumeration and stat. Codex paths are
                     // validated above and therefore simply disappear safely.
@@ -1122,8 +1187,8 @@ public struct SessionIndex: Sendable {
                     }
                     continue
                 }
-                let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
-                let mtime = (attrs[.modificationDate] as? Date) ?? .distantPast
+                let size = fingerprint.size
+                let mtime = fingerprint.mtime
                 let old = previous.entries[path]
                 let sameSource = old?.provider == source.provider
                     && old?.machineID == source.machineID
@@ -1180,7 +1245,60 @@ public struct SessionIndex: Sendable {
         return result
     }
 
-    /// Codex enumeration is stricter than the legacy Claude scanner: regular
+    private struct SourceFingerprint {
+        let size: UInt64
+        let mtime: Date
+    }
+
+    /// Maps any watched Grok session file back to its one canonical index key.
+    /// Full enumeration still accepts only `summary.json`, preventing duplicate
+    /// rows while chat/update appends remain visible to the changed-path fast path.
+    private static func canonicalRelativePath(
+        _ relativePath: String, for source: SessionSource
+    ) -> String? {
+        guard source.provider == .grok else {
+            return source.accepts(relativePath) ? relativePath : nil
+        }
+        let name = (relativePath as NSString).lastPathComponent
+        guard ["summary.json", "chat_history.jsonl", "updates.jsonl"].contains(name)
+        else { return nil }
+        return (relativePath as NSString).deletingLastPathComponent
+            + "/summary.json"
+    }
+
+    /// Grok's canonical row fingerprints all three files. A usage-only append
+    /// must invalidate the row even if `summary.json` itself was not rewritten.
+    private static func fingerprint(
+        at url: URL, provider: Provider, beneath root: URL,
+        fileManager: FileManager
+    ) -> SourceFingerprint? {
+        if provider != .grok {
+            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                  provider == .claude || isSafeRegularFile(url, beneath: root)
+            else { return nil }
+            return SourceFingerprint(
+                size: (attributes[.size] as? NSNumber)?.uint64Value ?? 0,
+                mtime: (attributes[.modificationDate] as? Date) ?? .distantPast)
+        }
+
+        guard isSafeRegularFile(url, beneath: root) else { return nil }
+        let directory = url.deletingLastPathComponent()
+        var total: UInt64 = 0
+        var newest = Date.distantPast
+        for name in ["summary.json", "chat_history.jsonl", "updates.jsonl"] {
+            let child = directory.appendingPathComponent(name)
+            guard let attributes = try? fileManager.attributesOfItem(atPath: child.path)
+            else { continue }
+            guard isSafeRegularFile(child, beneath: root) else { continue }
+            let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            total = UInt64.max - total < size ? UInt64.max : total + size
+            newest = max(newest,
+                         (attributes[.modificationDate] as? Date) ?? .distantPast)
+        }
+        return SourceFingerprint(size: total, mtime: newest)
+    }
+
+    /// Non-Claude enumeration is stricter than the legacy scanner: regular
     /// files only, no symlinks, and the fully resolved path must remain under
     /// the explicitly approved sessions root.
     fileprivate static func isSafeRegularFile(_ url: URL, beneath root: URL) -> Bool {
@@ -1316,6 +1434,7 @@ public struct SessionIndex: Sendable {
     /// full reparse otherwise. Exactly the per-file logic the serial scan had.
     private static func parseOne(_ w: WorkItem) -> Entry? {
         let source = w.source.source
+        if source.provider == .grok { return parseGrok(w) }
         let canTail = !w.path.hasSuffix(".jsonl.zst")
         if canTail, let old = w.old, w.size > old.size,
            old.acc.resumeOffset <= w.size,
@@ -1345,6 +1464,8 @@ public struct SessionIndex: Sendable {
             data = FileManager.default.contents(atPath: w.path)
         case .codex:
             data = CodexRolloutFile.data(at: url)
+        case .grok:
+            data = nil // handled by the directory-backed fast path above
         }
         guard let data else { return nil }
         let name = defaultID(relativePath: w.rel)
@@ -1358,12 +1479,91 @@ public struct SessionIndex: Sendable {
             var codex = CodexRolloutAccumulator(defaultID: name)
             codex.ingest(data)
             acc = .codex(codex)
+        case .grok:
+            return nil // handled above
         }
         guard !isExcludedImport(acc, by: w.source.imports) else { return nil }
         return Entry(
             size: w.size, mtime: w.mtime, acc: acc,
             provider: source.provider, machineID: source.machineID,
             summary: acc.summary(filePath: w.path, machineID: source.machineID))
+    }
+
+    private static func parseGrok(_ work: WorkItem) -> Entry? {
+        let source = work.source.source
+        let summaryURL = URL(fileURLWithPath: work.path)
+        let directory = summaryURL.deletingLastPathComponent()
+        let chatURL = directory.appendingPathComponent("chat_history.jsonl")
+        let updatesURL = directory.appendingPathComponent("updates.jsonl")
+        guard isSafeRegularFile(summaryURL, beneath: source.root),
+              let summaryData = FileManager.default.contents(atPath: summaryURL.path)
+        else { return nil }
+
+        func safeSize(_ url: URL) -> UInt64? {
+            guard isSafeRegularFile(url, beneath: source.root),
+                  let attributes = try? FileManager.default.attributesOfItem(
+                    atPath: url.path) else { return nil }
+            return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        }
+        let chatSize = safeSize(chatURL)
+        let updatesSize = safeSize(updatesURL)
+        let oldAccumulator: GrokSessionAccumulator? = {
+            guard let old = work.old, case .grok(let accumulator) = old.acc else {
+                return nil
+            }
+            return accumulator
+        }()
+        let streamShrank = oldAccumulator.map { old in
+            (chatSize ?? 0) < old.chatBytesIngested
+                || (updatesSize ?? 0) < old.updatesBytesIngested
+        } ?? false
+        let defaultID = directory.lastPathComponent
+        var accumulator = streamShrank
+            ? GrokSessionAccumulator(defaultID: defaultID)
+            : (oldAccumulator ?? GrokSessionAccumulator(defaultID: defaultID))
+        let encodedCWD = work.rel.split(separator: "/").first
+            .flatMap { String($0).removingPercentEncoding }
+        accumulator.ingestSummary(summaryData, fallbackCWD: encodedCWD)
+
+        func suffix(at url: URL, offset: UInt64) -> Data? {
+            guard let handle = FileHandle(forReadingAtPath: url.path) else { return nil }
+            defer { try? handle.close() }
+            do {
+                try handle.seek(toOffset: offset)
+                return try handle.readToEnd() ?? Data()
+            } catch {
+                return nil
+            }
+        }
+
+        if let chatSize {
+            let offset = oldAccumulator == nil || streamShrank
+                ? 0 : accumulator.chatResumeOffset
+            if chatSize >= offset, chatSize > accumulator.chatBytesIngested || offset == 0 {
+                accumulator.resetChatPendingForTail(at: offset)
+                if let data = suffix(at: chatURL, offset: offset) {
+                    accumulator.ingestChatHistory(data)
+                }
+            }
+        }
+        if let updatesSize {
+            let offset = oldAccumulator == nil || streamShrank
+                ? 0 : accumulator.updatesResumeOffset
+            if updatesSize >= offset,
+               updatesSize > accumulator.updatesBytesIngested || offset == 0 {
+                accumulator.resetUpdatesPendingForTail(at: offset)
+                if let data = suffix(at: updatesURL, offset: offset) {
+                    accumulator.ingestUpdates(data)
+                }
+            }
+        }
+
+        let state = SessionParserState.grok(accumulator)
+        return Entry(
+            size: work.size, mtime: work.mtime, acc: state,
+            provider: .grok, machineID: source.machineID,
+            summary: state.summary(filePath: chatURL.path,
+                                   machineID: source.machineID))
     }
 
     private static func defaultID(relativePath: String) -> String {
@@ -1392,6 +1592,7 @@ public final class SessionStore: ObservableObject {
     private let codexNameResolver: CodexSessionNameResolver
     private let paths: ClaudePaths
     private let codexPaths: CodexPaths
+    private let grokPaths: GrokPaths
     @Published public private(set) var lastRefresh: Date = Date()
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var scanProgress: SessionScanProgress = .idle
@@ -1432,9 +1633,11 @@ public final class SessionStore: ObservableObject {
     public var sources: [SessionSource]
 
     public init(paths: ClaudePaths = .process,
-                codexPaths: CodexPaths = .process) {
+                codexPaths: CodexPaths = .process,
+                grokPaths: GrokPaths = .process) {
         self.paths = paths
         self.codexPaths = codexPaths
+        self.grokPaths = grokPaths
         self.nameResolver = SessionNameResolver(claudeDir: paths.root.path)
         self.codexNameResolver = CodexSessionNameResolver(
             indexURL: codexPaths.sessionIndexJSONL)
@@ -1443,6 +1646,7 @@ public final class SessionStore: ObservableObject {
             .claude(root: paths.projects),
             .codex(root: codexPaths.sessions,
                    importManifestURL: codexPaths.externalAgentImportsJSON),
+            .grok(root: grokPaths.sessions),
         ]
     }
 
@@ -1577,6 +1781,8 @@ public final class SessionStore: ObservableObject {
         index = result
         var refreshedLineage = await filesystemLineage
         refreshedLineage.codexThreads = result.codexThreadMetadata
+        refreshedLineage.grokThreads = result.grokThreadMetadata
+        refreshedLineage.grokSpawns = result.grokSpawnMetadata
         refreshedLineage.sessionStartedAt = result.sessionStartedAt
         if lineageEvidence != refreshedLineage {
             lineageEvidence = refreshedLineage
@@ -1798,6 +2004,7 @@ public final class SessionStore: ObservableObject {
                                   usageByModelDay: s.usageByModelDay,
                                   messagesByModelDay: s.messagesByModelDay,
                                   rawUsageBlocks: s.rawUsageBlocks,
+                                  usageIsPartial: s.usageIsPartial,
                                   unsupportedPricingEntryCount: s.unsupportedPricingEntryCount,
                                   skillInvocations: s.skillInvocations,
                                   commandInvocations: s.commandInvocations,
@@ -1828,7 +2035,8 @@ public final class SessionStore: ObservableObject {
     public nonisolated static func cachedScan(
         _ dir: URL,
         cacheURL: URL = ClaudePaths.process.sessionIndexCacheURL,
-        codexPaths: CodexPaths = .process
+        codexPaths: CodexPaths = .process,
+        grokPaths: GrokPaths = .process
     ) -> [SessionSummary] {
         let paths = ClaudePaths.process
         let resolved = resolvedProjectsDirectory(dir, paths: paths)
@@ -1837,6 +2045,7 @@ public final class SessionStore: ObservableObject {
             sources.append(.codex(
                 root: codexPaths.sessions,
                 importManifestURL: codexPaths.externalAgentImportsJSON))
+            sources.append(.grok(root: grokPaths.sessions))
         }
         let idx = SessionIndex.update(
             loadIndexCache(from: cacheURL) ?? SessionIndex(),
@@ -1949,7 +2158,9 @@ public final class SessionStore: ObservableObject {
     // gpt-unattributed → Codex tier). Cached entries hold that slice
     // misattributed to "Other" (~604M cached tokens on a real corpus) and must
     // replay once.
-    private nonisolated static let legacyCacheVersion = 21
+    // v22: Grok adds a third parser-state payload plus independently resumed
+    // chat/update streams and a provider-partial usage flag.
+    private nonisolated static let legacyCacheVersion = 22
 
     public nonisolated static var defaultCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

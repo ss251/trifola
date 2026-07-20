@@ -628,6 +628,9 @@ public final class TranscriptStore: ObservableObject {
                 if provider == .codex {
                     parsed.append(contentsOf: CodexRolloutTranscriptParser.events(
                         fromLine: line, fallbackID: "codex-" + id))
+                } else if provider == .grok {
+                    parsed.append(contentsOf: GrokTranscriptParser.events(
+                        fromLine: line, fallbackID: "grok-" + id))
                 } else {
                     parsed.append(contentsOf: TranscriptParser.events(
                         fromLine: line, fallbackID: id))

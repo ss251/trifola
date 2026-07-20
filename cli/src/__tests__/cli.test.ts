@@ -17,7 +17,10 @@ const entry = path.join(here, "..", "trifola.js"); // dist/__tests__/../trifola.
 
 function runCli(args: string[], env: NodeJS.ProcessEnv): { stdout: string; stderr: string; status: number | null } {
   const result = spawnSync(process.execPath, [entry, ...args], {
-    env,
+    env: {
+      ...env,
+      GROK_HOME: env.GROK_HOME ?? path.join(env.CLAUDE_CONFIG_DIR ?? "/nonexistent-on-purpose", ".grok"),
+    },
     encoding: "utf8",
   });
   return { stdout: result.stdout, stderr: result.stderr, status: result.status };
@@ -50,6 +53,7 @@ describe("trifola CLI entry point (subprocess)", () => {
       assert.equal(parsed.sessions.total, 3);
       assert.equal(parsed.sessions.byProvider.claude.sessions, 2);
       assert.equal(parsed.sessions.byProvider.codex.sessions, 1);
+      assert.equal(parsed.sessions.byProvider.grok.sessions, 0);
       assert.equal(parsed.deadSkills.sessions, 2);
       assert.equal(parsed.promptTax.sessions, 2);
       assert.equal(parsed.usageValue.byProvider.codex, 0.00022);
@@ -75,7 +79,7 @@ describe("trifola CLI entry point (subprocess)", () => {
         HOME: root,
       });
       assert.equal(status, 0);
-      assert.match(stdout, /2 sessions \(\+1 subagent run\) · 2 Claude \+ 0 Codex/);
+      assert.match(stdout, /2 sessions \(\+1 subagent run\) · 2 Claude \+ 0 Codex \+ 0 Grok/);
       assert.match(stdout, /2 of 4 catalog skills never fired, across 2 Claude sessions \(\+1 Claude subagent run\)\./);
       assert.match(stdout, /\$18 API-equivalent across the scanned corpus/);
       assert.match(stdout, /29% of 5\.8M input tokens served from cache/);

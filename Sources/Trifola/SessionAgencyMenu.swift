@@ -17,7 +17,7 @@ struct SessionAgencyMenu: View {
 
         Group {
             if includesOpenTerminal {
-                Button(session.provider == .codex ? "Show transcript" : "Open terminal") {
+                Button(session.provider == .claude ? "Open terminal" : "Show transcript") {
                     services.openTerminal(session)
                 }
                 Divider()

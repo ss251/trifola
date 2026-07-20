@@ -52,6 +52,11 @@ enum Theme {
     static let codexModel = Color(nsColor: .dyn(
         light: NSColor(srgbRed: 62 / 255, green: 92 / 255, blue: 148 / 255, alpha: 1),
         dark: NSColor(srgbRed: 124 / 255, green: 152 / 255, blue: 205 / 255, alpha: 1)))
+    /// Provider-neutral violet for Grok model data; identity still comes from
+    /// the mark and label, never this color alone.
+    static let grokModel = Color(nsColor: .dyn(
+        light: NSColor(srgbRed: 112 / 255, green: 78 / 255, blue: 148 / 255, alpha: 1),
+        dark: NSColor(srgbRed: 174 / 255, green: 139 / 255, blue: 211 / 255, alpha: 1)))
     static let graphite = muted
 
     // Elevation. Every stroked surface is paired with a fill; open tables and
@@ -835,6 +840,7 @@ extension ModelTier {
         case .sonnet: return Color(red: 70 / 255, green: 180 / 255, blue: 130 / 255) // muted green
         case .haiku: return Color(red: 73 / 255, green: 163 / 255, blue: 176 / 255) // muted blue
         case .codex: return Theme.codexModel
+        case .grok: return Theme.grokModel
         case .user: return Color(red: 0.58, green: 0.52, blue: 0.79)   // muted amber (user-defined tier)
         case .other: return Color(nsColor: .secondaryLabelColor)
         }

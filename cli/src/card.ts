@@ -25,7 +25,7 @@ export function renderCard(finding: Finding): string {
   lines.push(dim(RULE));
   if (finding.catalogCount === 0 && finding.sessionCount === 0) {
     lines.push("");
-    lines.push("No Claude Code skills, Claude sessions, or Codex rollouts found under the configured");
+    lines.push("No Claude Code skills, Claude sessions, Codex rollouts, or Grok sessions found under the configured");
     lines.push("directory — the figures below are honestly zero, not an error.");
   }
   lines.push("");
@@ -35,7 +35,7 @@ export function renderCard(finding: Finding): string {
       finding.subagentRunCount > 0
         ? ` (+${fmtCount(finding.subagentRunCount)} subagent run${finding.subagentRunCount === 1 ? "" : "s"})`
         : ""
-    } · ${fmtCount(finding.sessionsByProvider.claude)} Claude + ${fmtCount(finding.sessionsByProvider.codex)} Codex`,
+    } · ${fmtCount(finding.sessionsByProvider.claude)} Claude + ${fmtCount(finding.sessionsByProvider.codex)} Codex + ${fmtCount(finding.sessionsByProvider.grok)} Grok`,
   );
   lines.push("");
   lines.push(bold(cream("DEAD SKILLS")));
@@ -54,7 +54,10 @@ export function renderCard(finding: Finding): string {
   lines.push("");
   lines.push(bold(cream("EST. USAGE VALUE")));
   lines.push(`  ${teal(bold(fmtUSD(finding.usageValueUsd)))} API-equivalent across the scanned corpus`);
-  lines.push(dim(`  Claude ${fmtUSD(finding.usageValueByProvider.claude)} · Codex ${fmtUSD(finding.usageValueByProvider.codex)}`));
+  lines.push(dim(`  Claude ${fmtUSD(finding.usageValueByProvider.claude)} · Codex ${fmtUSD(finding.usageValueByProvider.codex)} · Grok ${fmtUSD(finding.usageValueByProvider.grok)}`));
+  if (finding.partialUsageSessionsByProvider.grok > 0) {
+    lines.push(dim(`  Grok: ${fmtCount(finding.partialUsageSessionsByProvider.grok)} session${finding.partialUsageSessionsByProvider.grok === 1 ? "" : "s"} include billing-partial per-turn usage`));
+  }
   lines.push("");
   lines.push(bold(cream("PROMPT TAX")));
   lines.push(
@@ -90,7 +93,7 @@ export function renderCard(finding: Finding): string {
   );
   lines.push("  " + teal(bold("npx trifola")));
   lines.push(dim("reads local disk only, uploads nothing."));
-  lines.push(dim("Claude Code + Codex rollouts."));
+  lines.push(dim("Claude Code + Codex rollouts + Grok sessions."));
   return lines.join("\n");
 }
 
@@ -99,9 +102,9 @@ export interface FindingJSON {
   sessions: {
     total: number;
     subagentRuns: number;
-    byProvider: { claude: { sessions: number; subagentRuns: number }; codex: { sessions: number; subagentRuns: number } };
+    byProvider: { claude: { sessions: number; subagentRuns: number }; codex: { sessions: number; subagentRuns: number }; grok: { sessions: number; subagentRuns: number } };
   };
-  usageValue: { usd: number; label: "API-equivalent"; byProvider: { claude: number; codex: number } };
+  usageValue: { usd: number; label: "API-equivalent"; byProvider: { claude: number; codex: number; grok: number }; partialGrokSessions: number };
   promptTax: { perSessionUsd: number; totalUsd: number; sessions: number; label: "API-equivalent"; note: string };
   freshInput: {
     premiumUsd: number;
@@ -115,6 +118,7 @@ export interface FindingJSON {
     byProvider: {
       claude: { totalInputTokens: number; usageEntries: number };
       codex: { totalInputTokens: number; usageEntries: number };
+      grok: { totalInputTokens: number; usageEntries: number };
     };
   };
   footer: { corpus: string; privacy: string };
@@ -144,6 +148,7 @@ export function renderJSON(finding: Finding): FindingJSON {
       byProvider: {
         claude: { sessions: finding.sessionsByProvider.claude, subagentRuns: finding.subagentRunsByProvider.claude },
         codex: { sessions: finding.sessionsByProvider.codex, subagentRuns: finding.subagentRunsByProvider.codex },
+        grok: { sessions: finding.sessionsByProvider.grok, subagentRuns: finding.subagentRunsByProvider.grok },
       },
     },
     usageValue: {
@@ -152,7 +157,9 @@ export function renderJSON(finding: Finding): FindingJSON {
       byProvider: {
         claude: round6(finding.usageValueByProvider.claude),
         codex: round6(finding.usageValueByProvider.codex),
+        grok: round6(finding.usageValueByProvider.grok),
       },
+      partialGrokSessions: finding.partialUsageSessionsByProvider.grok,
     },
     promptTax: {
       perSessionUsd: round6(finding.taxUsdPerSession),
@@ -180,19 +187,23 @@ export function renderJSON(finding: Finding): FindingJSON {
           totalInputTokens: finding.totalInputTokensByProvider.codex,
           usageEntries: finding.usageEntriesByProvider.codex,
         },
+        grok: {
+          totalInputTokens: finding.totalInputTokensByProvider.grok,
+          usageEntries: finding.usageEntriesByProvider.grok,
+        },
       },
     },
     footer: {
-      corpus: `${finding.catalogCount} skills, ${finding.sessionCount} sessions (Claude + Codex)`,
+      corpus: `${finding.catalogCount} skills, ${finding.sessionCount} sessions (Claude + Codex + Grok)`,
       privacy: "reads local disk only, uploads nothing",
     },
     generatedAt: new Date().toISOString(),
   };
 }
 
-export const HELP_TEXT = `trifola — finding generator for your Claude Code + Codex corpus
+export const HELP_TEXT = `trifola — finding generator for your Claude Code + Codex + Grok corpus
 
-Reads local ~/.claude and ~/.codex (or their environment overrides) and prints a one-screen
+Reads local ~/.claude, ~/.codex, and ~/.grok (or their environment overrides) and prints a one-screen
 finding: dead skills, prompt tax, and re-sent context — priced at
 API-equivalent rates, never your actual bill. Reads local disk only.
 Uploads nothing.
@@ -203,7 +214,7 @@ Usage:
   npx trifola search --rebuild-index
 
 Search:
-  Searches Claude Code and Codex conversation text: user prompts + assistant prose.
+  Searches Claude Code, Codex, and Grok conversation text: user prompts + assistant prose.
   Tool calls/results and thinking are excluded. Exact words only; no fuzzy
   matching. Search uses the app's read-only index when available, otherwise a
   separate CLI index on Node 22.5+, with the existing scan fallback on Node 18+.
@@ -223,6 +234,7 @@ Options:
 Environment:
   CLAUDE_CONFIG_DIR   Override the Claude Code config directory (default: ~/.claude).
   CODEX_HOME          Override the Codex config directory (default: ~/.codex).
+  GROK_HOME           Override the Grok config directory (default: ~/.grok).
 
 Index storage:
   macOS: ~/Library/Caches/trifola/search-index.sqlite3

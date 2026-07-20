@@ -43,8 +43,8 @@ export function buildFinding(catalog, corpus) {
             firstTouchUsd += firstTouchDollarsOfUsage(usage, rate);
         }
     }
-    const usageValueByProvider = { claude: 0, codex: 0 };
-    for (const provider of ["claude", "codex"]) {
+    const usageValueByProvider = { claude: 0, codex: 0, grok: 0 };
+    for (const provider of ["claude", "codex", "grok"]) {
         for (const [day, byModel] of corpus.usageByProviderDayModel[provider]) {
             for (const [model, usage] of byModel) {
                 usageValueByProvider[provider] += costOfUsage(usage, resolvedRate(model, day));
@@ -53,8 +53,8 @@ export function buildFinding(catalog, corpus) {
     }
     const totalUsage = corpus.totalUsage;
     const totalInput = totalUsage.inputTokens + totalUsage.cacheCreateTokens + totalUsage.cacheReadTokens;
-    const totalInputTokensByProvider = { claude: 0, codex: 0 };
-    for (const provider of ["claude", "codex"]) {
+    const totalInputTokensByProvider = { claude: 0, codex: 0, grok: 0 };
+    for (const provider of ["claude", "codex", "grok"]) {
         const usage = corpus.totalUsageByProvider[provider];
         totalInputTokensByProvider[provider] = usage.inputTokens + usage.cacheCreateTokens + usage.cacheReadTokens;
     }
@@ -69,6 +69,7 @@ export function buildFinding(catalog, corpus) {
         subagentRunsByProvider: {
             claude: corpus.filesByProvider.claude - corpus.sessionsByProvider.claude,
             codex: corpus.filesByProvider.codex - corpus.sessionsByProvider.codex,
+            grok: corpus.filesByProvider.grok - corpus.sessionsByProvider.grok,
         },
         taxUsd,
         taxUsdPerSession,
@@ -76,6 +77,7 @@ export function buildFinding(catalog, corpus) {
         usageValueByProvider,
         totalInputTokensByProvider,
         usageEntriesByProvider: { ...corpus.usageEntriesByProvider },
+        partialUsageSessionsByProvider: { ...corpus.partialUsageSessionsByProvider },
         freshInputPremiumUsd,
         firstTouchUsd,
         cacheHitRatePct,

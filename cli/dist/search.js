@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { codexRolloutIsImported, loadCodexImportManifest, readCodexRollout, parseCodexRollout, walkCodexRollouts, } from "./codex.js";
-export const SEARCH_SCOPE = "Claude Code + Codex conversation text (user prompts + assistant prose; tool output excluded)";
+import { parseGrokSession, readGrokSession, walkGrokSessions } from "./grok.js";
+export const SEARCH_SCOPE = "Claude Code + Codex + Grok conversation text (user prompts + assistant prose; tool output excluded)";
 export const RAW_WARNING = "don't share raw search output without reviewing conversation text";
 export const MAX_ORDERED_TOKENS_PER_DOCUMENT = 20_000;
 export function tokenizeSearchText(text) {
@@ -52,7 +53,13 @@ export function parseSearchArgs(argv) {
  * and the result-serving path while a first CLI index is built.
  */
 export function searchClaudeProjects(projectsDir, request, onMatch, onProgress) {
-    return searchCorpora({ claude: projectsDir, codex: path.join(projectsDir, ".codex-disabled"), codexHome: path.dirname(projectsDir) }, request, onMatch, onProgress);
+    return searchCorpora({
+        claude: projectsDir,
+        codex: path.join(projectsDir, ".codex-disabled"),
+        codexHome: path.dirname(projectsDir),
+        grok: path.join(projectsDir, ".grok-disabled"),
+        grokHome: path.dirname(projectsDir),
+    }, request, onMatch, onProgress);
 }
 export function searchCorpora(roots, request, onMatch, onProgress) {
     const files = collectSearchFiles(roots).sort((a, b) => {
@@ -111,6 +118,11 @@ export function readSearchDocument(filePath, projectsDir, seed) {
             return null;
         return codexSearchDocument(read.rollout, filePath, projectsDir, seed);
     }
+    if (provider === "grok") {
+        const summaryPath = path.join(path.dirname(filePath), "summary.json");
+        const rollout = readGrokSession(summaryPath);
+        return rollout ? grokSearchDocument(rollout, filePath, projectsDir, seed) : null;
+    }
     let data;
     try {
         data = fs.readFileSync(filePath);
@@ -124,6 +136,9 @@ export function readSearchDocument(filePath, projectsDir, seed) {
 export function parseSearchBuffer(data, filePath, projectsDir, seed) {
     if (seed?.provider === "codex") {
         return codexSearchDocument(parseCodexRollout(data, path.basename(filePath).replace(/\.jsonl(?:\.zst)?$/, "")), filePath, projectsDir, seed);
+    }
+    if (seed?.provider === "grok") {
+        return grokSearchDocument(parseGrokSession(null, data, null, seed.sessionId || path.basename(path.dirname(filePath)), path.join(path.dirname(filePath), "summary.json")), filePath, projectsDir, seed);
     }
     let sessionId = seed?.sessionId ?? path.basename(filePath, ".jsonl");
     let title = seed?.title ?? "";
@@ -263,9 +278,10 @@ export function containsPhrase(tokens, phrase) {
     return false;
 }
 function scanFile(source, request) {
-    const document = source.provider === "codex"
-        ? readSearchDocument(source.filePath, source.root, { provider: "codex", sessionId: "", title: "", cwd: "", lastActivity: null })
-        : readSearchDocument(source.filePath, source.root);
+    const seed = source.provider === "claude"
+        ? undefined
+        : { provider: source.provider, sessionId: "", title: "", cwd: "", lastActivity: null };
+    const document = readSearchDocument(source.filePath, source.root, seed);
     if (!document)
         return null;
     const match = searchMatchForDocument(document, request, "scan");
@@ -282,7 +298,34 @@ export function collectSearchFiles(roots) {
             continue;
         output.push({ filePath, provider: "codex", root: roots.codex });
     }
+    for (const summaryPath of walkGrokSessions(roots.grokHome)) {
+        const chatPath = path.join(path.dirname(summaryPath), "chat_history.jsonl");
+        try {
+            const stat = fs.lstatSync(chatPath);
+            if (stat.isFile() && !stat.isSymbolicLink()) {
+                output.push({ filePath: chatPath, provider: "grok", root: roots.grok });
+            }
+        }
+        catch { /* metadata-only sessions have no searchable prose */ }
+    }
     return output;
+}
+function grokSearchDocument(rollout, filePath, sessionsDir, seed) {
+    const cwd = rollout.cwd || seed?.cwd || "";
+    const project = cwd ? path.basename(cwd) : "—";
+    const fallbackTitle = rollout.events.find((event) => event.role === "user")?.text
+        .replace(/\s+/g, " ").trim().slice(0, 90) || project || rollout.sessionId;
+    return {
+        provider: "grok",
+        sessionId: rollout.sessionId || seed?.sessionId || path.basename(path.dirname(filePath)),
+        title: seed?.title || rollout.title || fallbackTitle,
+        cwd,
+        project,
+        filePath,
+        lastActivity: rollout.lastActivity ?? seed?.lastActivity ?? null,
+        events: rollout.events,
+        consumedBytes: rollout.consumedBytes,
+    };
 }
 function codexSearchDocument(rollout, filePath, sessionsDir, seed) {
     const cwd = rollout.cwd || seed?.cwd || "";
