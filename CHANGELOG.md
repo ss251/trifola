@@ -6,6 +6,12 @@ All notable changes to trifola are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Provider identity icons** — Claude sessions show Anthropic’s starburst asterisk and Codex
+  sessions show OpenAI’s hexagonal blossom knot as path-based SwiftUI marks (`ProviderMark`).
+  Session rows (lineage + flat), filter chips, the session inspector, fleet board tokens, and Live
+  tiles use the same monochrome-tintable glyph; accessibility labels are “Claude” / “OpenAI Codex”,
+  Increase Contrast forces full-opacity ink, and an exhaustive unit test fails if a new `Provider`
+  ships without a mark.
 - **Session lineage browser** — Sessions now nests deterministically joined Claude subagents,
   remote/cloud tasks, Codex spawns and forks, and Claude→Codex imports beneath their parent. Missing
   transcripts and parents remain visible with honest explanations; deep trees flatten visually

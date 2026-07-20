@@ -881,35 +881,23 @@ struct TierBadge: View {
 }
 
 // MARK: - Provider badge
-// Provider is provenance, not status. Keep it graphite and compact: the glyph
-// distinguishes runtimes in dense rows while the inspector/table spells out the
-// label. No provider gets a branded or semantic status color.
+// Provider is provenance, not status. Keep it graphite and compact: the
+// `ProviderMark` shape distinguishes runtimes in dense rows while the
+// inspector/table spells out the label. No provider gets a branded or
+// semantic status color — monochrome template tint only.
 
 struct ProviderBadge: View {
     let provider: Provider
     var compact = false
 
-    private var symbol: String {
-        switch provider {
-        case .claude: return "text.bubble"
-        case .codex: return "terminal"
-        }
-    }
-
     var body: some View {
         if compact {
-            Image(systemName: symbol)
-                .font(Theme.Typography.metadataMedium)
-                .foregroundStyle(Theme.muted)
-                .frame(width: Theme.iconGutter, height: Theme.iconGutter)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(provider.label) provider")
+            ProviderMark(provider: provider, size: Theme.iconGutter)
                 .help("\(provider.label) session")
         } else {
-            HStack(spacing: 3) {
-                Image(systemName: symbol)
-                    .font(Theme.Typography.metadataMedium)
-                    .foregroundStyle(Theme.muted)
+            HStack(spacing: 4) {
+                ProviderMark(provider: provider, size: 11)
+                    .accessibilityHidden(true)
                 Text(provider.label)
                     .font(Theme.Typography.metadata)
                     .foregroundStyle(Theme.muted)
@@ -921,7 +909,7 @@ struct ProviderBadge: View {
                 Capsule().strokeBorder(Theme.cardStroke, lineWidth: Theme.hairlineWidth)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(provider.label) provider")
+            .accessibilityLabel(provider.markAccessibilityLabel)
             .help("\(provider.label) session")
         }
     }
@@ -1647,21 +1635,32 @@ extension TapToggle where L == Text {
 struct FilterChip: View {
     let label: String
     let isOn: Bool
+    /// When set, a leading `ProviderMark` sits beside the label (Claude / Codex chips).
+    var provider: Provider? = nil
     let action: () -> Void
 
     var body: some View {
         TapButton(focusVisual: .capsule, action: action) {
-            Text(label)
-                .font(.caption.weight(isOn ? .semibold : .regular))
-                .foregroundStyle(isOn ? Theme.selectionText : Theme.muted)
-                .padding(.horizontal, Theme.codePadding)
-                .padding(.vertical, Theme.micro)
-                .frame(minHeight: Theme.Layout.compactHitHeight)
+            HStack(spacing: 4) {
+                if let provider {
+                    ProviderMark(
+                        provider: provider,
+                        size: 11,
+                        tint: isOn ? Theme.selectionText : Theme.muted)
+                    .accessibilityHidden(true)
+                }
+                Text(label)
+                    .font(.caption.weight(isOn ? .semibold : .regular))
+                    .foregroundStyle(isOn ? Theme.selectionText : Theme.muted)
+            }
+            .padding(.horizontal, Theme.codePadding)
+            .padding(.vertical, Theme.micro)
+            .frame(minHeight: Theme.Layout.compactHitHeight)
             .background {
                 if isOn {
                     Capsule().fill(Theme.selectionBG)
                 } else {
-                        AdaptiveCapsuleSurface()
+                    AdaptiveCapsuleSurface()
                 }
             }
         }
