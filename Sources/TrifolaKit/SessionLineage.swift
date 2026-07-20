@@ -784,17 +784,25 @@ public enum SessionLineage {
         return "\(lookupKey(summary.provider, summary.machineID, summary.id)):\(path)"
     }
 
-    /// `URL(fileURLWithPath:)` stats the filesystem and `standardizedFileURL`
-    /// re-normalizes the string; per-key that made corpus-wide key maps cost
-    /// seconds. Absolute, already-clean paths — the overwhelming case — skip
-    /// Foundation entirely; anything else falls back to the exact URL result.
+    private static let processWorkingDirectory = FileManager.default.currentDirectoryPath
+
     static func standardizedPath(_ path: String) -> String {
-        if path.hasPrefix("/"), !path.hasSuffix("/"),
-           !path.contains("//"), !path.contains("/./"),
-           !path.contains("/../"), path != "/..", path != "/." {
-            return path
+        let expanded = (path as NSString).expandingTildeInPath
+        let absolute = expanded.hasPrefix("/")
+            ? expanded
+            : processWorkingDirectory + "/" + expanded
+        var components: [Substring] = []
+        for component in absolute.split(separator: "/") {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                if !components.isEmpty { components.removeLast() }
+            default:
+                components.append(component)
+            }
         }
-        return URL(fileURLWithPath: path).standardizedFileURL.path
+        return "/" + components.joined(separator: "/")
     }
 
     private static func lookupKey(_ provider: Provider, _ machine: String,
