@@ -156,6 +156,81 @@ struct SessionLineageTests {
         #expect(forest.roots.count == 2)
         #expect(Set(forest.roots.map(\.id)).count == 2)
     }
+
+    @Test("a heuristic link is refused when the would-be parent started after the child")
+    func heuristicRespectsParentStart() throws {
+        let parent = session("late-driver", lastOffset: 2_400)
+        let child = session("codex-exec", provider: .codex, lastOffset: 180)
+        let evidence = SessionLineageEvidence(
+            codexThreads: [CodexThreadMetadata(
+                threadID: "codex-exec",
+                originator: "codex_exec",
+                entrypoint: "sdk-cli",
+                startedAt: instant.addingTimeInterval(60))],
+            sessionStartedAt: [
+                SessionLineage.key(parent): instant.addingTimeInterval(61),
+            ])
+
+        let forest = SessionLineage.resolve(
+            sessions: [parent, child], evidence: evidence,
+            includeHeuristicLinks: true)
+        #expect(forest.roots.count == 2)
+        #expect(node("codex-exec", in: forest)?.edgeKind == nil)
+
+        // An unknown parent start keeps the previous behavior (window on
+        // lastActivity alone), so real corpora without start records still link.
+        let unknownStart = SessionLineage.resolve(
+            sessions: [parent, child],
+            evidence: SessionLineageEvidence(codexThreads: [CodexThreadMetadata(
+                threadID: "codex-exec",
+                originator: "codex_exec",
+                entrypoint: "sdk-cli",
+                startedAt: instant.addingTimeInterval(60))]),
+            includeHeuristicLinks: true)
+        #expect(node("codex-exec", in: unknownStart)?.edgeKind == .orchestrated)
+    }
+
+    @Test("a subagent file whose parent has no matching spawn record stays detached but explains itself")
+    func unverifiedSubagentExplainsItself() throws {
+        let parent = session(
+            "claude-parent",
+            filePath: "/Users/dev/.claude/projects/repo/claude-parent.jsonl",
+            invocations: [SubagentInvocation(agentID: "someone-else")])
+        let child = session(
+            "claude-parent/agent-inner",
+            filePath: "/Users/dev/.claude/projects/repo/claude-parent/subagents/agent-agent-inner.jsonl")
+
+        let forest = SessionLineage.resolve(sessions: [parent, child])
+        let detached = try #require(node("claude-parent/agent-inner", in: forest))
+        #expect(detached.spawnDepth == 0)
+        #expect(detached.parentMissingNote?.contains("no matching spawn record") == true)
+        #expect(detached.edgeDetail == nil)
+
+        // The anchored prefix strip derives "agent-inner" (not "inner"), so a
+        // matching parent record verifies and attaches the child normally.
+        let verifiedParent = session(
+            "claude-parent",
+            filePath: "/Users/dev/.claude/projects/repo/claude-parent.jsonl",
+            invocations: [SubagentInvocation(agentID: "agent-inner")])
+        let verified = SessionLineage.resolve(sessions: [verifiedParent, child])
+        #expect(node("claude-parent/agent-inner", in: verified)?.edgeKind == .subagent)
+        #expect(node("claude-parent/agent-inner", in: verified)?.spawnDepth == 1)
+    }
+
+    @Test("roots never carry an edge kind or confidence")
+    func rootsCarryNoEdge() throws {
+        let orphanEvidence = SessionLineageEvidence(codexThreads: [
+            CodexThreadMetadata(threadID: "orphan", parentThreadID: "gone"),
+        ])
+        let forest = SessionLineage.resolve(
+            sessions: [session("orphan", provider: .codex)],
+            evidence: orphanEvidence)
+        let orphan = try #require(node("orphan", in: forest))
+        #expect(orphan.spawnDepth == 0)
+        #expect(orphan.edgeKind == nil)
+        #expect(orphan.confidence == nil)
+        #expect(orphan.parentMissingNote == "Parent missing: gone")
+    }
 }
 
 @Suite("Lineage evidence parsing")
