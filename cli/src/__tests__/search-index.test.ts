@@ -193,7 +193,8 @@ describe("search index tiers", () => {
       const rebuilt = await execute(root, cache, ["needle"]);
       assert.equal(rebuilt.result.engine, "scan");
       assert.equal(rebuilt.result.indexBuilt, true);
-      assert.match(rebuilt.notices.join("\n"), /schema 1 does not match v3 — rebuilding/);
+      assert.match(rebuilt.notices.join("\n"),
+        new RegExp(`schema 1 does not match v${SEARCH_SCHEMA_VERSION} — rebuilding`));
       const verified = new DatabaseSync(databasePath, { readOnly: true });
       assert.equal(Number(verified.prepare("PRAGMA user_version").get().user_version), SEARCH_SCHEMA_VERSION);
       verified.close();
