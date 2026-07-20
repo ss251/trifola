@@ -138,6 +138,10 @@ final class NavigationSnapshotStore: ObservableObject {
 
     private var inputs: Inputs?
     private var sessionGeneration = 0
+    /// Resolved forest for one rebuild's inputs. Keystrokes and same-source
+    /// refreshes must never pay the ~10k-session resolve again.
+    private var lineageMemo:
+        (source: Int, includeHeuristics: Bool, forest: SessionLineageForest)?
     private var corpusGeneration = 0
     private var fleetGeneration = 0
     private var deadlineGeneration = 0
@@ -360,6 +364,8 @@ final class NavigationSnapshotStore: ObservableObject {
         sessionGeneration += 1
         let generation = sessionGeneration
         let filter = sessionFilter
+        let source = sourceGeneration
+        let memo = lineageMemo
         sessionTask?.cancel()
         var state = sessionSearch
         let request = state.begin(query: filter.query)
@@ -369,7 +375,7 @@ final class NavigationSnapshotStore: ObservableObject {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
             }
-            let result = await Task.detached(priority: .userInitiated) {
+            let (result, resolvedLineage) = await Task.detached(priority: .userInitiated) {
                 let metric = NavigationMetrics.beginProjection(
                     .sessions, generation: generation)
                 var eligibilityFilter = filter
@@ -379,10 +385,19 @@ final class NavigationSnapshotStore: ObservableObject {
                     liveTerminalSessionIDs: inputs.liveTerminalSessionIDs,
                     filter: eligibilityFilter,
                     now: inputs.now)
-                let lineage = SessionLineage.resolve(
-                    sessions: inputs.sessions,
-                    evidence: inputs.lineageEvidence,
-                    includeHeuristicLinks: inputs.showHeuristicLinks)
+                // The forest depends only on the rebuild inputs, never the
+                // filter: keystrokes and same-source refreshes reuse the memo
+                // instead of re-resolving ~10k sessions per publish.
+                let lineage: SessionLineageForest
+                if let memo, memo.source == source,
+                   memo.includeHeuristics == inputs.showHeuristicLinks {
+                    lineage = memo.forest
+                } else {
+                    lineage = SessionLineage.resolve(
+                        sessions: inputs.sessions,
+                        evidence: inputs.lineageEvidence,
+                        includeHeuristicLinks: inputs.showHeuristicLinks)
+                }
                 let projected = Self.projectLineage(
                     lineage,
                     summaries: inputs.sessions,
@@ -436,7 +451,7 @@ final class NavigationSnapshotStore: ObservableObject {
                         return (result.id, parent)
                     }, uniquingKeysWith: { first, _ in first })
                 _ = NavigationMetrics.endProjection(metric)
-                return SessionProjectionSnapshot(
+                return (SessionProjectionSnapshot(
                     rows: projected.rows,
                     conversationResults: results,
                     conversationParentTitles: conversationParents,
@@ -446,11 +461,14 @@ final class NavigationSnapshotStore: ObservableObject {
                     lineageCounts: projected.counts,
                     isLineageResolving: inputs.lineageIsProvisional,
                     filter: filter,
-                    generation: generation)
+                    generation: generation), lineage)
             }.value
-            guard !Task.isCancelled,
-                  let self,
-                  self.sessionGeneration == generation else { return }
+            guard !Task.isCancelled, let self else { return }
+            self.lineageMemo = (
+                source: source,
+                includeHeuristics: inputs.showHeuristicLinks,
+                forest: resolvedLineage)
+            guard self.sessionGeneration == generation else { return }
             var state = self.sessionSearch
             guard state.publish(result, for: request) else { return }
             self.sessionSearch = state
