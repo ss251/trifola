@@ -1262,8 +1262,8 @@ public struct SessionIndex: Sendable {
         let name = (relativePath as NSString).lastPathComponent
         guard ["summary.json", "chat_history.jsonl", "updates.jsonl"].contains(name)
         else { return nil }
-        return (relativePath as NSString).deletingLastPathComponent
-            + "/summary.json"
+        let directory = (relativePath as NSString).deletingLastPathComponent
+        return directory.isEmpty ? "summary.json" : directory + "/summary.json"
     }
 
     /// Grok's canonical row fingerprints all three files. A usage-only append

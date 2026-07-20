@@ -25,7 +25,7 @@ import {
 import { resolveCodexDir, resolveGrokDir, codexSessionsDirOf } from "./config.js";
 import { detectZstd, walkCodexRollouts } from "./codex.js";
 
-export const SEARCH_SCHEMA_VERSION = 3;
+export const SEARCH_SCHEMA_VERSION = 4;
 export const CLI_INDEX_FILENAME = "search-index.sqlite3";
 
 type SqliteModule = { DatabaseSync: typeof DatabaseSync };

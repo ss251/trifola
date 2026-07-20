@@ -77,6 +77,12 @@ function setDiff(left, right) {
 function compareIndexes(app, cli) {
   const checks = [];
   for (const provider of ["claude", "codex", "grok"]) {
+    // Claude/Codex keep their pre-existing exact contract; only the Grok
+    // corpus — snapshotted twice while sessions may still be writing — is
+    // allowed the small live-drift tolerances.
+    const documentTolerance = provider === "grok" ? 2 : 0;
+    const sessionTolerance = provider === "grok" ? 2 : 0;
+    const rowTolerance = provider === "grok" ? 10 : 0;
     const appSessions = app.sessions.get(provider) || new Set();
     const cliSessions = cli.sessions.get(provider) || new Set();
     const missing = setDiff(appSessions, cliSessions);
@@ -86,22 +92,22 @@ function compareIndexes(app, cli) {
     const documentDrift = Math.abs(appDocumentCount - cliDocumentCount);
     checks.push({
       check: `search documents · ${provider}`,
-      pass: documentDrift <= 2,
-      detail: `app ${appDocumentCount} · cli ${cliDocumentCount}${documentDrift ? " · live drift ≤2" : ""}`,
+      pass: documentDrift <= documentTolerance,
+      detail: `app ${appDocumentCount} · cli ${cliDocumentCount}${documentDrift && documentTolerance ? ` · live drift ≤${documentTolerance}` : ""}`,
     });
     checks.push({
       check: `session-id set · ${provider}`,
-      pass: missing.length + extra.length <= 2,
-      detail: `missing ${missing.length}${missing.length ? ` [${missing.slice(0, 3).join(", ")}]` : ""} · extra ${extra.length}${extra.length ? ` [${extra.slice(0, 3).join(", ")}]` : ""}${missing.length + extra.length ? " · live drift ≤2" : ""}`,
+      pass: missing.length + extra.length <= sessionTolerance,
+      detail: `missing ${missing.length}${missing.length ? ` [${missing.slice(0, 3).join(", ")}]` : ""} · extra ${extra.length}${extra.length ? ` [${extra.slice(0, 3).join(", ")}]` : ""}${missing.length + extra.length && sessionTolerance ? ` · live drift ≤${sessionTolerance}` : ""}`,
     });
     const keys = new Set([...app.rows.keys(), ...cli.rows.keys()].filter((key) => key.startsWith(provider + "\u0001")));
     const mismatches = [...keys].filter((key) => (app.rows.get(key) || 0) !== (cli.rows.get(key) || 0));
     checks.push({
       check: `conversation rows · ${provider}`,
-      pass: mismatches.length <= 10,
+      pass: mismatches.length <= rowTolerance,
       detail: mismatches.length === 0
         ? `${keys.size} sessions exact`
-        : `${mismatches.length} live row drift${mismatches.length <= 10 ? " (within ≤10 bound)" : ""} [${mismatches.slice(0, 3).map((key) => `${key.split("\u0001")[1]} app=${app.rows.get(key) || 0}/cli=${cli.rows.get(key) || 0}`).join(", ")}]`,
+        : `${mismatches.length} ${rowTolerance ? `live row drift${mismatches.length <= rowTolerance ? ` (within ≤${rowTolerance} bound)` : ""}` : "mismatches"} [${mismatches.slice(0, 3).map((key) => `${key.split("\u0001")[1]} app=${app.rows.get(key) || 0}/cli=${cli.rows.get(key) || 0}`).join(", ")}]`,
     });
   }
   return checks;

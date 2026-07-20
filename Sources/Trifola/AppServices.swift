@@ -860,9 +860,11 @@ final class AppServices: ObservableObject {
             provider: session.provider,
             isRemote: session.isRemote) == .transcript {
             // Same route, two different truths — name the right one.
-            if session.isRemote { return .transcript(.remoteSession) }
-            return .transcript(session.provider == .codex
-                ? .codexSession : .grokSession)
+            switch session.provider {
+            case .codex: return .transcript(.codexSession)
+            case .grok: return .transcript(.grokSession)
+            case .claude: return .transcript(.remoteSession)
+            }
         }
         return sessionOpenActions[session.id] ?? .resolving
     }
@@ -926,11 +928,15 @@ final class AppServices: ObservableObject {
         guard ProviderSessionOpenPolicy.route(
             provider: session.provider,
             isRemote: session.isRemote) == .claudeRegistry else {
-            let message = session.isRemote
-                ? "Remote session — showing transcript"
-                : session.provider == .codex
-                    ? "Codex terminal handoff is not available yet — showing rollout transcript"
-                    : "Grok terminal handoff is not available yet — showing session transcript"
+            let message: String
+            switch session.provider {
+            case .codex:
+                message = "Codex terminal handoff is not available yet — showing rollout transcript"
+            case .grok:
+                message = "Grok terminal handoff is not available yet — showing session transcript"
+            case .claude:
+                message = "Remote session — showing transcript"
+            }
             showTranscript(session, message: message,
                            openMainWindow: openMainWindow)
             return

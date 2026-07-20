@@ -38,7 +38,7 @@ enum SessionIndexCacheLoad {
 enum SessionIndexDatabase {
     static let schemaVersion = 1
     /// Bump with any incompatible SessionParserState Codable shape.
-    static let payloadVersion = 22
+    static let payloadVersion = 23
     private static let decodeRowsPerChunk = 128
     private static let decodeWorkerCount = max(
         1, min(ProcessInfo.processInfo.activeProcessorCount, 16))

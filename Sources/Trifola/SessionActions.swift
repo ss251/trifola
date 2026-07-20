@@ -117,7 +117,7 @@ struct SessionActions: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if session.provider == .claude {
+            if session.provider != .grok {
                 QuietTapButton(action: {
                     let cmd = SessionResume.command(sessionID: session.id, cwd: session.cwd)
                     NSPasteboard.general.clearContents()
@@ -132,7 +132,7 @@ struct SessionActions: View {
                 .help("Copy `claude --resume \(session.shortID)…` to the clipboard")
             }
 
-            if !compact || session.provider != .claude {
+            if !compact || session.provider == .grok {
                 QuietTapButton(action: {
                     NSWorkspace.shared.activateFileViewerSelecting(
                         [URL(fileURLWithPath: session.filePath)])

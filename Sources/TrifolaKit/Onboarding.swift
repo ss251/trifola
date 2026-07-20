@@ -55,9 +55,12 @@ public struct FirstLaunchWelcomeCopy: Sendable, Equatable {
             case .grok: return "~/.grok"
             }
         }
-        localPaths = paths.count == 1
-            ? paths[0]
-            : paths.dropLast().joined(separator: ", ") + ", and " + paths.last!
+        switch paths.count {
+        case 1: localPaths = paths[0]
+        case 2: localPaths = paths.joined(separator: " and ")
+        default: localPaths = paths.dropLast().joined(separator: ", ")
+            + ", and " + paths.last!
+        }
     }
 
     public var reads: String {

@@ -165,7 +165,8 @@ public struct GrokSessionAccumulator: Sendable, Codable {
         currentModelID = Self.clean(object["current_model_id"] as? String)
         startedAt = Self.date(object["created_at"]) ?? startedAt
         last = Self.date(object["last_active_at"])
-            ?? Self.date(object["updated_at"]) ?? last
+            ?? Self.date(object["updated_at"])
+            ?? Self.date(object["created_at"]) ?? last
         summaryMessageCount = Self.int(object["num_chat_messages"])
             ?? Self.int(object["num_messages"]) ?? summaryMessageCount
         parentSessionID = Self.clean(object["parent_session_id"] as? String)
@@ -297,7 +298,10 @@ public struct GrokSessionAccumulator: Sendable, Codable {
 
     private mutating func consumeChat(line: Data) {
         guard let object = (try? JSONSerialization.jsonObject(with: line))
-                as? [String: Any], let type = object["type"] as? String else { return }
+                as? [String: Any] else { return }
+        if let timestamp = Self.date(object["timestamp"]),
+           last == nil || timestamp > last! { last = timestamp }
+        guard let type = object["type"] as? String else { return }
         chatRecordCount += 1
         if type == "user", object["synthetic_reason"] == nil,
            let text = GrokTranscriptParser.textContent(object["content"]) {
@@ -360,7 +364,7 @@ public struct GrokSessionAccumulator: Sendable, Codable {
         let input = max(0, Self.int(object["inputTokens"]) ?? 0)
         let cached = max(0, Self.int(object["cachedReadTokens"]) ?? 0)
         let output = max(0, Self.int(object["outputTokens"]) ?? 0)
-        guard input != 0 || cached != 0 || output != 0 else { return }
+        guard input != 0 || output != 0 else { return }
         let fresh = input >= cached ? input - cached : 0
         let calls = max(1, Self.int(object["modelCalls"])
             ?? Self.int(object["numTurns"]) ?? 1)
@@ -524,17 +528,24 @@ public enum GrokTranscriptParser {
         if let string = raw as? String { return clean(string) }
         guard let values = raw as? [Any] else { return nil }
         let text = values.compactMap { value -> String? in
-            if let string = value as? String { return clean(string) }
-            guard let object = value as? [String: Any] else { return nil }
+            guard let object = value as? [String: Any],
+                  object["type"] as? String == "text" else { return nil }
             return clean(object["text"] as? String)
-                ?? clean(object["content"] as? String)
         }.joined(separator: "\n")
         return clean(text)
     }
 
+    /// Mirrors the CLI's `clean()`: trims, then truncates at 4,000 code points
+    /// with the identical `… (+N chars)` marker, so both indexers tokenize the
+    /// same prose for the parity contract.
     private static func clean(_ value: String?) -> String? {
         guard let value else { return nil }
         let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? nil : cleaned
+        guard !cleaned.isEmpty else { return nil }
+        let maximum = 4_000
+        let scalars = cleaned.unicodeScalars
+        guard scalars.count > maximum else { return cleaned }
+        let prefix = String(String.UnicodeScalarView(scalars.prefix(maximum)))
+        return "\(prefix) … (+\(scalars.count - maximum) chars)"
     }
 }

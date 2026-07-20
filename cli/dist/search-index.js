@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { MAX_ORDERED_TOKENS_PER_DOCUMENT, parseSearchBuffer, readSearchDocument, searchCorpora, searchMatchForDocument, tokenizeSearchText, collectSearchFiles, } from "./search.js";
 import { resolveCodexDir, resolveGrokDir, codexSessionsDirOf } from "./config.js";
 import { detectZstd, walkCodexRollouts } from "./codex.js";
-export const SEARCH_SCHEMA_VERSION = 3;
+export const SEARCH_SCHEMA_VERSION = 4;
 export const CLI_INDEX_FILENAME = "search-index.sqlite3";
 function rootForProvider(provider, roots) {
     switch (provider) {
