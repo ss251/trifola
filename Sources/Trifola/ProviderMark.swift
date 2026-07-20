@@ -25,11 +25,11 @@ struct ProviderMark: View {
 
     var body: some View {
         Group {
-            switch provider {
-            case .claude:
+            switch provider.markKind {
+            case .claudeStarburst:
                 ClaudeStarburstShape()
                     .fill(fill, style: FillStyle(eoFill: false, antialiased: true))
-            case .codex:
+            case .openAIBlossom:
                 OpenAIBlossomShape()
                     .fill(fill, style: FillStyle(eoFill: true, antialiased: true))
             }
@@ -47,8 +47,10 @@ struct ProviderMark: View {
 /// path data, verbatim (viewBox 24×24). Regenerate from the source SVG only;
 /// never round or redraw coordinates.
 struct ClaudeStarburstShape: Shape {
+    private static let viewBoxPath = SVGPathGeometry.path(d)
+
     func path(in rect: CGRect) -> Path {
-        SVGPathGeometry.path(Self.d, viewBox: 24, in: rect)
+        SVGPathGeometry.fit(Self.viewBoxPath, viewBox: 24, in: rect)
     }
 
     private static let d =
@@ -87,8 +89,10 @@ struct ClaudeStarburstShape: Shape {
 /// open at 12–24pt. Regenerate from the source SVG only; never round or
 /// redraw coordinates.
 struct OpenAIBlossomShape: Shape {
+    private static let viewBoxPath = SVGPathGeometry.path(d)
+
     func path(in rect: CGRect) -> Path {
-        SVGPathGeometry.path(Self.d, viewBox: 24, in: rect)
+        SVGPathGeometry.fit(Self.viewBoxPath, viewBox: 24, in: rect)
     }
 
     private static let d =
@@ -123,17 +127,24 @@ struct OpenAIBlossomShape: Shape {
 // commands of the same kind may omit the letter (SVG rules).
 
 enum SVGPathGeometry {
-    static func path(_ d: String, viewBox: CGFloat, in rect: CGRect) -> Path {
+    /// Scales a viewBox-space path (parsed once, cached per shape) into `rect`.
+    static func fit(_ path: Path, viewBox: CGFloat, in rect: CGRect) -> Path {
+        guard viewBox > 0 else { return Path() }
+        let transform = CGAffineTransform(translationX: rect.minX, y: rect.minY)
+            .scaledBy(x: rect.width / viewBox, y: rect.height / viewBox)
+        return path.applying(transform)
+    }
+
+    /// Arguments consumed per repetition of each supported command.
+    private static let arity: [Character: Int] = [
+        "M": 2, "m": 2, "L": 2, "l": 2, "H": 1, "h": 1, "V": 1, "v": 1,
+        "C": 6, "c": 6, "S": 4, "s": 4, "Q": 4, "q": 4, "A": 7, "a": 7,
+        "Z": 0, "z": 0,
+    ]
+
+    static func path(_ d: String) -> Path {
         let raw = parse(d)
         var path = Path()
-        guard viewBox > 0 else { return path }
-        let sx = rect.width / viewBox
-        let sy = rect.height / viewBox
-        let ox = rect.minX
-        let oy = rect.minY
-        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: ox + x * sx, y: oy + y * sy)
-        }
 
         var cx: CGFloat = 0, cy: CGFloat = 0
         var startX: CGFloat = 0, startY: CGFloat = 0
@@ -141,16 +152,24 @@ enum SVGPathGeometry {
         var lastWasCubic = false
 
         for cmd in raw {
+            guard let argCount = arity[cmd.op] else {
+                assertionFailure("SVGPathGeometry: unsupported path command '\(cmd.op)'")
+                continue
+            }
+            assert(argCount == 0
+                    ? cmd.args.isEmpty
+                    : !cmd.args.isEmpty && cmd.args.count.isMultiple(of: argCount),
+                   "SVGPathGeometry: malformed argument count \(cmd.args.count) for '\(cmd.op)'")
             switch cmd.op {
             case "M":
                 var i = 0
                 while i + 1 < cmd.args.count {
                     cx = cmd.args[i]; cy = cmd.args[i + 1]
                     if i == 0 {
-                        path.move(to: pt(cx, cy))
+                        path.move(to: CGPoint(x: cx, y: cy))
                         startX = cx; startY = cy
                     } else {
-                        path.addLine(to: pt(cx, cy))
+                        path.addLine(to: CGPoint(x: cx, y: cy))
                     }
                     i += 2
                     lastWasCubic = false
@@ -160,10 +179,10 @@ enum SVGPathGeometry {
                 while i + 1 < cmd.args.count {
                     cx += cmd.args[i]; cy += cmd.args[i + 1]
                     if i == 0 {
-                        path.move(to: pt(cx, cy))
+                        path.move(to: CGPoint(x: cx, y: cy))
                         startX = cx; startY = cy
                     } else {
-                        path.addLine(to: pt(cx, cy))
+                        path.addLine(to: CGPoint(x: cx, y: cy))
                     }
                     i += 2
                     lastWasCubic = false
@@ -172,7 +191,7 @@ enum SVGPathGeometry {
                 var i = 0
                 while i + 1 < cmd.args.count {
                     cx = cmd.args[i]; cy = cmd.args[i + 1]
-                    path.addLine(to: pt(cx, cy))
+                    path.addLine(to: CGPoint(x: cx, y: cy))
                     i += 2
                     lastWasCubic = false
                 }
@@ -180,32 +199,32 @@ enum SVGPathGeometry {
                 var i = 0
                 while i + 1 < cmd.args.count {
                     cx += cmd.args[i]; cy += cmd.args[i + 1]
-                    path.addLine(to: pt(cx, cy))
+                    path.addLine(to: CGPoint(x: cx, y: cy))
                     i += 2
                     lastWasCubic = false
                 }
             case "H":
                 for x in cmd.args {
                     cx = x
-                    path.addLine(to: pt(cx, cy))
+                    path.addLine(to: CGPoint(x: cx, y: cy))
                     lastWasCubic = false
                 }
             case "h":
                 for dx in cmd.args {
                     cx += dx
-                    path.addLine(to: pt(cx, cy))
+                    path.addLine(to: CGPoint(x: cx, y: cy))
                     lastWasCubic = false
                 }
             case "V":
                 for y in cmd.args {
                     cy = y
-                    path.addLine(to: pt(cx, cy))
+                    path.addLine(to: CGPoint(x: cx, y: cy))
                     lastWasCubic = false
                 }
             case "v":
                 for dy in cmd.args {
                     cy += dy
-                    path.addLine(to: pt(cx, cy))
+                    path.addLine(to: CGPoint(x: cx, y: cy))
                     lastWasCubic = false
                 }
             case "C":
@@ -214,9 +233,9 @@ enum SVGPathGeometry {
                     let x1 = cmd.args[i], y1 = cmd.args[i + 1]
                     let x2 = cmd.args[i + 2], y2 = cmd.args[i + 3]
                     let x = cmd.args[i + 4], y = cmd.args[i + 5]
-                    path.addCurve(to: pt(x, y),
-                                  control1: pt(x1, y1),
-                                  control2: pt(x2, y2))
+                    path.addCurve(to: CGPoint(x: x, y: y),
+                                  control1: CGPoint(x: x1, y: y1),
+                                  control2: CGPoint(x: x2, y: y2))
                     lastCX = x2; lastCY = y2
                     cx = x; cy = y
                     lastWasCubic = true
@@ -228,9 +247,9 @@ enum SVGPathGeometry {
                     let x1 = cx + cmd.args[i], y1 = cy + cmd.args[i + 1]
                     let x2 = cx + cmd.args[i + 2], y2 = cy + cmd.args[i + 3]
                     let x = cx + cmd.args[i + 4], y = cy + cmd.args[i + 5]
-                    path.addCurve(to: pt(x, y),
-                                  control1: pt(x1, y1),
-                                  control2: pt(x2, y2))
+                    path.addCurve(to: CGPoint(x: x, y: y),
+                                  control1: CGPoint(x: x1, y: y1),
+                                  control2: CGPoint(x: x2, y: y2))
                     lastCX = x2; lastCY = y2
                     cx = x; cy = y
                     lastWasCubic = true
@@ -243,9 +262,9 @@ enum SVGPathGeometry {
                     let y1 = lastWasCubic ? 2 * cy - lastCY : cy
                     let x2 = cmd.args[i], y2 = cmd.args[i + 1]
                     let x = cmd.args[i + 2], y = cmd.args[i + 3]
-                    path.addCurve(to: pt(x, y),
-                                  control1: pt(x1, y1),
-                                  control2: pt(x2, y2))
+                    path.addCurve(to: CGPoint(x: x, y: y),
+                                  control1: CGPoint(x: x1, y: y1),
+                                  control2: CGPoint(x: x2, y: y2))
                     lastCX = x2; lastCY = y2
                     cx = x; cy = y
                     lastWasCubic = true
@@ -258,9 +277,9 @@ enum SVGPathGeometry {
                     let y1 = lastWasCubic ? 2 * cy - lastCY : cy
                     let x2 = cx + cmd.args[i], y2 = cy + cmd.args[i + 1]
                     let x = cx + cmd.args[i + 2], y = cy + cmd.args[i + 3]
-                    path.addCurve(to: pt(x, y),
-                                  control1: pt(x1, y1),
-                                  control2: pt(x2, y2))
+                    path.addCurve(to: CGPoint(x: x, y: y),
+                                  control1: CGPoint(x: x1, y: y1),
+                                  control2: CGPoint(x: x2, y: y2))
                     lastCX = x2; lastCY = y2
                     cx = x; cy = y
                     lastWasCubic = true
@@ -271,7 +290,7 @@ enum SVGPathGeometry {
                 while i + 3 < cmd.args.count {
                     let x1 = cmd.args[i], y1 = cmd.args[i + 1]
                     let x = cmd.args[i + 2], y = cmd.args[i + 3]
-                    path.addQuadCurve(to: pt(x, y), control: pt(x1, y1))
+                    path.addQuadCurve(to: CGPoint(x: x, y: y), control: CGPoint(x: x1, y: y1))
                     cx = x; cy = y
                     lastWasCubic = false
                     i += 4
@@ -281,7 +300,7 @@ enum SVGPathGeometry {
                 while i + 3 < cmd.args.count {
                     let x1 = cx + cmd.args[i], y1 = cy + cmd.args[i + 1]
                     let x = cx + cmd.args[i + 2], y = cy + cmd.args[i + 3]
-                    path.addQuadCurve(to: pt(x, y), control: pt(x1, y1))
+                    path.addQuadCurve(to: CGPoint(x: x, y: y), control: CGPoint(x: x1, y: y1))
                     cx = x; cy = y
                     lastWasCubic = false
                     i += 4
@@ -302,8 +321,7 @@ enum SVGPathGeometry {
                            to: CGPoint(x: x, y: y),
                            rx: rx, ry: ry,
                            xAxisRotation: xAxisRotation,
-                           largeArc: largeArc, sweep: sweep,
-                           map: pt)
+                           largeArc: largeArc, sweep: sweep)
                     cx = x; cy = y
                     lastWasCubic = false
                     i += 7
@@ -326,11 +344,10 @@ enum SVGPathGeometry {
         from: CGPoint, to: CGPoint,
         rx: CGFloat, ry: CGFloat,
         xAxisRotation: CGFloat,
-        largeArc: Bool, sweep: Bool,
-        map: (CGFloat, CGFloat) -> CGPoint
+        largeArc: Bool, sweep: Bool
     ) {
         if rx == 0 || ry == 0 {
-            path.addLine(to: map(to.x, to.y))
+            path.addLine(to: to)
             return
         }
         let phi = xAxisRotation * .pi / 180
@@ -394,9 +411,7 @@ enum SVGPathGeometry {
                 x: p1.x + t * (rxv * sin1 * cosPhi + ryv * cos1 * sinPhi),
                 y: p1.y + t * (rxv * sin1 * sinPhi - ryv * cos1 * cosPhi))
             // First control is relative to current point which equals p0 after move/line.
-            path.addCurve(to: map(p1.x, p1.y),
-                          control1: map(c1.x, c1.y),
-                          control2: map(c2.x, c2.y))
+            path.addCurve(to: p1, control1: c1, control2: c2)
             a0 = a1
         }
     }
