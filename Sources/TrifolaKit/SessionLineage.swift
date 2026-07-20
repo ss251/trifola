@@ -390,9 +390,10 @@ public enum SessionLineage {
             let parentKey = keyByPath[expectedParentPath]
                 ?? actualKey(provider: .claude,
                              machine: child.machineID, id: parentID)
-            let agentStem = URL(fileURLWithPath: child.filePath)
+            let fileStem = URL(fileURLWithPath: child.filePath)
                 .deletingPathExtension().lastPathComponent
-                .replacingOccurrences(of: "agent-", with: "")
+            let agentStem = fileStem.hasPrefix("agent-")
+                ? String(fileStem.dropFirst("agent-".count)) : fileStem
             let verified = parentKey.flatMap { summaryByKey[$0] }?
                 .subagentInvocations.contains { $0.agentID == agentStem } == true
             if verified || parentKey == nil {
@@ -401,6 +402,15 @@ public enum SessionLineage {
                     missingParentID: parentKey == nil ? parentID : nil,
                     kind: .subagent, confidence: .deterministic,
                     detail: nil, priority: 1), to: key(child))
+            } else {
+                // The parent transcript exists but records no matching spawn.
+                // Never mis-attach — but never pretend this is an ordinary
+                // top-level session either.
+                offer(Candidate(
+                    parentKey: nil, missingParentID: nil,
+                    kind: .subagent, confidence: .deterministic,
+                    detail: "subagent file — parent \(parentID) has no matching spawn record",
+                    priority: 1), to: key(child))
             }
         }
 
@@ -545,7 +555,10 @@ public enum SessionLineage {
                 let candidates = Dictionary(
                     pool.map { (key($0), $0) }, uniquingKeysWith: { first, _ in first })
                     .values.filter {
-                        activeWindowContains(started, parentLastActivity: $0.lastActivity)
+                        activeWindowContains(
+                            started,
+                            parentStart: evidence.sessionStartedAt[key($0)],
+                            parentLastActivity: $0.lastActivity)
                     }.sorted {
                     abs(($0.lastActivity ?? .distantPast).timeIntervalSince(started))
                         < abs(($1.lastActivity ?? .distantPast).timeIntervalSince(started))
@@ -604,13 +617,13 @@ public enum SessionLineage {
                 if candidate.parentKey != nil {
                     return "Parent link was ignored to prevent a lineage cycle."
                 }
-                return nil
+                return candidate.detail
             }()
             return LineageNode(
                 session: value.session,
                 children: children,
-                edgeKind: acceptedParents[nodeKey] == nil ? candidate?.kind : candidate?.kind,
-                confidence: candidate?.confidence,
+                edgeKind: acceptedParents[nodeKey] == nil ? nil : candidate?.kind,
+                confidence: acceptedParents[nodeKey] == nil ? nil : candidate?.confidence,
                 spawnDepth: depth,
                 displayDepth: min(depth, 2),
                 parentMissingNote: missing,
@@ -641,9 +654,14 @@ public enum SessionLineage {
     }
 
     private static func activeWindowContains(
-        _ childStart: Date, parentLastActivity: Date?
+        _ childStart: Date, parentStart: Date?, parentLastActivity: Date?
     ) -> Bool {
         guard let parentLastActivity else { return false }
+        // A parent cannot spawn work before it existed: when the parent's start
+        // is known it must precede the child (small clock-skew allowance).
+        if let parentStart, parentStart.timeIntervalSince(childStart) > 60 {
+            return false
+        }
         let delta = parentLastActivity.timeIntervalSince(childStart)
         return delta >= -15 * 60 && delta <= 4 * 60 * 60
     }
