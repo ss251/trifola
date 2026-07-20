@@ -134,10 +134,17 @@ Edges are applied in evidence priority order:
 
 The first four are `deterministic`. The last is the only `heuristic` edge and is always labeled
 “linked by workspace + timing”; Settings can hide heuristic links without affecting deterministic
-lineage. `bridgeSessionId`, `origin.kind: "peer"`, and `senderTaskId` are deliberately not edges.
-Missing-parent children remain top-level with a parent-missing note. Cycles lose the edge that would
-close the loop, so every session remains visible. Spawn depth is retained, while visual indentation
-caps at two levels.
+lineage. A heuristic parent whose known start is later than the child is rejected; when that start is
+unknown, the observed-activity window remains the timing authority. `bridgeSessionId`,
+`origin.kind: "peer"`, and `senderTaskId` are deliberately not edges.
+
+A Claude subagent attaches only when its existing parent transcript records the matching spawn; the
+filename comparison removes exactly one leading `agent-` prefix. If the parent exists without that
+record, the child stays top-level with a mismatch explanation. Missing-parent children likewise
+remain top-level with a parent-missing note. Cycles lose the edge that would close the loop, so every
+session remains visible. Only accepted parent links carry an edge kind, confidence, or edge detail;
+roots carry explanation notes instead. Spawn depth is retained, while visual indentation caps at two
+levels.
 
 `NavigationSnapshotStore` resolves and projects the forest in detached work. The published Sessions
 snapshot contains at most 400 `SessionLineageDisplayRow` values rather than a `[SessionSummary]`
