@@ -192,7 +192,8 @@ struct SessionsScreen: View {
                         }
                         ForEach(Provider.allCases, id: \.self) { provider in
                             FilterChip(label: provider.label,
-                                       isOn: providerFilter == provider) {
+                                       isOn: providerFilter == provider,
+                                       provider: provider) {
                                 updateFilter(
                                     \.provider,
                                     to: providerFilter == provider ? nil : provider)
@@ -1608,7 +1609,8 @@ struct SessionsRenderContent: View {
                         }
                         ForEach(Provider.allCases, id: \.self) { provider in
                             FilterChip(label: provider.label,
-                                       isOn: providerFilter == provider) {
+                                       isOn: providerFilter == provider,
+                                       provider: provider) {
                                 providerFilter = providerFilter == provider ? nil : provider
                             }
                         }

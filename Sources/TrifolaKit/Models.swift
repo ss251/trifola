@@ -157,6 +157,32 @@ public enum Provider: String, Sendable, Hashable, Codable, CaseIterable {
         case .codex: return "Codex"
         }
     }
+
+    /// Accessibility label for the provider identity mark. Exhaustive by design:
+    /// a new `Provider` case without a mark label fails the build, and the unit
+    /// test pins every case so a blank mark cannot ship silently.
+    public var markAccessibilityLabel: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex: return "OpenAI Codex"
+        }
+    }
+
+    /// Stable identity for the vector mark geometry that `ProviderMark` draws.
+    /// Exhaustive — adding a provider without a mark kind is a compile error.
+    public var markKind: ProviderMarkKind {
+        switch self {
+        case .claude: return .claudeStarburst
+        case .codex: return .openAIBlossom
+        }
+    }
+}
+
+/// Vector mark geometries rendered by the app's `ProviderMark` view. One case
+/// per drawn shape; the unit test requires every `Provider` to map here.
+public enum ProviderMarkKind: String, Sendable, Hashable, CaseIterable {
+    case claudeStarburst
+    case openAIBlossom
 }
 
 public enum ModelTier: String, CaseIterable, Sendable, Hashable, Codable {

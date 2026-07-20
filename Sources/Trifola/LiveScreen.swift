@@ -109,6 +109,7 @@ private struct LiveTile: View {
                 SeatMark(state: DoorLightState(attentionState), size: 8)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
+                        ProviderMark(provider: session.provider, size: 12)
                         Text("\(session.project) · \(session.displayTitle)")
                             .font(.headline)
                             .foregroundStyle(Theme.ink)
