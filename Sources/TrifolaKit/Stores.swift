@@ -1552,7 +1552,12 @@ public final class SessionStore: ObservableObject {
                 claudeProjectsRoot: lineageProjectsURL,
                 codexImportManifestURL: lineageManifestURL)
         }.value
-        let result = await Task.detached(priority: .userInitiated) { [weak self] in
+        // A warm launch already showed the hydrated corpus; revalidation is
+        // background work and must not starve the first snapshot's lineage
+        // resolve out of the cooperative pool. A cold start IS the content.
+        let scanPriority: TaskPriority = index.entries.isEmpty
+            ? .userInitiated : .utility
+        let result = await Task.detached(priority: scanPriority) { [weak self] in
             let publish: @Sendable (SessionIndex, SessionScanProgress) -> Void = {
                 [weak self] partial, progress in
                 latestProgress.withLock { $0 = progress }

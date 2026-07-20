@@ -152,6 +152,11 @@ final class NavigationSnapshotStore: ObservableObject {
         (source: LineageSource, resolution: SessionLineageResolution)?
     private var lineageInFlight:
         (source: LineageSource, task: Task<SessionLineageResolution?, Never>)?
+    /// Newest completed resolution regardless of source — the
+    /// stale-while-revalidate forest. On a warm launch the hydrated corpus is
+    /// ≈ final, so serving it while batches revalidate is honest; the fresh
+    /// forest swaps in silently when its resolve completes.
+    private var lastLineageResolution: SessionLineageResolution?
     private var corpusGeneration = 0
     private var fleetGeneration = 0
     private var deadlineGeneration = 0
@@ -237,10 +242,11 @@ final class NavigationSnapshotStore: ObservableObject {
         if lineageMemo?.source != lineageSource {
             lineageMemo = nil
         }
-        if let pending = lineageInFlight, pending.source != lineageSource {
-            pending.task.cancel()
-            lineageInFlight = nil
-        }
+        // An in-flight resolve for an older source is NOT cancelled: during a
+        // validation scan every batch bumps the revision, and cancel-restart
+        // starved the first snapshot for the whole scan. The old resolve
+        // completes as the stale-while-revalidate forest; a fresh resolve
+        // follows once it lands.
         inputs = Inputs(
             sessions: sessions,
             attentionSignals: attentionSignals,
@@ -385,6 +391,27 @@ final class NavigationSnapshotStore: ObservableObject {
         }
     }
 
+    /// A lineage resolve finished. Record it as the freshest forest, memoize
+    /// when it still matches the live inputs, and re-schedule so a snapshot
+    /// that painted a stale forest swaps to this one silently. When inputs
+    /// moved on mid-resolve, the re-schedule starts the follow-up resolve.
+    private func lineageResolveCompleted(
+        source: LineageSource,
+        task: Task<SessionLineageResolution?, Never>,
+        resolution: SessionLineageResolution?
+    ) {
+        if lineageInFlight?.task == task { lineageInFlight = nil }
+        guard let resolution else { return }
+        lastLineageResolution = resolution
+        if let inputs, LineageSource(
+            sessionsRevision: inputs.sessionsRevision,
+            evidenceRevision: inputs.lineageEvidenceRevision,
+            includeHeuristics: inputs.showHeuristicLinks) == source {
+            lineageMemo = (source: source, resolution: resolution)
+        }
+        scheduleSessions()
+    }
+
     private func scheduleSessions(debounce: Bool = false) {
         guard let inputs else { return }
         sessionGeneration += 1
@@ -397,19 +424,38 @@ final class NavigationSnapshotStore: ObservableObject {
         let cachedResolution = lineageMemo.flatMap {
             $0.source == lineageSource ? $0.resolution : nil
         }
+        let staleResolution = lastLineageResolution
         let resolutionTask: Task<SessionLineageResolution?, Never>? = {
             guard cachedResolution == nil else { return nil }
-            if let pending = lineageInFlight,
-               pending.source == lineageSource {
+            if let pending = lineageInFlight {
+                // One resolve at a time, never cancelled for a newer source —
+                // its completion re-schedules and the follow-up resolve picks
+                // up the newest inputs.
                 return pending.task
             }
             let task = Task.detached(priority: .userInitiated) {
-                try? SessionLineage.resolveWithIndexCancellable(
-                    sessions: inputs.sessions,
-                    evidence: inputs.lineageEvidence,
-                    includeHeuristicLinks: inputs.showHeuristicLinks)
+                // Hop to GCD: the cooperative pool can be saturated by a
+                // corpus scan, and the first snapshot must not starve behind
+                // it. GCD over-commits, so this resolve always gets a thread.
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        continuation.resume(
+                            returning: try? SessionLineage.resolveWithIndexCancellable(
+                                sessions: inputs.sessions,
+                                evidence: inputs.lineageEvidence,
+                                includeHeuristicLinks: inputs.showHeuristicLinks))
+                    }
+                }
             }
             lineageInFlight = (source: lineageSource, task: task)
+            Task { [weak self] in
+                let resolution = await task.value
+                await MainActor.run {
+                    self?.lineageResolveCompleted(
+                        source: lineageSource, task: task,
+                        resolution: resolution)
+                }
+            }
             return task
         }()
         sessionTask?.cancel()
@@ -424,20 +470,15 @@ final class NavigationSnapshotStore: ObservableObject {
             let resolution: SessionLineageResolution
             if let cachedResolution {
                 resolution = cachedResolution
+            } else if let staleResolution {
+                // Serve the newest completed forest NOW; the in-flight resolve
+                // re-schedules a silent swap when it lands.
+                resolution = staleResolution
             } else if let resolutionTask {
+                // First-ever paint with nothing to show — the only case that
+                // waits on a resolve.
                 guard let completed = await resolutionTask.value else { return }
                 resolution = completed
-                guard let self else { return }
-                if self.inputs.map({ LineageSource(
-                    sessionsRevision: $0.sessionsRevision,
-                    evidenceRevision: $0.lineageEvidenceRevision,
-                    includeHeuristics: $0.showHeuristicLinks)
-                }) == lineageSource {
-                    self.lineageMemo = (
-                        source: lineageSource,
-                        resolution: resolution)
-                    self.lineageInFlight = nil
-                }
             } else {
                 return
             }
@@ -522,6 +563,12 @@ final class NavigationSnapshotStore: ObservableObject {
                   self.sessionGeneration == generation else { return }
             var state = self.sessionSearch
             guard state.publish(result, for: request) else { return }
+            if self.sessionSearch.displayed == nil,
+               ProcessInfo.processInfo.environment["TRIFOLA_LAUNCH_METRICS"] == "1" {
+                FileHandle.standardError.write(Data(
+                    "[launch-metric] first sessions snapshot: \(result.rows.count) rows\n"
+                        .utf8))
+            }
             self.sessionSearch = state
         }
     }
