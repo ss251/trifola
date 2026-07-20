@@ -28,6 +28,11 @@ All notable changes to trifola are documented here. The format follows
 - **Warm-launch session hydration** — cached SQLite accumulator payloads decode concurrently in
   bounded batches, so a valid index publishes before the background scan without changing session
   contents or numbering.
+- **Sessions first-snapshot stall** — the Sessions view no longer sits in “Preparing session index”
+  for the length of the validation scan after the corpus hydrates. The first lineage snapshot paints
+  within a few seconds via stale-while-revalidate — the newest completed forest serves immediately,
+  a fresh resolve is never cancelled by a scan batch and swaps in silently, and revalidation runs at
+  background priority — leaving the resolved lineage and session counts unchanged.
 
 ## [0.4.0] - 2026-07-18
 

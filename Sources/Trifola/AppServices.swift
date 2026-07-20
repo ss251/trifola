@@ -259,6 +259,18 @@ final class AppServices: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &forwarders)
 
+        // The session list must rebuild when the STORE publishes, not when
+        // `refreshNow` returns: a warm launch hydrates the corpus in ~3s but
+        // the validation scan keeps refreshNow awaiting for its full duration,
+        // and completion-ordered rebuilds left the first Sessions snapshot
+        // starving behind the whole scan.
+        sessions.$sessions
+            .dropFirst()
+            .throttle(for: .milliseconds(500), scheduler: DispatchQueue.main,
+                      latest: true)
+            .sink { [weak self] _ in self?.refreshNavigationSnapshots() }
+            .store(in: &forwarders)
+
         // Each committed FTS batch is immediately queryable through WAL. Refresh
         // the detached search projection at a bounded cadence so a first-run query
         // gains partial results without waiting for the final batch.

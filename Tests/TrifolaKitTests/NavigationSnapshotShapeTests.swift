@@ -35,8 +35,23 @@ struct NavigationSnapshotShapeTests {
 
         #expect(source.contains("sessionsRevision: inputs.sessionsRevision"))
         #expect(source.contains("evidenceRevision: inputs.lineageEvidenceRevision"))
-        #expect(source.contains("pending.source == lineageSource"))
         #expect(source.contains("SessionLineage.resolveWithIndex"))
         #expect(!source.contains("summaries.map { (SessionLineage.key($0), $0) }"))
+    }
+
+    @Test("A snapshot never starves behind lineage: stale forest serves, resolves are never cancelled for a newer source")
+    func lineageIsStaleWhileRevalidate() throws {
+        let source = try snapshotSource
+
+        // Any in-flight resolve is reused — never keyed to the current source
+        // and never cancelled when a scan batch bumps the revision (the
+        // cancel-restart pattern starved the first snapshot for a whole scan).
+        #expect(source.contains("if let pending = lineageInFlight {"))
+        #expect(!source.contains("pending.task.cancel()"))
+        // The newest completed forest paints immediately…
+        #expect(source.contains("lastLineageResolution"))
+        #expect(source.contains("} else if let staleResolution {"))
+        // …and a completed resolve re-schedules the silent swap.
+        #expect(source.contains("func lineageResolveCompleted"))
     }
 }

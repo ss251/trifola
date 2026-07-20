@@ -180,8 +180,8 @@ An observability app that pegs a CPU core is disqualifying here. The pipeline is
 (FSEvents) with no polling render loop; scans are off-main and incremental. Warm launch reads
 SQLite on one thread while accumulator payloads decode concurrently in bounded batches, then
 publishes the unchanged cached index before reconciliation. Set `TRIFOLA_LAUNCH_METRICS=1` to emit
-cache-hydration and scan-reconciliation entry counts and timings to standard error. Destination
-navigation is budgeted and benchmarked.
+cache-hydration and scan-reconciliation entry counts and timings, plus the first Sessions snapshot's
+row count, to standard error. Destination navigation is budgeted and benchmarked.
 
 ## Testing
 
