@@ -18,6 +18,11 @@ All notable changes to trifola are documented here. The format follows
   and an all-files Flat mode. Child search results retain parent context, disclosure state survives
   refreshes, and the off-main navigation snapshot carries only bounded display values.
 
+### Fixed
+- **Warm-launch session hydration** — cached SQLite accumulator payloads decode concurrently in
+  bounded batches, so a valid index publishes before the background scan without changing session
+  contents or numbering.
+
 ## [0.4.0] - 2026-07-18
 
 ### Fixed

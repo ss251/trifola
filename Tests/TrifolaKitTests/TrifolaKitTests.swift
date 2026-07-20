@@ -976,6 +976,31 @@ struct IndexTests {
         #expect(SessionStore.loadIndexCache(from: cache)?.summaries.count == 2)
     }
 
+    @Test func sqliteSessionIndexLoadsAcrossDecodeBatches() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var index = SessionIndex()
+        for number in 0..<2_049 {
+            let path = "/sessions/\(number).jsonl"
+            let accumulator = SessionParserState.claude(
+                SessionAccumulator(defaultID: "session-\(number)"))
+            index.entries[path] = SessionIndex.Entry(
+                size: UInt64(number),
+                mtime: Date(timeIntervalSince1970: Double(number)),
+                acc: accumulator,
+                provider: .claude,
+                machineID: "local",
+                summary: accumulator.summary(
+                    filePath: path, machineID: "local"))
+        }
+        let cache = dir.appendingPathComponent("session-index.json")
+
+        #expect(SessionStore.saveIndexCache(index, to: cache) != nil)
+        let loaded = try #require(SessionStore.loadIndexCache(from: cache))
+        #expect(loaded.summaries.count == index.summaries.count)
+        #expect(Set(loaded.summaries.map(\.id)) == Set(index.summaries.map(\.id)))
+    }
+
     @Test func legacySessionIndexIsDeletedOnlyAfterSQLiteMigrationSucceeds() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

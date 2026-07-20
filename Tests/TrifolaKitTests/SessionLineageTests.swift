@@ -173,6 +173,16 @@ struct SessionLineageTests {
             sessions: [first, second]))
     }
 
+    @Test("lineage paths normalize lexically")
+    func lineagePathsNormalizeLexically() {
+        #expect(SessionLineage.standardizedPath("/repo/work/.") == "/repo/work")
+        #expect(SessionLineage.standardizedPath("/repo/work/..") == "/repo")
+        #expect(SessionLineage.standardizedPath("/repo//a/../work/") == "/repo/work")
+        #expect(SessionLineage.standardizedPath("/../../../../..") == "/")
+        #expect(SessionLineage.standardizedPath("~/sessions")
+                == NSHomeDirectory() + "/sessions")
+    }
+
     @Test("cancellable indexed resolution stops canceled work")
     func indexedResolutionCooperatesWithCancellation() async {
         let task = Task {

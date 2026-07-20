@@ -1453,9 +1453,20 @@ public final class SessionStore: ObservableObject {
     public func refresh() { Task { await refreshNow() } }
 
     /// Refresh in three moves so the UI never sits on zeros:
-    ///  1. warm-start: hydrate instantly from the on-disk index cache (once),
+    ///  1. warm-start: hydrate from the on-disk index cache (once),
     ///  2. progressive: publish partial results while the parallel scan runs,
     ///  3. final: publish the complete index and persist it for the next launch.
+    private let storeStart = Date()
+
+    /// Launch timeline, printed only under TRIFOLA_LAUNCH_METRICS=1 — the
+    /// "sessions took 30s to appear" class of report needs numbers, not vibes.
+    private nonisolated func launchMetric(_ message: String) {
+        guard ProcessInfo.processInfo.environment["TRIFOLA_LAUNCH_METRICS"] == "1"
+        else { return }
+        FileHandle.standardError.write(
+            Data("[launch-metric] \(message)\n".utf8))
+    }
+
     public func refreshNow(changedPaths: Set<String>? = nil) async {
         if isRefreshing {
             refreshQueued = true
@@ -1479,11 +1490,17 @@ public final class SessionStore: ObservableObject {
         if !triedCache {
             triedCache = true
             let cacheURL = paths.sessionIndexCacheURL
+            let hydrateStart = Date()
             if let cached = await Task.detached(priority: .userInitiated, operation: {
                 Self.loadIndexCache(from: cacheURL)
             }).value {
                 index = cached
                 apply(cached, gen: gen)
+                launchMetric("cache hydrated: \(cached.entries.count) entries "
+                    + "in \(String(format: "%.2f", -hydrateStart.timeIntervalSinceNow))s")
+            } else {
+                launchMetric("cache miss after "
+                    + "\(String(format: "%.2f", -hydrateStart.timeIntervalSinceNow))s — cold scan")
             }
         }
 
@@ -1561,6 +1578,8 @@ public final class SessionStore: ObservableObject {
             lineageEvidenceRevision += 1
         }
         appliedCount = result.entries.count
+        launchMetric("scan reconciled: \(result.entries.count) entries "
+            + "at +\(String(format: "%.2f", -storeStart.timeIntervalSinceNow))s")
         // Merge in any read-only remote mirrors (Cross-Machine Fleet). The remote
         // scan + pure merge run off-main; if no remotes are configured/synced this is
         // a no-op and the fleet is LOCAL-ONLY. It NEVER blocks or throws — a missing
