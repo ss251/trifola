@@ -130,10 +130,18 @@ final class NavigationSnapshotStore: ObservableObject {
         let liveTerminalSessionIDs: Set<String>
         let searchIndex: SearchIndex
         let searchState: SearchIndexState
+        let sessionsRevision: Int
         let lineageEvidence: SessionLineageEvidence
+        let lineageEvidenceRevision: Int
         let showHeuristicLinks: Bool
         let lineageIsProvisional: Bool
         let now: Date
+    }
+
+    private struct LineageSource: Sendable, Equatable {
+        let sessionsRevision: Int
+        let evidenceRevision: Int
+        let includeHeuristics: Bool
     }
 
     private var inputs: Inputs?
@@ -141,7 +149,9 @@ final class NavigationSnapshotStore: ObservableObject {
     /// Resolved forest for one rebuild's inputs. Keystrokes and same-source
     /// refreshes must never pay the ~10k-session resolve again.
     private var lineageMemo:
-        (source: Int, includeHeuristics: Bool, forest: SessionLineageForest)?
+        (source: LineageSource, resolution: SessionLineageResolution)?
+    private var lineageInFlight:
+        (source: LineageSource, task: Task<SessionLineageResolution?, Never>)?
     private var corpusGeneration = 0
     private var fleetGeneration = 0
     private var deadlineGeneration = 0
@@ -195,6 +205,7 @@ final class NavigationSnapshotStore: ObservableObject {
 
     deinit {
         sessionTask?.cancel()
+        lineageInFlight?.task.cancel()
         corpusTask?.cancel()
         fleetTask?.cancel()
         deadlineTask?.cancel()
@@ -211,12 +222,25 @@ final class NavigationSnapshotStore: ObservableObject {
         liveTerminalSessionIDs: Set<String>,
         searchIndex: SearchIndex,
         searchState: SearchIndexState,
+        sessionsRevision: Int,
         lineageEvidence: SessionLineageEvidence,
+        lineageEvidenceRevision: Int,
         showHeuristicLinks: Bool,
         lineageIsProvisional: Bool,
         now: Date
     ) {
         sourceGeneration += 1
+        let lineageSource = LineageSource(
+            sessionsRevision: sessionsRevision,
+            evidenceRevision: lineageEvidenceRevision,
+            includeHeuristics: showHeuristicLinks)
+        if lineageMemo?.source != lineageSource {
+            lineageMemo = nil
+        }
+        if let pending = lineageInFlight, pending.source != lineageSource {
+            pending.task.cancel()
+            lineageInFlight = nil
+        }
         inputs = Inputs(
             sessions: sessions,
             attentionSignals: attentionSignals,
@@ -227,7 +251,9 @@ final class NavigationSnapshotStore: ObservableObject {
             liveTerminalSessionIDs: liveTerminalSessionIDs,
             searchIndex: searchIndex,
             searchState: searchState,
+            sessionsRevision: sessionsRevision,
             lineageEvidence: lineageEvidence,
+            lineageEvidenceRevision: lineageEvidenceRevision,
             showHeuristicLinks: showHeuristicLinks,
             lineageIsProvisional: lineageIsProvisional,
             now: now)
@@ -364,8 +390,28 @@ final class NavigationSnapshotStore: ObservableObject {
         sessionGeneration += 1
         let generation = sessionGeneration
         let filter = sessionFilter
-        let source = sourceGeneration
-        let memo = lineageMemo
+        let lineageSource = LineageSource(
+            sessionsRevision: inputs.sessionsRevision,
+            evidenceRevision: inputs.lineageEvidenceRevision,
+            includeHeuristics: inputs.showHeuristicLinks)
+        let cachedResolution = lineageMemo.flatMap {
+            $0.source == lineageSource ? $0.resolution : nil
+        }
+        let resolutionTask: Task<SessionLineageResolution?, Never>? = {
+            guard cachedResolution == nil else { return nil }
+            if let pending = lineageInFlight,
+               pending.source == lineageSource {
+                return pending.task
+            }
+            let task = Task.detached(priority: .userInitiated) {
+                try? SessionLineage.resolveWithIndexCancellable(
+                    sessions: inputs.sessions,
+                    evidence: inputs.lineageEvidence,
+                    includeHeuristicLinks: inputs.showHeuristicLinks)
+            }
+            lineageInFlight = (source: lineageSource, task: task)
+            return task
+        }()
         sessionTask?.cancel()
         var state = sessionSearch
         let request = state.begin(query: filter.query)
@@ -375,7 +421,28 @@ final class NavigationSnapshotStore: ObservableObject {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
             }
-            let (result, resolvedLineage) = await Task.detached(priority: .userInitiated) {
+            let resolution: SessionLineageResolution
+            if let cachedResolution {
+                resolution = cachedResolution
+            } else if let resolutionTask {
+                guard let completed = await resolutionTask.value else { return }
+                resolution = completed
+                guard let self else { return }
+                if self.inputs.map({ LineageSource(
+                    sessionsRevision: $0.sessionsRevision,
+                    evidenceRevision: $0.lineageEvidenceRevision,
+                    includeHeuristics: $0.showHeuristicLinks)
+                }) == lineageSource {
+                    self.lineageMemo = (
+                        source: lineageSource,
+                        resolution: resolution)
+                    self.lineageInFlight = nil
+                }
+            } else {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .userInitiated) {
                 let metric = NavigationMetrics.beginProjection(
                     .sessions, generation: generation)
                 var eligibilityFilter = filter
@@ -385,21 +452,8 @@ final class NavigationSnapshotStore: ObservableObject {
                     liveTerminalSessionIDs: inputs.liveTerminalSessionIDs,
                     filter: eligibilityFilter,
                     now: inputs.now)
-                // The forest depends only on the rebuild inputs, never the
-                // filter: keystrokes and same-source refreshes reuse the memo
-                // instead of re-resolving ~10k sessions per publish.
-                let lineage: SessionLineageForest
-                if let memo, memo.source == source,
-                   memo.includeHeuristics == inputs.showHeuristicLinks {
-                    lineage = memo.forest
-                } else {
-                    lineage = SessionLineage.resolve(
-                        sessions: inputs.sessions,
-                        evidence: inputs.lineageEvidence,
-                        includeHeuristicLinks: inputs.showHeuristicLinks)
-                }
                 let projected = Self.projectLineage(
-                    lineage,
+                    resolution,
                     summaries: inputs.sessions,
                     liveTerminalSessionIDs: inputs.liveTerminalSessionIDs,
                     filter: filter,
@@ -451,7 +505,7 @@ final class NavigationSnapshotStore: ObservableObject {
                         return (result.id, parent)
                     }, uniquingKeysWith: { first, _ in first })
                 _ = NavigationMetrics.endProjection(metric)
-                return (SessionProjectionSnapshot(
+                return SessionProjectionSnapshot(
                     rows: projected.rows,
                     conversationResults: results,
                     conversationParentTitles: conversationParents,
@@ -461,14 +515,11 @@ final class NavigationSnapshotStore: ObservableObject {
                     lineageCounts: projected.counts,
                     isLineageResolving: inputs.lineageIsProvisional,
                     filter: filter,
-                    generation: generation), lineage)
+                    generation: generation)
             }.value
-            guard !Task.isCancelled, let self else { return }
-            self.lineageMemo = (
-                source: source,
-                includeHeuristics: inputs.showHeuristicLinks,
-                forest: resolvedLineage)
-            guard self.sessionGeneration == generation else { return }
+            guard !Task.isCancelled,
+                  let self,
+                  self.sessionGeneration == generation else { return }
             var state = self.sessionSearch
             guard state.publish(result, for: request) else { return }
             self.sessionSearch = state
@@ -612,15 +663,13 @@ final class NavigationSnapshotStore: ObservableObject {
     }
 
     private nonisolated static func projectLineage(
-        _ forest: SessionLineageForest,
+        _ resolution: SessionLineageResolution,
         summaries: [SessionSummary],
         liveTerminalSessionIDs: Set<String>,
         filter: SessionProjectionFilter,
         now: Date
     ) -> ProjectedLineage {
-        let summaryByKey = Dictionary(
-            summaries.map { (SessionLineage.key($0), $0) },
-            uniquingKeysWith: { first, _ in first })
+        let forest = resolution.forest
         var counts = SessionLineageCounts()
         for node in forest.allNodes where node.spawnDepth > 0 {
             switch node.edgeKind {
@@ -640,11 +689,14 @@ final class NavigationSnapshotStore: ObservableObject {
             if let machine = filter.machineID, reference.machineID != machine { return false }
             if filter.liveInTerminalOnly,
                !liveTerminalSessionIDs.contains(reference.id) { return false }
-            guard let summary = summaryByKey[reference.stableKey] else {
+            guard !reference.isMetadataOnly else {
                 return !filter.activeOnly && !filter.heavyOnly
             }
-            if filter.activeOnly && !summary.isActive(at: now) { return false }
-            if filter.heavyOnly && !summary.isContextHeavy { return false }
+            if filter.activeOnly {
+                guard let last = reference.lastActivity,
+                      now.timeIntervalSince(last) < 15 * 60 else { return false }
+            }
+            if filter.heavyOnly && reference.contextWeight <= 200_000 { return false }
             return true
         }
 
@@ -721,7 +773,11 @@ final class NavigationSnapshotStore: ObservableObject {
 
         func displayRow(_ node: LineageNode, parent: LineageNode?,
                         contextOnly: Bool) -> SessionLineageDisplayRow {
-            let summary = summaryByKey[node.session.stableKey]
+            let reference = node.session
+            let isActive = !reference.isMetadataOnly
+                && reference.lastActivity.map {
+                    now.timeIntervalSince($0) < 15 * 60
+                } == true
             return SessionLineageDisplayRow(
                 id: node.session.stableKey,
                 sessionID: node.session.id,
@@ -736,8 +792,9 @@ final class NavigationSnapshotStore: ObservableObject {
                 cost: node.session.cost,
                 machineID: node.session.machineID,
                 isRemote: node.session.machineID != Machine.localID,
-                isActive: summary?.isActive(at: now) ?? false,
-                isContextHeavy: summary?.isContextHeavy ?? false,
+                isActive: isActive,
+                isContextHeavy: !reference.isMetadataOnly
+                    && reference.contextWeight > 200_000,
                 isMetadataOnly: node.session.isMetadataOnly,
                 transcriptNote: node.session.transcriptNote,
                 edgeKind: node.edgeKind,
@@ -792,8 +849,11 @@ final class NavigationSnapshotStore: ObservableObject {
                 now: now)
             let matches = SessionBrowserSearch.titlePathMatches(
                 eligible, query: filter.query)
-            rows = sortSessions(matches, by: filter.sort).prefix(400).map { summary in
-                let reference = LineageSessionReference(summary: summary)
+            rows = sortSessions(matches, by: filter.sort).prefix(400).compactMap { summary in
+                guard let key = resolution.key(for: summary) else { return nil }
+                let reference = LineageSessionReference(
+                    summary: summary,
+                    stableKey: key)
                 let node = LineageNode(
                     session: reference, children: [], edgeKind: nil,
                     confidence: nil, spawnDepth: 0, displayDepth: 0,

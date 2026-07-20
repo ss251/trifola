@@ -318,6 +318,40 @@ public struct SessionLineageForest: Sendable, Equatable {
     }
 }
 
+public struct SessionLineageResolution: Sendable {
+    public let forest: SessionLineageForest
+
+    private struct SessionIdentity: Sendable, Hashable {
+        let provider: Provider
+        let machineID: String
+        let id: String
+        let filePath: String
+
+        init(_ summary: SessionSummary) {
+            provider = summary.provider
+            machineID = summary.machineID
+            id = summary.id
+            filePath = summary.filePath
+        }
+    }
+
+    private let keysBySession: [SessionIdentity: String]
+
+    fileprivate init(
+        forest: SessionLineageForest,
+        keyedSessions: [(summary: SessionSummary, key: String)]
+    ) {
+        self.forest = forest
+        keysBySession = Dictionary(
+            keyedSessions.map { (SessionIdentity($0.summary), $0.key) },
+            uniquingKeysWith: { first, _ in first })
+    }
+
+    public func key(for summary: SessionSummary) -> String? {
+        keysBySession[SessionIdentity(summary)]
+    }
+}
+
 public enum SessionLineage {
     private struct Candidate: Sendable {
         let parentKey: String?
@@ -338,6 +372,49 @@ public enum SessionLineage {
         evidence: SessionLineageEvidence = .empty,
         includeHeuristicLinks: Bool = true
     ) -> SessionLineageForest {
+        resolveWithIndex(
+            sessions: sessions,
+            evidence: evidence,
+            includeHeuristicLinks: includeHeuristicLinks).forest
+    }
+
+    public static func resolveWithIndex(
+        sessions: [SessionSummary],
+        evidence: SessionLineageEvidence = .empty,
+        includeHeuristicLinks: Bool = true
+    ) -> SessionLineageResolution {
+        try! buildResolution(
+            sessions: sessions,
+            evidence: evidence,
+            includeHeuristicLinks: includeHeuristicLinks,
+            checkCancellation: false)
+    }
+
+    public static func resolveWithIndexCancellable(
+        sessions: [SessionSummary],
+        evidence: SessionLineageEvidence = .empty,
+        includeHeuristicLinks: Bool = true
+    ) throws -> SessionLineageResolution {
+        try buildResolution(
+            sessions: sessions,
+            evidence: evidence,
+            includeHeuristicLinks: includeHeuristicLinks,
+            checkCancellation: true)
+    }
+
+    private static func buildResolution(
+        sessions: [SessionSummary],
+        evidence: SessionLineageEvidence,
+        includeHeuristicLinks: Bool,
+        checkCancellation: Bool
+    ) throws -> SessionLineageResolution {
+        func checkForCancellation() throws {
+            if checkCancellation {
+                try Task.checkCancellation()
+            }
+        }
+
+        try checkForCancellation()
         let codexByID = Dictionary(
             evidence.codexThreads.map { ($0.threadID, $0) },
             uniquingKeysWith: { first, _ in first })
@@ -345,8 +422,12 @@ public enum SessionLineage {
         var summaryByKey: [String: SessionSummary] = [:]
         // Path standardization dominates key(): compute every session's key
         // exactly once and thread the pair through every later join.
-        let keyedSessions: [(summary: SessionSummary, key: String)] =
-            sessions.map { ($0, key($0)) }
+        var keyedSessions: [(summary: SessionSummary, key: String)] = []
+        keyedSessions.reserveCapacity(sessions.count)
+        for (index, summary) in sessions.enumerated() {
+            if index.isMultiple(of: 256) { try checkForCancellation() }
+            keyedSessions.append((summary, key(summary)))
+        }
         for (summary, key) in keyedSessions {
             summaryByKey[key] = summary
             nodes[key] = MutableNode(
@@ -394,6 +475,7 @@ public enum SessionLineage {
         // 1. Claude Agent/Task result joined to its directory child.
         for (child, childKey) in keyedSessions
         where child.provider == .claude && child.isSubagent {
+            try checkForCancellation()
             guard let parentID = child.parentSessionID else { continue }
             let parentDirectory = URL(fileURLWithPath: child.filePath)
                 .deletingLastPathComponent().deletingLastPathComponent()
@@ -429,6 +511,7 @@ public enum SessionLineage {
         // 2. Remote/cloud task sidecars. A missing local transcript becomes a
         // metadata-only child; an exact task/session id reuses the real row.
         for remote in evidence.remoteTasks {
+            try checkForCancellation()
             let parentKey = anyKey(provider: .claude, id: remote.parentSessionID)
             let parent = parentKey.flatMap { summaryByKey[$0] }
             let actualKey = remote.sessionID.flatMap {
@@ -467,6 +550,7 @@ public enum SessionLineage {
 
         // 3. Codex-native spawn/fork tree.
         for metadata in evidence.codexThreads {
+            try checkForCancellation()
             guard let childKey = anyKey(
                 provider: .codex, id: metadata.threadID),
                   let child = summaryByKey[childKey] else { continue }
@@ -495,6 +579,7 @@ public enum SessionLineage {
         // 4. Claude → Codex import manifest bridge. Imported rollouts remain
         // source-deduplicated, so most children are intentionally metadata-only.
         for record in evidence.importRecords {
+            try checkForCancellation()
             let parentKey = keyByPath[
                 URL(fileURLWithPath: record.sourcePath).standardizedFileURL.path]
             let parent = parentKey.flatMap { summaryByKey[$0] }
@@ -542,6 +627,7 @@ public enum SessionLineage {
             var claudeByWorkspaceName: [String: [HeuristicParent]] = [:]
             for (parent, parentKey) in keyedSessions
             where parent.provider == .claude && !parent.cwd.isEmpty {
+                try checkForCancellation()
                 let path = URL(fileURLWithPath: parent.cwd).standardizedFileURL.path
                 let entry = HeuristicParent(
                     key: parentKey, cwd: parent.cwd,
@@ -553,6 +639,7 @@ public enum SessionLineage {
                     .append(entry)
             }
             for metadata in evidence.codexThreads where metadata.isNonInteractive {
+                try checkForCancellation()
                 guard let childKey = anyKey(
                     provider: .codex, id: metadata.threadID),
                       let child = summaryByKey[childKey],
@@ -602,6 +689,7 @@ public enum SessionLineage {
             ($0.1.priority, $0.0) < ($1.1.priority, $1.0)
         }
         for (child, candidate) in candidateOrder {
+            try checkForCancellation()
             guard let parent = candidate.parentKey, nodes[parent] != nil,
                   parent != child else { continue }
             var cursor: String? = parent
@@ -619,16 +707,22 @@ public enum SessionLineage {
         }
         let roots = nodes.keys.filter { acceptedParents[$0] == nil }
 
-        func materialize(_ nodeKey: String, depth: Int) -> LineageNode {
+        func materialize(_ nodeKey: String, depth: Int) throws -> LineageNode {
+            try checkForCancellation()
             let value = nodes[nodeKey]!
             let candidate = value.candidate
-            let children = (childrenByParent[nodeKey] ?? []).sorted {
+            let childKeys = (childrenByParent[nodeKey] ?? []).sorted {
                 let lhs = nodes[$0]!.session
                 let rhs = nodes[$1]!.session
                 let ld = lhs.startedAt ?? lhs.lastActivity ?? .distantPast
                 let rd = rhs.startedAt ?? rhs.lastActivity ?? .distantPast
                 return ld == rd ? lhs.stableKey < rhs.stableKey : ld < rd
-            }.map { materialize($0, depth: depth + 1) }
+            }
+            var children: [LineageNode] = []
+            children.reserveCapacity(childKeys.count)
+            for childKey in childKeys {
+                children.append(try materialize(childKey, depth: depth + 1))
+            }
             let missing: String? = {
                 guard acceptedParents[nodeKey] == nil, let candidate else { return nil }
                 if let id = candidate.missingParentID {
@@ -661,6 +755,7 @@ public enum SessionLineage {
         var rootOrder: [RootOrder] = []
         rootOrder.reserveCapacity(roots.count)
         for rootKey in roots {
+            try checkForCancellation()
             let session = nodes[rootKey]!.session
             rootOrder.append(RootOrder(
                 key: rootKey,
@@ -670,11 +765,18 @@ public enum SessionLineage {
         rootOrder.sort { lhs, rhs in
             lhs.last == rhs.last ? lhs.stable < rhs.stable : lhs.last > rhs.last
         }
-        let materializedRoots = rootOrder.map { materialize($0.key, depth: 0) }
-        return SessionLineageForest(
+        var materializedRoots: [LineageNode] = []
+        materializedRoots.reserveCapacity(rootOrder.count)
+        for root in rootOrder {
+            materializedRoots.append(try materialize(root.key, depth: 0))
+        }
+        let forest = SessionLineageForest(
             roots: materializedRoots,
             transcriptSessionCount: sessions.count,
             metadataOnlyCount: nodes.values.filter(\.session.isMetadataOnly).count)
+        return SessionLineageResolution(
+            forest: forest,
+            keyedSessions: keyedSessions)
     }
 
     public static func key(_ summary: SessionSummary) -> String {

@@ -529,7 +529,9 @@ final class AppServices: ObservableObject {
             liveTerminalSessionIDs: liveTerminalSessionIDs,
             searchIndex: sessions.searchIndex,
             searchState: sessions.searchState,
+            sessionsRevision: sessions.revision,
             lineageEvidence: sessions.lineageEvidence,
+            lineageEvidenceRevision: sessions.lineageEvidenceRevision,
             showHeuristicLinks: preferences.value.showHeuristicLineageLinks,
             lineageIsProvisional: sessions.scanPresentation.isProvisional
                 || sessions.scanProgress.isInProgress,

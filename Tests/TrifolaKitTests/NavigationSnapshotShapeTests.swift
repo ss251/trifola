@@ -28,4 +28,15 @@ struct NavigationSnapshotShapeTests {
         #expect(source.contains("rows = Array(rows.prefix(400))"))
         #expect(source.contains("Task.detached(priority: .userInitiated)"))
     }
+
+    @Test("Lineage memo follows corpus revisions and shares in-flight work")
+    func lineageMemoHasStableOwnership() throws {
+        let source = try snapshotSource
+
+        #expect(source.contains("sessionsRevision: inputs.sessionsRevision"))
+        #expect(source.contains("evidenceRevision: inputs.lineageEvidenceRevision"))
+        #expect(source.contains("pending.source == lineageSource"))
+        #expect(source.contains("SessionLineage.resolveWithIndex"))
+        #expect(!source.contains("summaries.map { (SessionLineage.key($0), $0) }"))
+    }
 }
