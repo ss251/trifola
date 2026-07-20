@@ -462,7 +462,7 @@ enum BrandAssetRender {
             .kern: 2.6,
         ]).draw(at: NSPoint(x: 377, y: 349))
 
-        let claim = "The command center for your coding-agent fleet —\nClaude Code and Codex"
+        let claim = "The command center for your coding-agent fleet —\nClaude Code, Codex, and Grok Build"
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 8
         NSAttributedString(string: claim, attributes: [

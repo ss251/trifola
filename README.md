@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/banner.png" alt="Trifola — the command center for your Claude Code and Codex fleet" width="680">
+<img src="docs/assets/banner.png" alt="Trifola — the command center for your Claude Code, Codex, and Grok Build fleet" width="680">
 
 # trifola
 
