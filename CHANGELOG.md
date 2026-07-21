@@ -17,14 +17,15 @@ All notable changes to trifola are documented here. The format follows
   visible chat prose, and ACP per-turn usage with independent incremental offsets. Grok titles,
   exact model unions, xAI list-rate estimates, billing-partial disclosure, conversation search,
   fork/spawn lineage, first-run onboarding, live watching, provider totals, and app/CLI parity all
-  share the same typed provider seams. The Grok mark is a clearly provisional neutral monogram
-  until verbatim official SVG geometry can be sourced.
-- **Provider identity icons** — Claude sessions show Anthropic’s starburst asterisk and Codex
-  sessions show OpenAI’s hexagonal blossom knot as path-based SwiftUI marks (`ProviderMark`).
+  share the same typed provider seams.
+- **Provider identity icons** — Claude sessions show Anthropic’s starburst asterisk, Codex
+  sessions OpenAI’s hexagonal blossom knot, and Grok sessions xAI’s official Grok mark, each as
+  path-based SwiftUI shapes (`ProviderMark`) drawn from the providers’ verbatim published SVG
+  geometry (never redrawn).
   Session rows (lineage + flat), filter chips, the session inspector, fleet board tokens, and Live
-  tiles use the same monochrome-tintable glyph; accessibility labels are “Claude” / “OpenAI Codex”,
-  Increase Contrast forces full-opacity ink, and an exhaustive unit test fails if a new `Provider`
-  ships without a mark.
+  tiles use the same monochrome-tintable glyph; accessibility labels are “Claude” / “OpenAI Codex” /
+  “xAI Grok”, Increase Contrast forces full-opacity ink, and an exhaustive unit test fails if a new
+  `Provider` ships without a mark.
 - **Session lineage browser** — Sessions now nests deterministically joined Claude subagents,
   remote/cloud tasks, Codex spawns and forks, and Claude→Codex imports beneath their parent. Missing
   transcripts and parents remain visible with honest explanations; deep trees flatten visually

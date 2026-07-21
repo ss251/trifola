@@ -8,8 +8,8 @@ import TrifolaKit
 // inspector, fleet tokens, and the Live board.
 
 /// Recognizable provider mark: Claude's Anthropic starburst asterisk, OpenAI's
-/// hexagonal blossom knot. Always carries an accessibility label; under
-/// Increase Contrast fills at full-opacity monochrome ink.
+/// hexagonal blossom knot, and xAI's official Grok mark. Always carries an
+/// accessibility label; under Increase Contrast fills at full-opacity monochrome ink.
 struct ProviderMark: View {
     let provider: Provider
     var size: CGFloat = Theme.iconGutter
@@ -33,13 +33,8 @@ struct ProviderMark: View {
                 OpenAIBlossomShape()
                     .fill(fill, style: FillStyle(eoFill: true, antialiased: true))
             case .grokMark:
-                // PROVISIONAL — deliberately a neutral monogram, not an
-                // approximation of xAI's mark. Replace only with verbatim path
-                // geometry regenerated from an official published SVG.
-                Text("G")
-                    .font(.system(size: size * 0.76, weight: .semibold,
-                                  design: .rounded))
-                    .foregroundStyle(fill)
+                GrokMarkShape()
+                    .fill(fill, style: FillStyle(eoFill: true, antialiased: true))
             }
         }
         .frame(width: size, height: size)
@@ -129,8 +124,33 @@ struct OpenAIBlossomShape: Shape {
             + "-1.4997Z"
 }
 
+/// xAI Grok mark — the official published Grok logo path data (viewBox 24×24),
+/// even-odd filled to match its `fill-rule="evenodd"`. Coordinates are verbatim;
+/// only the two packed arc-flag pairs (`00…` → `0 0 …`) are whitespace-expanded
+/// for the parser, which SVG treats as identical. Regenerate from the official
+/// SVG only; never round or redraw coordinates.
+struct GrokMarkShape: Shape {
+    private static let viewBoxPath = SVGPathGeometry.path(d)
+
+    func path(in rect: CGRect) -> Path {
+        SVGPathGeometry.fit(Self.viewBoxPath, viewBox: 24, in: rect)
+    }
+
+    private static let d =
+        "M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.54"
+            + "2 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 "
+            + "1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5."
+            + "539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.0"
+            + "82.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.72"
+            + "3c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.1"
+            + "66-1.425l2.705-1.25a7.808 7.808 0 0 0 -1.829 -1A8.975 8.975 0 "
+            + "0 0 5.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487"
+            + "-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6."
+            + "815"
+}
+
 // MARK: - Minimal SVG path → SwiftUI Path
-// Supports the command set used by the two brand marks (M/m L/l H/h V/v C/c
+// Supports the command set used by the three brand marks (M/m L/l H/h V/v C/c
 // S/s Q/q A/a Z/z). Numbers may be comma- or space-separated; consecutive
 // commands of the same kind may omit the letter (SVG rules).
 
