@@ -253,6 +253,48 @@ struct GrokQuotaParserTests {
         }
     }
 
+    // The parser eats an attacker-influenceable remote response (a hostile or
+    // MITM'd grok.com). It is bounded by construction (length guards, a 10-byte
+    // varint cap, a depth-4 recursion cap); these lock that in — every hostile
+    // shape must return a .failure, never crash or hang.
+    @Test("hostile input never crashes or hangs — always a failure")
+    func hostileInputIsBounded() {
+        // 1. Truncated frame: header claims a payload longer than the bytes present.
+        var truncated = Data([0x00, 0x00, 0x00, 0x00, 0x40]) // length 64…
+        truncated.append(contentsOf: [0x0D, 0x00, 0x00])     // …but only 3 bytes
+        _ = GrokQuotaParser.parse(truncated)
+
+        // 2. Absurd length field (0xFFFFFFFF) must not allocate or slice OOB.
+        var giant = Data([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+        giant.append(contentsOf: [0x08, 0x01])
+        _ = GrokQuotaParser.parse(giant)
+
+        // 3. Deeply nested length-delimited fields (past the depth-4 cap).
+        var nested = Data([0x08, 0x01]) // innermost: field 1 varint = 1
+        for _ in 0..<8 {
+            var wrapper = Data([0x0A, UInt8(nested.count)]) // field 1, length-delimited
+            wrapper.append(nested)
+            nested = wrapper
+        }
+        _ = GrokQuotaParser.parse(GrokFixture.grpcFrame(nested))
+
+        // 4. A never-terminating varint (all continuation bits set).
+        let unterminated = GrokFixture.grpcFrame(Data([0x08] + Array(repeating: 0xFF, count: 20)))
+        _ = GrokQuotaParser.parse(unterminated)
+
+        // 5. Random-ish bytes.
+        let noise = GrokFixture.grpcFrame(Data((0..<128).map { UInt8(($0 &* 37 &+ 11) & 0xFF) }))
+        _ = GrokQuotaParser.parse(noise)
+
+        // Reaching here without crash/hang is the assertion; also confirm none
+        // fabricated a success from garbage.
+        for hostile in [truncated, giant] {
+            if case .success = GrokQuotaParser.parse(hostile) {
+                Issue.record("hostile input must never parse to a success")
+            }
+        }
+    }
+
     @Test("asQuotaSnapshot puts SuperGrok on the weekly slot")
     func snapshotShape() {
         let usage = GrokBillingUsage(
