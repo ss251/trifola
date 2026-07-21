@@ -1357,7 +1357,7 @@ private struct SessionInspector: View {
             Text("Public API rates applied to recorded usage · not your bill or subscription charge.")
                 .font(Theme.Typography.metadata)
                 .foregroundStyle(Theme.faint)
-            if session.usageIsPartial {
+            if session.provider == .grok, session.usageIsPartial {
                 Text("Grok reports this per-turn usage as billing-partial; the API estimate may change when xAI finalizes it.")
                     .font(Theme.Typography.metadata)
                     .foregroundStyle(Theme.amber)

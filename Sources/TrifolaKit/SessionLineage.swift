@@ -602,12 +602,17 @@ public enum SessionLineage {
             let kind: LineageEdgeKind = nativeKind.contains("fork")
                 || nativeKind.contains("resume") ? .grokFork : .grokSpawn
             let spawn = grokSpawnByChild[metadata.sessionID]
+            // Child summary metadata is authoritative — it must WIN over the
+            // parent-side spawn evidence below. offer() keeps the LOWER priority
+            // number, so this child edge takes 2 and the gap-filler takes 3;
+            // otherwise a fork (child kind `.grokFork`) present in both sources
+            // would be mislabeled `.grokSpawn`.
             offer(Candidate(
                 parentKey: parentKey,
                 missingParentID: parentKey == nil ? parentID : nil,
                 kind: kind, confidence: .deterministic,
                 detail: spawn?.description ?? metadata.contextSource,
-                priority: 3), to: childKey)
+                priority: 2), to: childKey)
         }
 
         for spawn in evidence.grokSpawns {
@@ -616,12 +621,14 @@ public enum SessionLineage {
                   let child = summaryByKey[childKey] else { continue }
             let parentKey = actualKey(provider: .grok, machine: child.machineID,
                                       id: spawn.parentSessionID)
+            // Gap-filler: only lands when no child-side edge exists for this
+            // child (priority 3 > the child edge's 2).
             offer(Candidate(
                 parentKey: parentKey,
                 missingParentID: parentKey == nil ? spawn.parentSessionID : nil,
                 kind: .grokSpawn, confidence: .deterministic,
                 detail: spawn.description ?? spawn.subagentType,
-                priority: 2), to: childKey)
+                priority: 3), to: childKey)
         }
 
         // 4. Claude → Codex import manifest bridge. Imported rollouts remain
