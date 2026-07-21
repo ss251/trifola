@@ -57,9 +57,11 @@ public struct AppPreferences: Codable, Sendable, Equatable {
     public var defaultSnoozeDurationMinutes: Int
     /// Plan-quota access is deliberately opt-in. Claude access may read the
     /// credential file, query Keychain, and make one HTTPS request; Codex
-    /// access reads rollout files locally and never uses the network.
+    /// access reads rollout files locally and never uses the network; Grok
+    /// access may read ~/.grok/auth.json and make one HTTPS request to xAI.
     public var claudeQuotaAccessEnabled: Bool
     public var codexQuotaAccessEnabled: Bool
+    public var grokQuotaAccessEnabled: Bool
     /// The at-value Accessibility explainer is shown once. This records only
     /// that the user saw the explanation; macOS TCC remains the sole source of
     /// truth for whether Accessibility is currently granted.
@@ -87,6 +89,7 @@ public struct AppPreferences: Codable, Sendable, Equatable {
                 defaultSnoozeDurationMinutes: Int = 60,
                 claudeQuotaAccessEnabled: Bool = false,
                 codexQuotaAccessEnabled: Bool = false,
+                grokQuotaAccessEnabled: Bool = false,
                 hasSeenAccessibilityWorkspaceExplainer: Bool = false,
                 hasCompletedFirstLaunchWelcome: Bool = false,
                 hasSeenTerminalAutomationPrimer: Bool = false,
@@ -98,6 +101,7 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         self.defaultSnoozeDurationMinutes = max(1, defaultSnoozeDurationMinutes)
         self.claudeQuotaAccessEnabled = claudeQuotaAccessEnabled
         self.codexQuotaAccessEnabled = codexQuotaAccessEnabled
+        self.grokQuotaAccessEnabled = grokQuotaAccessEnabled
         self.hasSeenAccessibilityWorkspaceExplainer =
             hasSeenAccessibilityWorkspaceExplainer
         self.hasCompletedFirstLaunchWelcome = hasCompletedFirstLaunchWelcome
@@ -118,7 +122,7 @@ public struct AppPreferences: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case quietHours, defaultSnoozeDurationMinutes
-        case claudeQuotaAccessEnabled, codexQuotaAccessEnabled
+        case claudeQuotaAccessEnabled, codexQuotaAccessEnabled, grokQuotaAccessEnabled
         case hasSeenAccessibilityWorkspaceExplainer
         case hasCompletedFirstLaunchWelcome, hasSeenTerminalAutomationPrimer
         case hasOpenedAccessibilitySettings
@@ -137,6 +141,8 @@ public struct AppPreferences: Codable, Sendable, Equatable {
             Bool.self, forKey: .claudeQuotaAccessEnabled) ?? false
         codexQuotaAccessEnabled = try values.decodeIfPresent(
             Bool.self, forKey: .codexQuotaAccessEnabled) ?? false
+        grokQuotaAccessEnabled = try values.decodeIfPresent(
+            Bool.self, forKey: .grokQuotaAccessEnabled) ?? false
         hasSeenAccessibilityWorkspaceExplainer = try values.decodeIfPresent(
             Bool.self, forKey: .hasSeenAccessibilityWorkspaceExplainer) ?? false
         hasCompletedFirstLaunchWelcome = try values.decodeIfPresent(
@@ -168,15 +174,18 @@ public struct AppPreferences: Codable, Sendable, Equatable {
 public struct QuotaConsent: Sendable, Equatable {
     public let claude: Bool
     public let codex: Bool
+    public let grok: Bool
 
-    public init(claude: Bool = false, codex: Bool = false) {
+    public init(claude: Bool = false, codex: Bool = false, grok: Bool = false) {
         self.claude = claude
         self.codex = codex
+        self.grok = grok
     }
 
     public init(preferences: AppPreferences) {
         self.init(claude: preferences.claudeQuotaAccessEnabled,
-                  codex: preferences.codexQuotaAccessEnabled)
+                  codex: preferences.codexQuotaAccessEnabled,
+                  grok: preferences.grokQuotaAccessEnabled)
     }
 }
 

@@ -46,16 +46,17 @@ struct QuotaSection: View {
             HStack(alignment: .firstTextBaseline) {
                 SectionLabel("Plan quota")
                 Spacer()
-                if consent.claude || consent.codex {
+                if consent.claude || consent.codex || consent.grok {
                     QuietTapButton("Retry", action: onRetry)
                 }
             }
 
             providerBlock(.claude, enabled: consent.claude)
             providerBlock(.codex, enabled: consent.codex)
+            providerBlock(.grok, enabled: consent.grok)
 
-            if !consent.claude && !consent.codex {
-                Text("Quota access is off by default. Enable either provider in Settings → Quota; costs and attention remain fully available.")
+            if !consent.claude && !consent.codex && !consent.grok {
+                Text("Quota access is off by default. Enable a provider in Settings → Quota; costs and attention remain fully available.")
                     .font(.callout)
                     .foregroundStyle(Theme.muted)
             }
@@ -97,9 +98,7 @@ struct QuotaSection: View {
                         QuotaCreditsRow(credits: credits)
                     }
                 }
-                Text(provider == .claude
-                     ? "OAuth usage endpoint · read-only — not dollars"
-                     : "local rollout rate-limit events · no network")
+                Text(sourceLabel(for: provider))
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
             } else {
@@ -111,8 +110,19 @@ struct QuotaSection: View {
         .padding(.top, Theme.micro)
     }
 
+    private func sourceLabel(for provider: Provider) -> String {
+        switch provider {
+        case .claude: return "OAuth usage endpoint · read-only — not dollars"
+        case .codex: return "local rollout rate-limit events · no network"
+        case .grok: return "SuperGrok plan usage · read-only — not dollars"
+        }
+    }
+
     private func unavailableCopy(provider: Provider) -> String {
         let status = statuses[provider] ?? "not fetched yet"
+        if provider == .grok {
+            return status
+        }
         if provider == .codex {
             if status == "no Codex rollouts found" {
                 return "No Codex rollouts were found. Trifola works fully without quota data."

@@ -44,6 +44,8 @@ public final class MCPIntrospectionServer {
     public static let claudeEmptySnapshotMessage =
         "endpoint returned no windows (schema drift?)"
     public static let codexEmptySnapshotMessage = "rollout carried no quota windows"
+    public static let grokEmptySnapshotMessage =
+        "endpoint returned no SuperGrok window"
 
     // MARK: identity + protocol
 
@@ -62,6 +64,7 @@ public final class MCPIntrospectionServer {
     private let sessionsProvider: () -> [SessionSummary]
     private let claudeQuotaProvider: () -> MCPQuotaOutcome
     private let codexQuotaProvider: () -> MCPQuotaOutcome
+    private let grokQuotaProvider: () -> MCPQuotaOutcome
     private let now: () -> Date
     private let registeredSessionID: String?
 
@@ -70,11 +73,15 @@ public final class MCPIntrospectionServer {
                 codexQuota: @escaping () -> MCPQuotaOutcome = {
                     .unavailable(MCPIntrospectionServer.codexNoCorpusMessage)
                 },
+                grokQuota: @escaping () -> MCPQuotaOutcome = {
+                    .unavailable(MCPIntrospectionServer.quotaConsentRequiredMessage)
+                },
                 now: @escaping () -> Date = { Date() },
                 registeredSessionID: String? = ProcessInfo.processInfo.environment["CLAUDE_SESSION_ID"]) {
         self.sessionsProvider = sessions
         self.claudeQuotaProvider = quota
         self.codexQuotaProvider = codexQuota
+        self.grokQuotaProvider = grokQuota
         self.now = now
         let trimmed = registeredSessionID?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -84,8 +91,9 @@ public final class MCPIntrospectionServer {
     /// The live server the `--mcp` flag runs: corpus via the SAME cache-backed
     /// scan the GUI warm-starts from (re-scanned at most every `rescanInterval`
     /// so a chatty agent doesn't stat thousands of files per tool call), Claude
-    /// quota via the read-only credential + one GET (`ClaudeQuotaFetcher`), and
-    /// Codex quota via the exact rollout reader used by the Quota screen.
+    /// quota via the read-only credential + one GET (`ClaudeQuotaFetcher`),
+    /// Codex quota via the exact rollout reader used by the Quota screen, and
+    /// Grok SuperGrok plan usage via the consent-gated billing fetch.
     public static func live(
         paths: ClaudePaths = .process,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -111,6 +119,7 @@ public final class MCPIntrospectionServer {
             },
             quota: { blockingQuotaFetch(configDirectory: configRoot) },
             codexQuota: { blockingCodexQuotaFetch() },
+            grokQuota: { blockingGrokQuotaFetch() },
             registeredSessionID: injectedID)
     }
 
@@ -124,10 +133,11 @@ public final class MCPIntrospectionServer {
     /// in hand — past the fetcher's own ~30s network timeout, so a healthy
     /// slow network still succeeds, but a wedged fetch can't hang the server.
     static let quotaFetchTimeout: TimeInterval = 35
-    /// Codex is a local filesystem scan, so it gets a much smaller cap. Keeping
-    /// the two live providers' sequential caps at or below 40 seconds preserves
-    /// the MCP endpoint's pre-Codex worst-case latency budget.
+    /// Codex is a local filesystem scan, so it gets a much smaller cap.
     static let codexQuotaReadTimeout: TimeInterval = 2
+    /// Grok's billing POST uses a 15s request timeout; this MCP wait is slightly
+    /// larger so a healthy slow response still succeeds without wedging stdio.
+    static let grokQuotaFetchTimeout: TimeInterval = 18
 
     /// The wait cap `blockingQuotaFetch` applies to its semaphore bridge,
     /// pulled out as a small pure/testable seam (plan 09 §4): `true` if the
@@ -221,6 +231,68 @@ public final class MCPIntrospectionServer {
         case .failure(.noRollouts): return .unavailable(codexNoCorpusMessage)
         case .failure(.noRateLimits): return .unavailable(codexNoRecentRateLimitsMessage)
         case nil: return .unavailable("codex quota read did not complete")
+        }
+    }
+
+    /// Consent-gated SuperGrok plan usage fetch. Re-checks consent AFTER the
+    /// bounded async read so a revoke-during-flight race cannot publish usage.
+    /// The bearer token lives only in the Authorization header of the one
+    /// request and is never logged.
+    public static func blockingGrokQuotaFetch(
+        configDirectory: URL = GrokPaths.process.root,
+        transport: any GrokQuotaHTTPTransport = URLSession.shared,
+        consent: Bool? = nil
+    ) -> MCPQuotaOutcome {
+        blockingGrokQuotaFetch(
+            configDirectory: configDirectory,
+            transport: transport,
+            consent: consent,
+            consentProvider: {
+                AppPreferencesStore().load().grokQuotaAccessEnabled
+            })
+    }
+
+    /// Internal seam makes a consent revocation during a suspended read
+    /// deterministic in tests. An explicit consent value is an immutable
+    /// fixture override; the live nil path reads preferences both before and
+    /// after I/O, matching QuotaStore's discard-late-result rule.
+    static func blockingGrokQuotaFetch(
+        configDirectory: URL,
+        transport: any GrokQuotaHTTPTransport,
+        consent: Bool?,
+        consentProvider: @escaping @Sendable () -> Bool,
+        timeout: TimeInterval = grokQuotaFetchTimeout
+    ) -> MCPQuotaOutcome {
+        func accessAllowed() -> Bool { consent ?? consentProvider() }
+        guard accessAllowed() else {
+            return .unavailable(quotaConsentRequiredMessage)
+        }
+
+        final class Box: @unchecked Sendable {
+            var value: Result<QuotaSnapshot, GrokQuotaError>?
+        }
+        let box = Box()
+        let sem = DispatchSemaphore(value: 0)
+        Task.detached {
+            guard let creds = GrokQuotaCredentialReader.load(
+                configDirectory: configDirectory) else {
+                box.value = .failure(.noCredentials)
+                sem.signal()
+                return
+            }
+            box.value = await GrokQuotaFetcher.fetch(
+                creds: creds, transport: transport)
+            sem.signal()
+        }
+        let completed = waitBounded(sem, timeout: timeout)
+        guard accessAllowed() else {
+            return .unavailable(quotaConsentRequiredMessage)
+        }
+        guard completed else { return .unavailable("grok quota fetch timed out") }
+        switch box.value {
+        case .success(let snapshot): return .snapshot(snapshot)
+        case .failure(let err): return .unavailable(GrokQuotaFetcher.describe(err))
+        case nil: return .unavailable("grok quota fetch did not complete")
         }
     }
 
@@ -559,9 +631,12 @@ public final class MCPIntrospectionServer {
                 ]
             case .snapshot(let snapshot):
                 let available = !snapshot.isEmpty
-                let emptyStatus = provider == .claude
-                    ? Self.claudeEmptySnapshotMessage
-                    : Self.codexEmptySnapshotMessage
+                let emptyStatus: String
+                switch provider {
+                case .claude: emptyStatus = Self.claudeEmptySnapshotMessage
+                case .codex: emptyStatus = Self.codexEmptySnapshotMessage
+                case .grok: emptyStatus = Self.grokEmptySnapshotMessage
+                }
                 return [
                     "provider": provider.rawValue,
                     "available": available,
@@ -590,8 +665,9 @@ public final class MCPIntrospectionServer {
             "providers": [
                 Provider.claude.rawValue: payload(.claude, outcome: claudeQuotaProvider()),
                 Provider.codex.rawValue: payload(.codex, outcome: codexQuotaProvider()),
+                Provider.grok.rawValue: payload(.grok, outcome: grokQuotaProvider()),
             ],
-            "note": "Provider quota is consent-gated independently. Claude reads its OAuth usage endpoint; Codex reads local rollout rate-limit events only. A provider is always present, including when consent or data is unavailable.",
+            "note": "Provider quota is consent-gated independently. Claude reads its OAuth usage endpoint; Codex reads local rollout rate-limit events only; Grok reads SuperGrok plan usage from xAI's billing endpoint after consent. A provider is always present, including when consent or data is unavailable.",
         ]
     }
 
@@ -649,7 +725,7 @@ public final class MCPIntrospectionServer {
             [
                 "name": "quota_windows",
                 "title": "Plan quota windows",
-                "description": "Dual-provider REAL plan rate-limit windows from Claude and Codex. Returns {providers:{claude:{provider,available,status,fetched_at?,windows:[{title,used_fraction,used_percent,resets_at,reset_in_seconds?,reset_runway?}]},codex:{...}}}; both provider blocks are always present. Access is consent-gated independently in Trifola Settings before any credential, Keychain, network, or rollout-file touch; unavailable data is reported in that provider's status, never by omission. Claude uses its OAuth usage endpoint; Codex uses local rollout rate-limit events only. Takes no arguments.",
+                "description": "Triple-provider REAL plan rate-limit windows from Claude, Codex, and Grok. Returns {providers:{claude:{provider,available,status,fetched_at?,windows:[{title,used_fraction,used_percent,resets_at,reset_in_seconds?,reset_runway?}]},codex:{...},grok:{...}}}; every provider block is always present. Access is consent-gated independently in Trifola Settings before any credential, Keychain, network, or rollout-file touch; unavailable data is reported in that provider's status, never by omission. Claude uses its OAuth usage endpoint; Codex uses local rollout rate-limit events only; Grok uses SuperGrok plan usage from xAI's billing endpoint. Takes no arguments.",
                 "inputSchema": emptySchema,
             ],
         ]

@@ -176,6 +176,13 @@ private struct QuotaAccessSettings: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
+                TapToggle("Show Grok usage", isOn: preferenceBinding(
+                    get: { $0.grokQuotaAccessEnabled },
+                    set: { $0.grokQuotaAccessEnabled = $1 }))
+                Text("Reads ~/.grok/auth.json, then makes one HTTPS request to xAI's SuperGrok billing endpoint. Off by default.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
                 Divider().padding(.vertical, 4)
 
                 Text("Custom model tier")

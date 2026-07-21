@@ -6,6 +6,12 @@ All notable changes to trifola are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Grok SuperGrok plan usage (Quota + MCP)** — third quota provider showing real SuperGrok
+  used-% and reset from xAI's billing endpoint, consent-gated (`Show Grok usage` off by
+  default). Reads `~/.grok/auth.json` only when enabled; injectable HTTP transport keeps tests
+  offline. `quota_windows` always includes a `grok` block with an honest status when consent,
+  credentials, or the endpoint are unavailable. Wire format derived from CodexBar (MIT,
+  © Peter Steinberger); trifola-native implementation.
 - **Grok Build as a third session provider** — Trifola now ingests directory-backed
   `~/.grok` sessions across the macOS app and npm CLI, joining authoritative summary metadata,
   visible chat prose, and ACP per-turn usage with independent incremental offsets. Grok titles,
