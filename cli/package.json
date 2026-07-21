@@ -1,6 +1,6 @@
 {
   "name": "trifola",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Finding generator and exact conversation search for your Claude Code, Codex, and Grok Build corpus. Reads ~/.claude, ~/.codex, and ~/.grok locally; uploads nothing.",
   "type": "module",
   "bin": {

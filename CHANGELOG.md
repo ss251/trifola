@@ -5,6 +5,8 @@ All notable changes to trifola are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-22
+
 ### Added
 - **Grok SuperGrok plan usage (Quota + MCP)** — third quota provider showing real SuperGrok
   used-% and reset from xAI's billing endpoint, consent-gated (`Show Grok usage` off by
