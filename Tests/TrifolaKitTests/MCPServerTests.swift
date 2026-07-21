@@ -480,6 +480,24 @@ struct MCPToolTests {
 
 // MARK: - blocking quota fetch: bounded waits (plan 09)
 
+/// Run a blocking MCP quota bridge off the cooperative thread pool.
+///
+/// `blocking*QuotaFetch` bridges async work with `Task.detached` +
+/// `DispatchSemaphore.wait`. Waiting on a cooperative-pool thread (Swift
+/// Testing's default under parallel load) holds the lane the detached task
+/// needs — on a contended CI runner mock providers have "timed out" past a
+/// 30s budget. Production MCP stdio already runs on a dedicated pthread; tests
+/// hop onto a real OS thread so the wait cannot starve the Task.
+private func offPoolBlockingQuota(
+    _ body: @Sendable @escaping () -> MCPQuotaOutcome
+) async -> MCPQuotaOutcome {
+    await withCheckedContinuation { cont in
+        Thread {
+            cont.resume(returning: body())
+        }.start()
+    }
+}
+
 @Suite("MCP — quota fetch can't hang the server")
 struct MCPQuotaTimeoutTests {
 
@@ -539,6 +557,7 @@ struct MCPQuotaTimeoutTests {
 
     @Test func blockingCodexQuotaFetchHonorsConsentBeforeRolloutReads() async throws {
         let provider = MCPQuotaProbeProvider(result: .failure(.noRateLimits))
+        // Consent-off returns before any Task.detached; no off-pool hop needed.
         let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
             provider: provider, consent: false)
         #expect(await provider.calls() == 0)
@@ -553,11 +572,13 @@ struct MCPQuotaTimeoutTests {
 
     @Test func blockingCodexQuotaFetchReportsMissingRateLimitEvents() async {
         let provider = MCPQuotaProbeProvider(result: .failure(.noRateLimits))
-        // Generous explicit timeout: this test pins the missing-rate-limits
-        // path, not the deadline. CI runners lost the 2s default race.
-        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: provider, consent: true,
-            consentProvider: { true }, timeout: 30)
+        // Pins the missing-rate-limits path, not the deadline. Off-pool so a
+        // contended CI runner cannot starve the detached mock provider.
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingCodexQuotaFetch(
+                provider: provider, consent: true,
+                consentProvider: { true }, timeout: 30)
+        }
         #expect(await provider.calls() == 1)
         switch outcome {
         case .snapshot:
@@ -567,16 +588,18 @@ struct MCPQuotaTimeoutTests {
         }
     }
 
-    @Test func blockingCodexQuotaFetchDiscardsAResultAfterConsentRevocation() {
+    @Test func blockingCodexQuotaFetchDiscardsAResultAfterConsentRevocation() async {
         let consent = Locked(true)
         let provider = MCPConsentRevokingQuotaProvider {
             consent.withLock { $0 = false }
         }
-        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: provider,
-            consent: nil,
-            consentProvider: { consent.withLock { $0 } },
-            timeout: 30)
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingCodexQuotaFetch(
+                provider: provider,
+                consent: nil,
+                consentProvider: { consent.withLock { $0 } },
+                timeout: 30)
+        }
         switch outcome {
         case .snapshot:
             Issue.record("revoked consent must discard the late Codex snapshot")
@@ -654,12 +677,14 @@ struct MCPQuotaTimeoutTests {
                 url: GrokQuotaFetcher.endpoint, statusCode: 200,
                 httpVersion: nil, headerFields: nil)!)
         }
-        let outcome = MCPIntrospectionServer.blockingGrokQuotaFetch(
-            configDirectory: root,
-            transport: transport,
-            consent: true,
-            consentProvider: { true },
-            timeout: 30)
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingGrokQuotaFetch(
+                configDirectory: root,
+                transport: transport,
+                consent: true,
+                consentProvider: { true },
+                timeout: 30)
+        }
         switch outcome {
         case .snapshot(let snap):
             #expect(snap.weekly?.title == "SuperGrok")
@@ -678,7 +703,7 @@ struct MCPQuotaTimeoutTests {
         #expect(windows.first?["title"] as? String == "SuperGrok")
     }
 
-    @Test func blockingGrokQuotaFetchDiscardsAResultAfterConsentRevocation() {
+    @Test func blockingGrokQuotaFetchDiscardsAResultAfterConsentRevocation() async {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("trifola-mcp-grok-revoke-\(UUID().uuidString)",
                                     isDirectory: true)
@@ -708,12 +733,14 @@ struct MCPQuotaTimeoutTests {
                 url: GrokQuotaFetcher.endpoint, statusCode: 200,
                 httpVersion: nil, headerFields: nil)!)
         }
-        let outcome = MCPIntrospectionServer.blockingGrokQuotaFetch(
-            configDirectory: root,
-            transport: transport,
-            consent: nil,
-            consentProvider: { consent.withLock { $0 } },
-            timeout: 30)
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingGrokQuotaFetch(
+                configDirectory: root,
+                transport: transport,
+                consent: nil,
+                consentProvider: { consent.withLock { $0 } },
+                timeout: 30)
+        }
         switch outcome {
         case .snapshot:
             Issue.record("revoked consent must discard the late Grok snapshot")
@@ -722,18 +749,20 @@ struct MCPQuotaTimeoutTests {
         }
     }
 
-    @Test func revokedConsentTakesPrecedenceOverACodexReadTimeout() {
+    @Test func revokedConsentTakesPrecedenceOverACodexReadTimeout() async {
         let consentReads = Locked(0)
-        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: MCPDelayedQuotaProvider(),
-            consent: nil,
-            consentProvider: {
-                consentReads.withLock { count in
-                    count += 1
-                    return count == 1
-                }
-            },
-            timeout: 0.01)
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingCodexQuotaFetch(
+                provider: MCPDelayedQuotaProvider(),
+                consent: nil,
+                consentProvider: {
+                    consentReads.withLock { count in
+                        count += 1
+                        return count == 1
+                    }
+                },
+                timeout: 0.01)
+        }
         switch outcome {
         case .snapshot:
             Issue.record("revoked consent must win over a timed-out Codex read")
