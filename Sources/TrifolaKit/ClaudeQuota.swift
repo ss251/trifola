@@ -465,6 +465,7 @@ public final class QuotaStore: ObservableObject {
     @Published public private(set) var statuses: [Provider: String] = [
         .claude: "access off",
         .codex: "access off",
+        .grok: "access off",
     ]
     /// Source-compatible Claude status for older callers.
     public var status: String { statuses[.claude] ?? "not fetched yet" }
@@ -476,13 +477,19 @@ public final class QuotaStore: ObservableObject {
     private let refreshCoordinator: ProviderRefreshCoordinator
     private let configDirectory: URL
     private let codexProvider: any QuotaProvider
+    private let grokHome: URL
+    private let grokTransport: any GrokQuotaHTTPTransport
 
     public init(refreshCoordinator: ProviderRefreshCoordinator = .shared,
                 configDirectory: URL = ClaudePaths.process.root,
-                codexProvider: any QuotaProvider = CodexQuotaProvider()) {
+                codexProvider: any QuotaProvider = CodexQuotaProvider(),
+                grokHome: URL = GrokPaths.process.root,
+                grokTransport: any GrokQuotaHTTPTransport = URLSession.shared) {
         self.refreshCoordinator = refreshCoordinator
         self.configDirectory = configDirectory
         self.codexProvider = codexProvider
+        self.grokHome = grokHome
+        self.grokTransport = grokTransport
     }
 
     public convenience init(paths: ClaudePaths,
@@ -493,8 +500,9 @@ public final class QuotaStore: ObservableObject {
 
     /// Refresh only providers for which the user granted access. The consent
     /// value is checked before constructing either probe, so a disabled Claude
-    /// provider cannot read its credential file or query Keychain, and a
-    /// disabled Codex provider cannot enumerate rollout files.
+    /// provider cannot read its credential file or query Keychain, a disabled
+    /// Codex provider cannot enumerate rollout files, and a disabled Grok
+    /// provider cannot read auth.json or hit xAI's billing endpoint.
     public func refresh(consent: QuotaConsent, minInterval: TimeInterval = 300) async {
         latestConsent = consent
         let now = Date()
@@ -508,6 +516,10 @@ public final class QuotaStore: ObservableObject {
             snapshots.removeValue(forKey: .codex)
             statuses[.codex] = "access off"
         }
+        if !consent.grok {
+            snapshots.removeValue(forKey: .grok)
+            statuses[.grok] = "access off"
+        }
         // Revocation must clear visible data even while an older authorized
         // probe is suspended. That older probe also re-checks `latestConsent`
         // before publishing, so it cannot restore data after access is off.
@@ -518,7 +530,9 @@ public final class QuotaStore: ObservableObject {
             && !(cooldownUntil[.claude].map { now < $0 } ?? false)
         let refreshCodex = consent.codex
             && needsRefresh(provider: .codex, now: now, minInterval: minInterval)
-        guard refreshClaude || refreshCodex else { return }
+        let refreshGrok = consent.grok
+            && needsRefresh(provider: .grok, now: now, minInterval: minInterval)
+        guard refreshClaude || refreshCodex || refreshGrok else { return }
 
         inFlight = true
         defer { inFlight = false }
@@ -528,8 +542,11 @@ public final class QuotaStore: ObservableObject {
         // overlapping stack/machine/future-provider triggers coalesce here.
         let resolved = Locked<Result<ResolvedQuota, ClaudeQuotaError>?>(nil)
         let codexResolved = Locked<Result<QuotaSnapshot, QuotaProviderFailure>?>(nil)
+        let grokResolved = Locked<Result<QuotaSnapshot, GrokQuotaError>?>(nil)
         let configDirectory = configDirectory
         let codexProvider = codexProvider
+        let grokHome = grokHome
+        let grokTransport = grokTransport
         var probes: [ProviderRefreshProbe] = []
         if refreshClaude {
             probes.append(ProviderRefreshProbe(id: "claude.quota") {
@@ -543,6 +560,18 @@ public final class QuotaStore: ObservableObject {
             probes.append(ProviderRefreshProbe(id: "codex.quota") {
                 let result = await codexProvider.snapshot()
                 codexResolved.withLock { $0 = result }
+            })
+        }
+        if refreshGrok {
+            probes.append(ProviderRefreshProbe(id: "grok.quota") {
+                guard let creds = GrokQuotaCredentialReader.load(
+                    configDirectory: grokHome) else {
+                    grokResolved.withLock { $0 = .failure(.noCredentials) }
+                    return
+                }
+                let result = await GrokQuotaFetcher.fetch(
+                    creds: creds, transport: grokTransport)
+                grokResolved.withLock { $0 = result }
             })
         }
         _ = await refreshCoordinator.refresh(probes)
@@ -561,6 +590,19 @@ public final class QuotaStore: ObservableObject {
             case .failure(.noRateLimits):
                 snapshots.removeValue(forKey: .codex)
                 statuses[.codex] = "no rate limits in local rollouts"
+            }
+        }
+
+        if refreshGrok, latestConsent.grok,
+           let grokResult = grokResolved.withLock({ $0 }) {
+            switch grokResult {
+            case .success(let grokSnapshot):
+                snapshots[.grok] = grokSnapshot
+                statuses[.grok] = grokSnapshot.isEmpty
+                    ? "endpoint returned no SuperGrok window" : "ok · SuperGrok"
+            case .failure(let err):
+                snapshots.removeValue(forKey: .grok)
+                statuses[.grok] = GrokQuotaFetcher.describe(err)
             }
         }
 

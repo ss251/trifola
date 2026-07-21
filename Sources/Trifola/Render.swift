@@ -1464,14 +1464,21 @@ enum ParityRender {
             credits: QuotaCredits(hasCredits: true, unlimited: false,
                                   balance: "$42.75"),
             fetchedAt: now)
+        let grok = QuotaSnapshot(
+            fiveHour: nil,
+            weekly: QuotaWindow(title: "SuperGrok", usedPercent: 37,
+                                resetsAt: now.addingTimeInterval(5 * 86_400)),
+            scoped: [],
+            fetchedAt: now)
         let content = VStack(alignment: .leading, spacing: Theme.sectionGap) {
-            RenderCaption("Plan quota — the production multi-provider section; Claude reads only after consent, Codex is local-only")
+            RenderCaption("Plan quota — the production multi-provider section; Claude and Grok read only after consent, Codex is local-only")
             Card {
                 QuotaSection(
-                    snapshots: [.claude: claude, .codex: codex],
-                    statuses: [.claude: "ok", .codex: "local rollout"],
+                    snapshots: [.claude: claude, .codex: codex, .grok: grok],
+                    statuses: [.claude: "ok", .codex: "local rollout",
+                               .grok: "ok · SuperGrok"],
                     source: .keychain,
-                    consent: QuotaConsent(claude: true, codex: true),
+                    consent: QuotaConsent(claude: true, codex: true, grok: true),
                     now: now)
             }
         }
@@ -3788,11 +3795,48 @@ enum QuotaRender {
     @MainActor
     static func run(to path: String, dark: Bool) {
         let now = Date()
+        let grokAvailable = QuotaSnapshot(
+            fiveHour: nil,
+            weekly: QuotaWindow(title: "SuperGrok", usedPercent: 42.5,
+                                resetsAt: now.addingTimeInterval(6 * 86_400)),
+            scoped: [],
+            fetchedAt: now)
         let content = VStack(alignment: .leading, spacing: 16) {
-            RenderCaption("Plan quota (W7, plan 04) — the REAL rate-limit windows next to the burn estimate: 5h session window at 91% with a ~35-min reset runway (today's 'resets 10am' moment, predictable in advance), weekly + Custom-scoped weekly calm. Fill is state, not decoration: red ≥90, amber ≥75, accent below.")
+            RenderCaption("Plan quota (W7, plan 04) — the REAL rate-limit windows next to the burn estimate: 5h session window at 91% with a ~35-min reset runway (today's 'resets 10am' moment, predictable in advance), weekly + Custom-scoped weekly calm. Fill is state, not decoration: red ≥90, amber ≥75, accent below. Grok SuperGrok row when consent is on and usage is available.")
             VStack(alignment: .leading, spacing: 10) {
-                QuotaSection(snapshot: seededSnapshot(now: now),
-                             status: "ok", source: .keychain, now: now)
+                QuotaSection(
+                    snapshots: [
+                        .claude: seededSnapshot(now: now),
+                        .grok: grokAvailable,
+                    ],
+                    statuses: [
+                        .claude: "ok · keychain",
+                        .codex: "access off",
+                        .grok: "ok · SuperGrok",
+                    ],
+                    source: .keychain,
+                    consent: QuotaConsent(claude: true, codex: false, grok: true),
+                    now: now)
+            }
+            .padding(Theme.sectionGap)
+            .background {
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous).fill(Theme.cardFill)
+                RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
+            }
+            Divider()
+            RenderCaption("Grok row off by default — consent gate shows Access off; no network, no auth.json read.")
+            VStack(alignment: .leading, spacing: 10) {
+                QuotaSection(
+                    snapshots: [:],
+                    statuses: [
+                        .claude: "access off",
+                        .codex: "access off",
+                        .grok: "access off",
+                    ],
+                    source: nil,
+                    consent: QuotaConsent(),
+                    now: now)
             }
             .padding(Theme.sectionGap)
             .background {

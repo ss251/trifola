@@ -62,10 +62,13 @@ private let registeredSelfID = "aaaa1111-0000-0000-0000-000000000001"
 private func server(quota: MCPQuotaOutcome = .unavailable("no credentials found (test)"),
                     codexQuota: MCPQuotaOutcome = .unavailable(
                         MCPIntrospectionServer.codexNoCorpusMessage),
+                    grokQuota: MCPQuotaOutcome = .unavailable(
+                        MCPIntrospectionServer.quotaConsentRequiredMessage),
                     sessions: [SessionSummary]? = nil,
                     registeredSessionID: String? = registeredSelfID) -> MCPIntrospectionServer {
     MCPIntrospectionServer(sessions: { sessions ?? corpus() }, quota: { quota },
                            codexQuota: { codexQuota },
+                           grokQuota: { grokQuota },
                            now: { fixedNow }, registeredSessionID: registeredSessionID)
 }
 
@@ -170,9 +173,10 @@ struct MCPProtocolTests {
         #expect(properties?["use_newest"] != nil)
         #expect((brief?["description"] as? String)?.contains("usually you") == false)
         let quota = tools?.first { $0["name"] as? String == "quota_windows" }
-        #expect((quota?["description"] as? String)?.contains("Dual-provider") == true)
+        #expect((quota?["description"] as? String)?.contains("Triple-provider") == true)
+        #expect((quota?["description"] as? String)?.contains("Grok") == true)
         #expect((quota?["description"] as? String)?.contains("consent-gated independently") == true)
-        #expect((quota?["description"] as? String)?.contains("both provider blocks are always present") == true)
+        #expect((quota?["description"] as? String)?.contains("every provider block is always present") == true)
     }
 
     @Test func pingAndNotificationsAndClientResponses() {
@@ -367,13 +371,21 @@ struct MCPToolTests {
             return
         }
 
+        let grokSnapshot = QuotaSnapshot(
+            fiveHour: nil,
+            weekly: QuotaWindow(title: "SuperGrok", usedPercent: 42.5,
+                                resetsAt: fixedNow.addingTimeInterval(2 * 86_400)),
+            scoped: [],
+            fetchedAt: fixedNow)
         let json = try #require(toolJSON(call(server(
             quota: .snapshot(claudeSnapshot),
-            codexQuota: .snapshot(codexSnapshot)), "quota_windows")))
+            codexQuota: .snapshot(codexSnapshot),
+            grokQuota: .snapshot(grokSnapshot)), "quota_windows")))
         let providers = try #require(json["providers"] as? [String: Any])
-        #expect(Set(providers.keys) == Set(["claude", "codex"]))
+        #expect(Set(providers.keys) == Set(["claude", "codex", "grok"]))
         let claude = try #require(providers["claude"] as? [String: Any])
         let codex = try #require(providers["codex"] as? [String: Any])
+        let grok = try #require(providers["grok"] as? [String: Any])
         #expect(claude["provider"] as? String == "claude")
         #expect(claude["available"] as? Bool == true)
         #expect(claude["status"] as? String == "ok")
@@ -401,6 +413,14 @@ struct MCPToolTests {
                 #expect(serialized["resets_at"] is NSNull)
             }
         }
+
+        #expect(grok["provider"] as? String == "grok")
+        #expect(grok["available"] as? Bool == true)
+        #expect(grok["status"] as? String == "ok")
+        let grokWindows = try #require(grok["windows"] as? [[String: Any]])
+        #expect(grokWindows.count == 1)
+        #expect(grokWindows.first?["title"] as? String == "SuperGrok")
+        #expect(grokWindows.first?["used_percent"] as? Double == 42.5)
     }
 
     @Test func quotaWindowsKeepsUnavailableProvidersVisible() throws {
@@ -410,32 +430,44 @@ struct MCPToolTests {
             weekly: nil, scoped: [], fetchedAt: fixedNow)
         let json = try #require(toolJSON(call(server(
             quota: .snapshot(claudeSnapshot),
-            codexQuota: .unavailable(MCPIntrospectionServer.codexNoCorpusMessage)),
+            codexQuota: .unavailable(MCPIntrospectionServer.codexNoCorpusMessage),
+            grokQuota: .unavailable(MCPIntrospectionServer.quotaConsentRequiredMessage)),
             "quota_windows")))
         let providers = try #require(json["providers"] as? [String: Any])
+        #expect(Set(providers.keys) == Set(["claude", "codex", "grok"]))
         let claude = try #require(providers["claude"] as? [String: Any])
         let codex = try #require(providers["codex"] as? [String: Any])
+        let grok = try #require(providers["grok"] as? [String: Any])
         #expect(claude["available"] as? Bool == true)
         #expect(codex["available"] as? Bool == false)
         #expect(codex["status"] as? String == MCPIntrospectionServer.codexNoCorpusMessage)
         #expect((codex["windows"] as? [[String: Any]])?.isEmpty == true)
+        #expect(grok["available"] as? Bool == false)
+        #expect(grok["status"] as? String ==
+                MCPIntrospectionServer.quotaConsentRequiredMessage)
+        #expect((grok["windows"] as? [[String: Any]])?.isEmpty == true)
     }
 
     @Test func quotaWindowsUsesProviderSpecificEmptySnapshotStatuses() throws {
         let empty = QuotaSnapshot(
             fiveHour: nil, weekly: nil, scoped: [], fetchedAt: fixedNow)
         let json = try #require(toolJSON(call(server(
-            quota: .snapshot(empty), codexQuota: .snapshot(empty)),
+            quota: .snapshot(empty), codexQuota: .snapshot(empty),
+            grokQuota: .snapshot(empty)),
             "quota_windows")))
         let providers = try #require(json["providers"] as? [String: Any])
         let claude = try #require(providers["claude"] as? [String: Any])
         let codex = try #require(providers["codex"] as? [String: Any])
+        let grok = try #require(providers["grok"] as? [String: Any])
         #expect(claude["available"] as? Bool == false)
         #expect(claude["status"] as? String ==
                 MCPIntrospectionServer.claudeEmptySnapshotMessage)
         #expect(codex["available"] as? Bool == false)
         #expect(codex["status"] as? String ==
                 MCPIntrospectionServer.codexEmptySnapshotMessage)
+        #expect(grok["available"] as? Bool == false)
+        #expect(grok["status"] as? String ==
+                MCPIntrospectionServer.grokEmptySnapshotMessage)
     }
 
     @Test func repeatedCallsAreDeterministic() {
@@ -447,6 +479,24 @@ struct MCPToolTests {
 }
 
 // MARK: - blocking quota fetch: bounded waits (plan 09)
+
+/// Run a blocking MCP quota bridge off the cooperative thread pool.
+///
+/// `blocking*QuotaFetch` bridges async work with `Task.detached` +
+/// `DispatchSemaphore.wait`. Waiting on a cooperative-pool thread (Swift
+/// Testing's default under parallel load) holds the lane the detached task
+/// needs — on a contended CI runner mock providers have "timed out" past a
+/// 30s budget. Production MCP stdio already runs on a dedicated pthread; tests
+/// hop onto a real OS thread so the wait cannot starve the Task.
+private func offPoolBlockingQuota(
+    _ body: @Sendable @escaping () -> MCPQuotaOutcome
+) async -> MCPQuotaOutcome {
+    await withCheckedContinuation { cont in
+        Thread {
+            cont.resume(returning: body())
+        }.start()
+    }
+}
 
 @Suite("MCP — quota fetch can't hang the server")
 struct MCPQuotaTimeoutTests {
@@ -466,10 +516,11 @@ struct MCPQuotaTimeoutTests {
         #expect(clock.duration(to: .now) < .seconds(2))
     }
 
-    @Test func dualProviderLiveTimeoutBudgetDoesNotDoubleTheOldCap() {
+    @Test func threeProviderLiveTimeoutBudgetStaysBounded() {
         #expect(MCPIntrospectionServer.credentialReadTimeout
                 + MCPIntrospectionServer.quotaFetchTimeout
-                + MCPIntrospectionServer.codexQuotaReadTimeout <= 40)
+                + MCPIntrospectionServer.codexQuotaReadTimeout
+                + MCPIntrospectionServer.grokQuotaFetchTimeout <= 90)
     }
 
     // Reads the real Keychain and issues a real network fetch through the
@@ -506,6 +557,7 @@ struct MCPQuotaTimeoutTests {
 
     @Test func blockingCodexQuotaFetchHonorsConsentBeforeRolloutReads() async throws {
         let provider = MCPQuotaProbeProvider(result: .failure(.noRateLimits))
+        // Consent-off returns before any Task.detached; no off-pool hop needed.
         let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
             provider: provider, consent: false)
         #expect(await provider.calls() == 0)
@@ -520,11 +572,13 @@ struct MCPQuotaTimeoutTests {
 
     @Test func blockingCodexQuotaFetchReportsMissingRateLimitEvents() async {
         let provider = MCPQuotaProbeProvider(result: .failure(.noRateLimits))
-        // Generous explicit timeout: this test pins the missing-rate-limits
-        // path, not the deadline. CI runners lost the 2s default race.
-        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: provider, consent: true,
-            consentProvider: { true }, timeout: 30)
+        // Pins the missing-rate-limits path, not the deadline. Off-pool so a
+        // contended CI runner cannot starve the detached mock provider.
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingCodexQuotaFetch(
+                provider: provider, consent: true,
+                consentProvider: { true }, timeout: 30)
+        }
         #expect(await provider.calls() == 1)
         switch outcome {
         case .snapshot:
@@ -534,16 +588,18 @@ struct MCPQuotaTimeoutTests {
         }
     }
 
-    @Test func blockingCodexQuotaFetchDiscardsAResultAfterConsentRevocation() {
+    @Test func blockingCodexQuotaFetchDiscardsAResultAfterConsentRevocation() async {
         let consent = Locked(true)
         let provider = MCPConsentRevokingQuotaProvider {
             consent.withLock { $0 = false }
         }
-        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: provider,
-            consent: nil,
-            consentProvider: { consent.withLock { $0 } },
-            timeout: 30)
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingCodexQuotaFetch(
+                provider: provider,
+                consent: nil,
+                consentProvider: { consent.withLock { $0 } },
+                timeout: 30)
+        }
         switch outcome {
         case .snapshot:
             Issue.record("revoked consent must discard the late Codex snapshot")
@@ -552,23 +608,174 @@ struct MCPQuotaTimeoutTests {
         }
     }
 
-    @Test func revokedConsentTakesPrecedenceOverACodexReadTimeout() {
+    @Test func blockingGrokQuotaFetchHonorsConsentBeforeAuthRead() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-mcp-grok-consent-\(UUID().uuidString)",
+                                    isDirectory: true)
+        // No auth.json — but consent-off must not even try to read it for a
+        // "no credentials" status; it returns the consent message.
+        let transport = GrokMCPStubTransport { _ in
+            Issue.record("transport must not be called without consent")
+            return (Data(), HTTPURLResponse(
+                url: GrokQuotaFetcher.endpoint, statusCode: 200,
+                httpVersion: nil, headerFields: nil)!)
+        }
+        let outcome = MCPIntrospectionServer.blockingGrokQuotaFetch(
+            configDirectory: root,
+            transport: transport,
+            consent: false)
+        switch outcome {
+        case .snapshot:
+            Issue.record("grok must not fetch without consent")
+        case .unavailable(let message):
+            #expect(message == MCPIntrospectionServer.quotaConsentRequiredMessage)
+        }
+        let json = toolJSON(call(server(grokQuota: outcome), "quota_windows"))
+        let providers = json?["providers"] as? [String: Any]
+        let grok = providers?["grok"] as? [String: Any]
+        #expect(grok?["available"] as? Bool == false)
+        #expect(grok?["status"] as? String ==
+                MCPIntrospectionServer.quotaConsentRequiredMessage)
+    }
+
+    @Test func blockingGrokQuotaFetchReturnsSuperGrokWindowViaStub() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-mcp-grok-ok-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let auth: [String: Any] = [
+            "https://auth.x.ai::client": [
+                "key": "xai-test-mcp-token",
+                "expires_at": "2030-01-01T00:00:00Z",
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: auth)
+            .write(to: root.appendingPathComponent("auth.json"))
+
+        let reset: UInt64 = 1_800_000_000
+        var payload = Data()
+        payload.append(0x0D)
+        var bits = Float(42.5).bitPattern.littleEndian
+        withUnsafeBytes(of: &bits) { payload.append(contentsOf: $0) }
+        payload.append(0x10)
+        var remaining = reset
+        repeat {
+            var byte = UInt8(remaining & 0x7F)
+            remaining >>= 7
+            if remaining != 0 { byte |= 0x80 }
+            payload.append(byte)
+        } while remaining != 0
+        var frame = Data([0x00])
+        let length = UInt32(payload.count).bigEndian
+        withUnsafeBytes(of: length) { frame.append(contentsOf: $0) }
+        frame.append(payload)
+        let responseBody = frame
+
+        let transport = GrokMCPStubTransport { _ in
+            (responseBody, HTTPURLResponse(
+                url: GrokQuotaFetcher.endpoint, statusCode: 200,
+                httpVersion: nil, headerFields: nil)!)
+        }
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingGrokQuotaFetch(
+                configDirectory: root,
+                transport: transport,
+                consent: true,
+                consentProvider: { true },
+                timeout: 30)
+        }
+        switch outcome {
+        case .snapshot(let snap):
+            #expect(snap.weekly?.title == "SuperGrok")
+            #expect(snap.weekly?.usedPercent == 42.5)
+        case .unavailable(let status):
+            Issue.record("expected snapshot, got \(status)")
+        }
+
+        let json = try #require(toolJSON(call(server(
+            grokQuota: outcome), "quota_windows")))
+        let providers = try #require(json["providers"] as? [String: Any])
+        let grok = try #require(providers["grok"] as? [String: Any])
+        #expect(grok["available"] as? Bool == true)
+        #expect(grok["status"] as? String == "ok")
+        let windows = try #require(grok["windows"] as? [[String: Any]])
+        #expect(windows.first?["title"] as? String == "SuperGrok")
+    }
+
+    @Test func blockingGrokQuotaFetchDiscardsAResultAfterConsentRevocation() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trifola-mcp-grok-revoke-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let auth: [String: Any] = [
+            "https://auth.x.ai::client": [
+                "key": "xai-test-revoke",
+                "expires_at": "2030-01-01T00:00:00Z",
+            ],
+        ]
+        try? JSONSerialization.data(withJSONObject: auth)
+            .write(to: root.appendingPathComponent("auth.json"))
+
+        let consent = Locked(true)
+        let transport = GrokMCPStubTransport { _ in
+            consent.withLock { $0 = false }
+            var payload = Data()
+            payload.append(0x0D)
+            var bits = Float(10).bitPattern.littleEndian
+            withUnsafeBytes(of: &bits) { payload.append(contentsOf: $0) }
+            var frame = Data([0x00])
+            let length = UInt32(payload.count).bigEndian
+            withUnsafeBytes(of: length) { frame.append(contentsOf: $0) }
+            frame.append(payload)
+            return (frame, HTTPURLResponse(
+                url: GrokQuotaFetcher.endpoint, statusCode: 200,
+                httpVersion: nil, headerFields: nil)!)
+        }
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingGrokQuotaFetch(
+                configDirectory: root,
+                transport: transport,
+                consent: nil,
+                consentProvider: { consent.withLock { $0 } },
+                timeout: 30)
+        }
+        switch outcome {
+        case .snapshot:
+            Issue.record("revoked consent must discard the late Grok snapshot")
+        case .unavailable(let status):
+            #expect(status == MCPIntrospectionServer.quotaConsentRequiredMessage)
+        }
+    }
+
+    @Test func revokedConsentTakesPrecedenceOverACodexReadTimeout() async {
         let consentReads = Locked(0)
-        let outcome = MCPIntrospectionServer.blockingCodexQuotaFetch(
-            provider: MCPDelayedQuotaProvider(),
-            consent: nil,
-            consentProvider: {
-                consentReads.withLock { count in
-                    count += 1
-                    return count == 1
-                }
-            },
-            timeout: 0.01)
+        let outcome = await offPoolBlockingQuota {
+            MCPIntrospectionServer.blockingCodexQuotaFetch(
+                provider: MCPDelayedQuotaProvider(),
+                consent: nil,
+                consentProvider: {
+                    consentReads.withLock { count in
+                        count += 1
+                        return count == 1
+                    }
+                },
+                timeout: 0.01)
+        }
         switch outcome {
         case .snapshot:
             Issue.record("revoked consent must win over a timed-out Codex read")
         case .unavailable(let status):
             #expect(status == MCPIntrospectionServer.quotaConsentRequiredMessage)
         }
+    }
+}
+
+/// Injectable Grok transport for MCP blocking-fetch tests. Never hits the network.
+private struct GrokMCPStubTransport: GrokQuotaHTTPTransport {
+    let handler: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await handler(request)
     }
 }

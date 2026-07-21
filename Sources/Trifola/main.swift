@@ -1230,6 +1230,9 @@ if isSelfCheck {
                                         configDirectory: paths.root) },
                                      codexQuota: {
                                         MCPIntrospectionServer.blockingCodexQuotaFetch()
+                                     },
+                                     grokQuota: {
+                                        MCPIntrospectionServer.blockingGrokQuotaFetch()
                                      })
     func mcpCall(_ line: String) -> [String: Any]? {
         guard let out = mcp.handleLine(line) else { return nil }

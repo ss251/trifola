@@ -12,6 +12,7 @@ struct SettingsPreferencesTests {
         #expect(preferences.defaultSnoozeDurationMinutes == 60)
         #expect(preferences.claudeQuotaAccessEnabled == false)
         #expect(preferences.codexQuotaAccessEnabled == false)
+        #expect(preferences.grokQuotaAccessEnabled == false)
         #expect(preferences.hasSeenAccessibilityWorkspaceExplainer == false)
         #expect(preferences.hasCompletedFirstLaunchWelcome == false)
         #expect(preferences.hasSeenTerminalAutomationPrimer == false)
@@ -31,6 +32,7 @@ struct SettingsPreferencesTests {
             defaultSnoozeDurationMinutes: 120,
             claudeQuotaAccessEnabled: true,
             codexQuotaAccessEnabled: true,
+            grokQuotaAccessEnabled: true,
             hasSeenAccessibilityWorkspaceExplainer: true,
             hasCompletedFirstLaunchWelcome: true,
             hasSeenTerminalAutomationPrimer: true,

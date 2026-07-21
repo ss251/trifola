@@ -163,7 +163,8 @@ machines you manually configure.
 
 | Destination | Trigger | Data sent | How to disable |
 |---|---|---|---|
-| Anthropic quota API | **Opt-in, off by default** — Settings → quota access must be enabled per provider; nothing is read before consent | OAuth access credential in the authorization header and standard HTTP request metadata; no transcripts. (Codex quota never uses the network — it reads local rollout files only.) | Leave the toggle off (the default), or turn it off at any time; quota windows then show as not enabled |
+| Anthropic quota API | **Opt-in, off by default** — Settings → Claude quota; nothing is read before consent | OAuth access credential in the authorization header and standard HTTP request metadata; no transcripts. (Codex quota never uses the network — it reads local rollout files only.) | Leave Claude quota off (the default), or turn it off at any time |
+| xAI SuperGrok billing | **Opt-in, off by default** — Settings → Show Grok usage; nothing is read before consent | OAuth bearer from `~/.grok/auth.json` in the authorization header and standard HTTP request metadata; no transcripts | Leave Show Grok usage off (the default), or turn it off at any time |
 | models.dev | **Opt-in** when you click **Refresh from models.dev** in the pricing view | A plain GET for the public pricing catalog; no credentials or transcripts | Do not use the refresh action; bundled pricing remains available offline |
 | Manually configured SSH/Tailscale host | **Only if configured** in experimental cross-machine settings | SSH connection metadata and bounded transcript path-list requests; matching transcript files are pulled from that machine into Trifola's local mirror | Remove or disable the configured machine |
 | Linear | **Opt-in** after adding a Linear key and choosing **Sync to Linear** | Confirmed deadline/project names, descriptions, target dates, and status updates; no transcripts | Do not connect/sync Linear, or remove the key |

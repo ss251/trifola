@@ -93,9 +93,13 @@ number. An opt-in models.dev refresh can extend the catalog; it never overwrites
 
 Plan-quota reading is **off by default, per provider**. Claude quota reads the local credential
 and may query Keychain, then makes one HTTPS request to the vendor's usage endpoint — nothing is
-read before the Settings toggle is enabled, and the MCP quota tool sits behind the same gate.
-Codex quota is a pure local read of rate-limit events already persisted in rollout files: no
-network, no spawned process, symlink- and traversal-rejecting.
+read before the Settings toggle is enabled, and the MCP `quota_windows` tool sits behind the same
+gate for every provider. Codex quota is a pure local read of rate-limit events already persisted
+in rollout files: no network, no spawned process, symlink- and traversal-rejecting. Grok
+SuperGrok plan usage reads `~/.grok/auth.json` (OIDC/SuperGrok scope, legacy session fallback)
+only after consent, then POSTs to xAI's billing endpoint (initial request plus one retry on
+timeout / retriable HTTP or gRPC failure) with the bearer token confined to the request
+`Authorization` header; the HTTP transport is injectable so tests never hit the network.
 
 ### Session transport — the "Open session" ladder
 

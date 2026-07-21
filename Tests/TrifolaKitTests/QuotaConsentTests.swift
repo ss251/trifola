@@ -41,6 +41,7 @@ struct QuotaConsentTests {
         #expect(store.snapshots.isEmpty)
         #expect(store.statuses[.claude] == "access off")
         #expect(store.statuses[.codex] == "access off")
+        #expect(store.statuses[.grok] == "access off")
     }
 
     @Test func codexConsentReadsOnlyLocalRolloutLimits() async throws {
