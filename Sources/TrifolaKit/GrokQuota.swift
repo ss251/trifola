@@ -242,7 +242,7 @@ enum GrokQuotaParser {
         var frames: [Data] = []
         var index = 0
         while index < bytes.count {
-            guard index + 5 <= bytes.count else { return [] }
+            guard index + 5 <= bytes.count else { break }
             let flags = bytes[index]
             let length = (Int(bytes[index + 1]) << 24)
                 | (Int(bytes[index + 2]) << 16)

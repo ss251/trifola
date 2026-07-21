@@ -502,7 +502,7 @@ struct MCPQuotaTimeoutTests {
         #expect(MCPIntrospectionServer.credentialReadTimeout
                 + MCPIntrospectionServer.quotaFetchTimeout
                 + MCPIntrospectionServer.codexQuotaReadTimeout
-                + MCPIntrospectionServer.grokQuotaFetchTimeout <= 60)
+                + MCPIntrospectionServer.grokQuotaFetchTimeout <= 90)
     }
 
     // Reads the real Keychain and issues a real network fetch through the

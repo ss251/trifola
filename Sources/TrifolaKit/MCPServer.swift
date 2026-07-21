@@ -135,9 +135,10 @@ public final class MCPIntrospectionServer {
     static let quotaFetchTimeout: TimeInterval = 35
     /// Codex is a local filesystem scan, so it gets a much smaller cap.
     static let codexQuotaReadTimeout: TimeInterval = 2
-    /// Grok's billing POST uses a 15s request timeout; this MCP wait is slightly
-    /// larger so a healthy slow response still succeeds without wedging stdio.
-    static let grokQuotaFetchTimeout: TimeInterval = 18
+    /// Grok's billing POST uses a 15s request timeout with one retry on
+    /// timeout/5xx (~30s worst case). This MCP wait sits past that budget so a
+    /// healthy retry still succeeds without wedging stdio.
+    static let grokQuotaFetchTimeout: TimeInterval = 35
 
     /// The wait cap `blockingQuotaFetch` applies to its semaphore bridge,
     /// pulled out as a small pure/testable seam (plan 09 §4): `true` if the
