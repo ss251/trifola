@@ -23,9 +23,9 @@ All notable changes to trifola are documented here. The format follows
   path-based SwiftUI shapes (`ProviderMark`) drawn from the providers’ verbatim published SVG
   geometry (never redrawn).
   Session rows (lineage + flat), filter chips, the session inspector, fleet board tokens, and Live
-  tiles use the same monochrome-tintable glyph; accessibility labels are “Claude” / “OpenAI Codex”,
-  Increase Contrast forces full-opacity ink, and an exhaustive unit test fails if a new `Provider`
-  ships without a mark.
+  tiles use the same monochrome-tintable glyph; accessibility labels are “Claude” / “OpenAI Codex” /
+  “xAI Grok”, Increase Contrast forces full-opacity ink, and an exhaustive unit test fails if a new
+  `Provider` ships without a mark.
 - **Session lineage browser** — Sessions now nests deterministically joined Claude subagents,
   remote/cloud tasks, Codex spawns and forks, and Claude→Codex imports beneath their parent. Missing
   transcripts and parents remain visible with honest explanations; deep trees flatten visually

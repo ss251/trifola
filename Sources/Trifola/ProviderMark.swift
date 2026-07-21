@@ -8,8 +8,8 @@ import TrifolaKit
 // inspector, fleet tokens, and the Live board.
 
 /// Recognizable provider mark: Claude's Anthropic starburst asterisk, OpenAI's
-/// hexagonal blossom knot. Always carries an accessibility label; under
-/// Increase Contrast fills at full-opacity monochrome ink.
+/// hexagonal blossom knot, and xAI's official Grok mark. Always carries an
+/// accessibility label; under Increase Contrast fills at full-opacity monochrome ink.
 struct ProviderMark: View {
     let provider: Provider
     var size: CGFloat = Theme.iconGutter
@@ -150,7 +150,7 @@ struct GrokMarkShape: Shape {
 }
 
 // MARK: - Minimal SVG path → SwiftUI Path
-// Supports the command set used by the two brand marks (M/m L/l H/h V/v C/c
+// Supports the command set used by the three brand marks (M/m L/l H/h V/v C/c
 // S/s Q/q A/a Z/z). Numbers may be comma- or space-separated; consecutive
 // commands of the same kind may omit the letter (SVG rules).
 
