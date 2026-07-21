@@ -57,6 +57,34 @@ struct SessionLineageTests {
         #expect(forest.roots.first?.session.id == "grok-parent")
     }
 
+    @Test("child fork metadata wins over parent spawn evidence for the same child")
+    func grokChildMetadataOutranksParentSpawn() throws {
+        // The same child appears in BOTH sources: its own summary marks it a
+        // fork, while the parent's subagent_spawned record describes it. Child
+        // metadata is authoritative, so the edge must resolve to .grokFork —
+        // not .grokSpawn — regardless of source iteration order.
+        let parent = session("grok-parent", provider: .grok)
+        let child = session("grok-child", provider: .grok)
+        let evidence = SessionLineageEvidence(
+            grokThreads: [
+                GrokThreadMetadata(sessionID: "grok-parent"),
+                GrokThreadMetadata(
+                    sessionID: "grok-child", parentSessionID: "grok-parent",
+                    sessionKind: "subagent_fork", forkedAt: instant),
+            ],
+            grokSpawns: [GrokSpawnMetadata(
+                childSessionID: "grok-child", parentSessionID: "grok-parent",
+                parentPromptID: "prompt-1", subagentType: "researcher",
+                description: "spawn-side description", model: "grok-4.5-build",
+                spawnedAt: instant)])
+        let forest = SessionLineage.resolve(
+            sessions: [parent, child], evidence: evidence)
+        #expect(node("grok-child", in: forest)?.edgeKind == .grokFork)
+        // The child edge still carries the parent-side human description it
+        // merged in, without being demoted to a .grokSpawn kind.
+        #expect(node("grok-child", in: forest)?.edgeDetail == "spawn-side description")
+    }
+
     private func node(_ id: String, in forest: SessionLineageForest) -> LineageNode? {
         forest.allNodes.first { $0.session.id == id }
     }
